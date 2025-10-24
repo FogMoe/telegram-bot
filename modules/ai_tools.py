@@ -357,14 +357,14 @@ GEMINI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
 GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     types.FunctionDeclaration(
         name="get_help_text",
-        description=("返回用户可用的Telegram指令和功能的列表，帮助用户了解能做什么"),
+        description=("返回用户可用的Telegram指令和功能的列表"),
         parameters=types.Schema(type=types.Type.OBJECT,
     properties={},
     description="无需参数"),
     ),
     types.FunctionDeclaration(
         name="google_search",
-        description=("使用Google搜索引擎获取最新的信息和答案，适用于用户询问最新事件或超出你认知的问题"),
+        description=("使用Google搜索引擎获取最新的信息和答案"),
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
@@ -378,7 +378,7 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     ),
     types.FunctionDeclaration(
         name="fetch_group_context",
-        description=("获取群聊的消息记录，帮助你理解当前对话的背景"),
+        description=("获取群聊的消息记录"),
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
