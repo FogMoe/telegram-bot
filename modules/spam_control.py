@@ -9,7 +9,10 @@ import time
 import threading
 from collections import defaultdict
 from command_cooldown import cooldown
+from pathlib import Path
+from config import BASE_DIR
 
+SPAM_FILE_PATH = BASE_DIR / "spam_words.txt"
 # 垃圾信息过滤缓存 {group_id: enabled}
 spam_filter_cache = {}
 cache_lock = threading.Lock()  # 缓存操作锁
@@ -19,7 +22,7 @@ CACHE_TIMEOUT = 300  # 缓存过期时间：5分钟
 spam_words = set()
 spam_patterns = []
 last_spam_file_update = 0
-SPAM_FILE_PATH = "spam_words.txt"  # 垃圾词列表文件路径
+SPAM_FILE_PATH = SPAM_FILE_PATH  # 垃圾词列表文件路径
 SPAM_FILE_UPDATE_INTERVAL = 600  # 垃圾词文件检查更新间隔：10分钟
 
 # 自定义垃圾词缓存 {group_id: {"keywords": [关键词列表], "patterns": [正则列表], "last_updated": timestamp}}
