@@ -1,0 +1,9 @@
+python-telegram-bot[job-queue]
+mysql-connector-python
+zhipuai
+openai
+google-genai
+binance-futures-connector
+aiohttp
+telegramify-markdown
+python-dotenv
