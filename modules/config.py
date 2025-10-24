@@ -1,9 +1,11 @@
 # Description: Configuration file for the bot
 # replace with secure storage (e.g., environment variable / secrets manager)
 from dotenv import load_dotenv
+from pathlib import Path
 import os
 
-load_dotenv('../.env')
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / '.env')
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ZhipuAI_API_KEY = os.getenv("ZHIPUAI_API_KEY")
