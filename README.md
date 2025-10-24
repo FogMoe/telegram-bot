@@ -101,6 +101,7 @@ cd modules
 python3 main.py
 
 # 方式二：使用脚本（后台运行）
+chmod +x runBot.sh
 ./runBot.sh
 ```
 
@@ -114,7 +115,7 @@ ps -ef | grep python3
 kill <PID>
 
 # 或使用脚本
-# 编辑 runBot.sh 查看停止命令
+# 编辑 runBot.sh 查看命令
 ```
 
 ---
