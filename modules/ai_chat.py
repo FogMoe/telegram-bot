@@ -2,7 +2,7 @@ from zhipuai import ZhipuAI
 import os
 from openai import AzureOpenAI
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Tuple, Any
 from google import genai
 from google.genai import types
 from google.genai.types import (
@@ -30,6 +30,9 @@ from ai_tools import (
 
 # 创建线程池执行器用于异步调用阻塞式API
 executor = ThreadPoolExecutor(max_workers=10)
+
+ToolLog = Dict[str, Any]
+AIResponse = Tuple[str, List[ToolLog]]
 
 
 def _convert_gemini_tools_to_openai_format() -> list:
@@ -179,7 +182,7 @@ def _compose_system_prompt(
     return SYSTEM_PROMPT + extra_prompt
 
 
-def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[str, object]] = None):
+def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[str, object]] = None) -> AIResponse:
     """同步版本的智谱AI响应函数（支持工具调用）"""
     client = ZhipuAI(api_key=ZhipuAI_API_KEY)
 
@@ -210,6 +213,7 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
     filtered_messages.insert(0, system_message)
 
     last_tool_payload = None
+    tool_logs: List[ToolLog] = []
 
     # 工具调用循环（最多10轮）
     for iteration in range(10):
@@ -230,13 +234,13 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
             logging.info(f"ZhipuAI 第 {iteration + 1} 轮：无工具调用，直接返回答案")
             content_text = assistant_content
             if content_text.strip():
-                return content_text
+                return content_text, tool_logs
             if last_tool_payload:
                 fallback = _format_tool_fallback(last_tool_payload) or ""
                 if fallback:
-                    return fallback
+                    return fallback, tool_logs
             logging.warning("ZhipuAI 返回内容为空且无可用回退。")
-            return content_text
+            return content_text, tool_logs
         
         logging.info(f"ZhipuAI 第 {iteration + 1} 轮：检测到 {len(tool_calls)} 个工具调用")
         
@@ -288,12 +292,17 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
                 "content": json.dumps(tool_result, ensure_ascii=False)
             })
             last_tool_payload = (function_name, tool_result)
-    
+            tool_logs.append({
+                "tool_name": function_name,
+                "arguments": function_args,
+                "result": tool_result,
+            })
+
     logging.warning("ZhipuAI 工具调用次数超限（10轮）")
-    return "抱歉，处理您的请求时遇到了问题，请稍后再试。"
+    return "抱歉，处理您的请求时遇到了问题，请稍后再试。", tool_logs
 
 
-def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[str, object]] = None):
+def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[str, object]] = None) -> AIResponse:
     """同步版本的Azure OpenAI响应函数（支持工具调用）"""
     client = AzureOpenAI(
         azure_endpoint=config.AZURE_OPENAI_API_ENDPOINT,
@@ -315,6 +324,7 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
     filtered_messages.insert(0, system_message)
 
     last_tool_payload = None
+    tool_logs: List[ToolLog] = []
 
     try:
         # 工具调用循环（最多10轮）
@@ -336,13 +346,13 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
                 logging.info(f"Azure 第 {iteration + 1} 轮：无工具调用，直接返回答案")
                 content_text = assistant_content
                 if content_text.strip():
-                    return content_text
+                    return content_text, tool_logs
                 if last_tool_payload:
                     fallback = _format_tool_fallback(last_tool_payload) or ""
                     if fallback:
-                        return fallback
+                        return fallback, tool_logs
                 logging.warning("Azure 返回内容为空且无可用回退。")
-                return content_text
+                return content_text, tool_logs
             
             logging.info(f"Azure 第 {iteration + 1} 轮：检测到 {len(tool_calls)} 个工具调用")
             
@@ -390,16 +400,21 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
                     "content": json.dumps(tool_result, ensure_ascii=False)
                 })
                 last_tool_payload = (function_name, tool_result)
+                tool_logs.append({
+                    "tool_name": function_name,
+                    "arguments": function_args,
+                    "result": tool_result,
+                })
         
         logging.warning("Azure 工具调用次数超限（10轮）")
-        return "抱歉，处理您的请求时遇到了问题，请稍后再试。"
+        return "抱歉，处理您的请求时遇到了问题，请稍后再试。", tool_logs
         
     except Exception as e:
         logging.error(f"Azure OpenAI 请求失败: {e}")
         raise
 
 
-def get_ai_response_google(messages, user_id: int, tool_context: Optional[Dict[str, object]] = None):
+def get_ai_response_google(messages, user_id: int, tool_context: Optional[Dict[str, object]] = None) -> AIResponse:
     """同步版本的Google Gemini响应函数（使用最新生成接口并支持工具调用）。"""
     client = genai.Client(api_key=config.GEMINI_API_KEY)
 
@@ -479,7 +494,7 @@ AI_SERVICE_MAP = {
 }
 
 
-def _call_service_with_context(service_name: str, messages, user_id: int, tool_context: Optional[Dict[str, object]]):
+def _call_service_with_context(service_name: str, messages, user_id: int, tool_context: Optional[Dict[str, object]]) -> AIResponse:
     set_tool_request_context(dict(tool_context or {}))
     try:
         return AI_SERVICE_MAP[service_name](messages, user_id, tool_context)
@@ -487,7 +502,7 @@ def _call_service_with_context(service_name: str, messages, user_id: int, tool_c
         clear_tool_request_context()
 
 
-async def get_ai_response(messages, user_id: int, tool_context: Optional[Dict[str, object]] = None):
+async def get_ai_response(messages, user_id: int, tool_context: Optional[Dict[str, object]] = None) -> AIResponse:
     """
     统一AI响应异步接口，根据配置的顺序依次尝试不同的AI服务
     """
@@ -513,7 +528,10 @@ async def get_ai_response(messages, user_id: int, tool_context: Optional[Dict[st
             continue
 
     logging.error(f"所有AI服务均调用失败: {last_error}")
-    return "抱歉喵，雾萌娘在处理你的请求时遇到了一点小问题！现在有点不舒服啦，请稍后再试吧～\n请联系管理员 @ScarletKc 反馈问题。"
+    return (
+        "抱歉喵，雾萌娘在处理你的请求时遇到了一点小问题！现在有点不舒服啦，请稍后再试吧～\n请联系管理员 @ScarletKc 反馈问题。",
+        [],
+    )
 
 
 def _build_gemini_contents(messages):
@@ -547,12 +565,13 @@ def _generate_gemini_response(
     contents,
     generation_config_kwargs,
     temperature: float,
-):
+) -> AIResponse:
     """
     调用 Gemini models.generate_content，自动处理函数调用并返回最终文本。
     """
     conversation = list(contents)
     last_tool_payload = None
+    tool_logs: List[ToolLog] = []
 
     generate_config = types.GenerateContentConfig(
         **generation_config_kwargs,
@@ -576,21 +595,21 @@ def _generate_gemini_response(
         if not function_call:
             final_text = response.text or ""
             if final_text.strip():
-                return final_text
+                return final_text, tool_logs
             if last_tool_payload:
                 summary_text = _format_tool_fallback(last_tool_payload)
                 if summary_text:
                     logging.info("Gemini text empty after tool call; using fallback summary.")
-                    return summary_text
+                    return summary_text, tool_logs
                 logging.warning("Gemini text empty after tool call and no fallback available.")
-            return final_text
+            return final_text, tool_logs
 
         tool_name = getattr(function_call, "name", None)
         handler = GEMINI_TOOL_HANDLERS.get(tool_name)
 
         if handler is None:
             logging.warning("Unknown Gemini tool call received: %s", tool_name)
-            return response.text
+            return response.text or "", tool_logs
 
         raw_args = getattr(function_call, "args", {}) or {}
         if not isinstance(raw_args, dict):
@@ -647,6 +666,11 @@ def _generate_gemini_response(
                 ],
             )
         )
+        tool_logs.append({
+            "tool_name": tool_name,
+            "arguments": call_args,
+            "result": tool_result,
+        })
 
 
 def _format_tool_fallback(payload):

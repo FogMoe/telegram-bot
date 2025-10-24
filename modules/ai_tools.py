@@ -397,8 +397,11 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
                 "window_size": types.Schema(
                     type=types.Type.INTEGER,
                     description=(
-                        "Number of historical messages to retrieve. Range: 1 to 100"
+                        "Number of historical messages to retrieve"
                     ),
+                    default=5,
+                    minimum=1,
+                    maximum=100
                 ),
             },
             required=[],
@@ -416,7 +419,9 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
                 ),
                 "amount": types.Schema(
                     type=types.Type.INTEGER,
-                            description=("Amount of coins to gift. Range: 1 to 10"),
+                            description=("Amount of coins to gift."),
+                            minimum=1,
+                            maximum=10
                 ),
             },
             required=["recipient_username"],
@@ -430,7 +435,9 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
             properties={
                 "delta": types.Schema(
                     type=types.Type.INTEGER,
-                            description=("Affection level change value. Positive numbers indicate increase, negative numbers indicate decrease. Range: -10 to 10"),
+                            description=("Affection level change value. Positive numbers indicate increase, negative numbers indicate decrease"),
+                            minimum=-10,
+                            maximum=10
                 ),
             },
             required=["delta"],
@@ -455,8 +462,7 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     types.FunctionDeclaration(
         name="fetch_permanent_summaries",
         description=(
-            "Fetch user's historical conversation summaries (up to 10, newest first) "
-            "Response includes total count"
+            "Fetch user's historical conversation summaries (newest first)"
 ),
         parameters=types.Schema(
             type=types.Type.OBJECT,
@@ -464,14 +470,20 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
                 "start": types.Schema(
                     type=types.Type.INTEGER,
                     description=(
-            "Start position"
+            "Start position (1-based, inclusive)"
         ),
+                    default=1,
+                    minimum=1,
+                    maximum=10
                 ),
                 "end": types.Schema(
                     type=types.Type.INTEGER,
                     description=(
-            "End position"
+            "End position (1-based, inclusive)"
         ),
+                    default=3,
+                    minimum=1,
+                    maximum=10
                 ),
             },
             required=[],

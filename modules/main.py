@@ -847,7 +847,23 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """),
     }
 
-    assistant_message = await ai_chat.get_ai_response(chat_history_for_ai, user_id, tool_context=tool_context)
+    assistant_message, tool_logs = await ai_chat.get_ai_response(chat_history_for_ai, user_id, tool_context=tool_context)
+
+    for tool_log in tool_logs:
+        try:
+            tool_content = json.dumps(tool_log, ensure_ascii=False)
+        except TypeError:
+            tool_content = json.dumps(
+                {
+                    "tool_name": tool_log.get("tool_name"),
+                    "arguments": tool_log.get("arguments"),
+                    "result": str(tool_log.get("result")),
+                },
+                ensure_ascii=False,
+            )
+        tool_snapshot_created = await mysql_connection.async_insert_chat_record(conversation_id, 'tool', tool_content)
+        if tool_snapshot_created:
+            summary.schedule_summary_generation(conversation_id)
 
     # 异步插入AI回复到聊天记录
     assistant_snapshot_created = await mysql_connection.async_insert_chat_record(conversation_id, 'assistant', assistant_message)
