@@ -823,12 +823,27 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "message_id": getattr(effective_message, "message_id", None),
         "user_id": user_id,
         "user_state_prompt": 
-        (f"""        
+        (f"""
 # User Status
- - User's coins: {user_coins}
- - User's permission: {user_permission} 
- - Your affection towards them:: {user_affection}
- - Your impression of them: {impression_display}
+## Coins
+ - **User's coins**: {user_coins}
+ - Typically, users consume 1-3 coins per conversation with you
+ - User's assets, used for conversation consumption or utilizing Telegram Bot features
+
+## Permission Level
+ - **User's permission**: {user_permission} 
+ - Level: 0=Normal, 1=Advanced, 2=Maximum
+ - Higher permission levels indicate wealthier users who can access more advanced features
+
+## Affection Level
+ - **Your affection towards them**: {user_affection}
+ - Range: -100 to 100
+ - Adjust your tone and attitude based on your affection level towards the user
+
+## Impression
+ - **Your impression of them**: {impression_display}
+ - Record permanent user information such as occupation, interests, preferences, etc.
+ - Help you better understand users and enhance the relevance of conversations 
         """),
     }
 

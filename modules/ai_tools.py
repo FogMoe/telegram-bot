@@ -75,11 +75,11 @@ def fetch_group_context_tool(
     """Retrieve recent messages before the current group chat message."""
     context = _get_tool_request_context()
     if not context.get("is_group"):
-        return {"error": "当前对话不是群聊，无法获取上下文"}
+        return {"error": "This is not a group chat, cannot fetch context"}
 
     target_group_id = context.get("group_id")
     if not target_group_id:
-        return {"error": "缺少群聊标识，无法获取上下文"}
+        return {"error": "Missing group chat identifier, cannot fetch context"}
 
     current_message_id = context.get("message_id")
 
@@ -146,15 +146,15 @@ def kindness_gift_tool(
     context = _get_tool_request_context()
     donor_id = context.get("user_id")
     if not donor_id:
-        return {"error": "缺少赠送者身份信息，无法执行赠礼"}
+        return {"error": "Missing sender information, cannot execute gift"}
 
     username = (recipient_username or "").strip().lstrip("@")
     if not username:
-        return {"error": "请输入有效的用户名"}
+        return {"error": "Please enter a valid username"}
 
     recipient = _get_user_by_username(username)
     if not recipient:
-        return {"error": f"未找到用户名为 @{username} 的用户"}
+        return {"error": f"User @{username} not found"}
 
     last_record = _get_last_kindness(donor_id)
     if last_record and last_record.get("created_at"):
@@ -166,7 +166,7 @@ def kindness_gift_tool(
                 "status": "cooldown",
                 "last_amount": last_record["amount"],
                 "last_time": last_time.isoformat(sep=" "),
-                "message": "失败，冷却时间24小时未到，无法再次赠送金币",
+                "message": "Failed: 24-hour cooldown period has not elapsed. Cannot gift coins again yet",
             }
 
     try:
@@ -188,7 +188,7 @@ def kindness_gift_tool(
     except Exception as exc:
         connection.rollback()
         logging.error("Failed to record kindness gift: %s", exc)
-        return {"error": "记录赠礼时出现问题，请稍后再试"}
+        return {"error": "Error recording gift, please try again later"}
     finally:
         cursor.close()
         connection.close()
@@ -213,7 +213,7 @@ def kindness_gift_tool(
         "last_amount": last_amount,
         "recipient_coins_before": recipient["coins"],
         "recipient_coins_after": recipient["coins"] + amt,
-        "message": f"已成功赠送 {amt} 枚金币给 @{username}",
+        "message": f"Successfully gifted {amt} coins to @{username}",
     }
 
 
@@ -222,12 +222,12 @@ def update_affection_tool(delta: int, **kwargs) -> dict:
     context = _get_tool_request_context()
     user_id = context.get("user_id")
     if not user_id:
-        return {"error": "缺少用户信息，无法更新好感度"}
+        return {"error": "Missing user information, cannot update affection level"}
 
     try:
         change = int(delta)
     except (TypeError, ValueError):
-        return {"error": "好感度变化值必须是整数"}
+        return {"error": "Affection change value must be an integer"}
 
     if change > 10:
         change = 10
@@ -238,25 +238,25 @@ def update_affection_tool(delta: int, **kwargs) -> dict:
         affection = process_user.get_user_affection(user_id)
     except Exception as exc:
         logging.exception("Failed to fetch affection: %s", exc)
-        return {"error": "查询好感度时出现错误，请稍后再试"}
+        return {"error": "Error querying affection level, please try again later"}
 
     if affection is None:
-        return {"error": "未找到用户好感度数据"}
+        return {"error": "User affection data not found"}
 
     if (affection >= 100 and change > 0) or (affection <= -100 and change < 0):
-        return {"error": "好感度已达到极限，无法继续调整"}
+        return {"error": "Affection level has reached the limit, cannot adjust further"}
 
     try:
         new_affection = process_user.update_user_affection(user_id, change)
     except Exception as exc:
         logging.exception("Failed to update affection: %s", exc)
-        return {"error": "更新好感度时出现错误，请稍后再试"}
+        return {"error": "Error updating affection level, please try again later"}
 
     return {
         "user_id": user_id,
         "change": change,
         "affection": new_affection,
-        "message": f"好感度已调整 {change:+d}，当前值为 {new_affection}",
+        "message": f"Affection level adjusted by {change:+d}, current value: {new_affection}",
     }
 
 
@@ -265,7 +265,7 @@ def update_impression_tool(impression: str, **kwargs) -> dict:
     context = _get_tool_request_context()
     user_id = context.get("user_id")
     if not user_id:
-        return {"error": "缺少用户信息，无法更新印象"}
+        return {"error": "Missing user information, cannot update impression"}
 
     text = (impression or "").strip()
     if len(text) > 500:
@@ -275,12 +275,12 @@ def update_impression_tool(impression: str, **kwargs) -> dict:
         saved = process_user.update_user_impression(user_id, text)
     except Exception as exc:
         logging.exception("Failed to update impression: %s", exc)
-        return {"error": "更新印象时出现错误"}
+        return {"error": "Error updating impression"}
 
     return {
         "user_id": user_id,
         "impression": saved,
-        "message": "印象记录已更新",
+        "message": "Impression record updated successfully",
     }
 
 
@@ -289,7 +289,7 @@ def fetch_permanent_summaries_tool(start: Optional[int] = None, end: Optional[in
     context = _get_tool_request_context()
     user_id = context.get("user_id")
     if not user_id:
-        return {"error": "缺少用户信息，无法检索摘要"}
+        return {"error": "Missing user information, cannot retrieve summaries"}
 
     try:
         start_idx = int(start) if start is not None else 1
@@ -445,7 +445,7 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
                 "impression": types.Schema(
                     type=types.Type.STRING,
                             description=(
-            "New impression text, complete and self-contained description"
+            "New impression text, complete and self-contained description (max 500 characters)"
         ),
                 ),
             },

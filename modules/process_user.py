@@ -109,7 +109,7 @@ async def async_lottery(user_id):
 
 def get_user_personal_info(user_id: int) -> str:
     """从数据库中获取用户的个人信息。如果记录不存在或数据库里是NULL则返回空字符串。"""
-    user_info="正在与你聊天的用户自定义的个人信息：“"
+    user_info="User-defined personal information: "
     connection = mysql_connection.create_connection()
     cursor = connection.cursor()
     try:
@@ -117,7 +117,7 @@ def get_user_personal_info(user_id: int) -> str:
         result = cursor.fetchone()
         if not result or result[0] is None or result[0] == "":
             return ""
-        user_info += result[0] + "”。"
+        user_info += result[0] + ""
         return user_info
     finally:
         cursor.close()
