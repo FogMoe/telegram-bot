@@ -209,6 +209,8 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
     filtered_messages = [msg for msg in messages if msg.get("content") is not None]
     filtered_messages.insert(0, system_message)
 
+    last_tool_payload = None
+
     # 工具调用循环（最多10轮）
     for iteration in range(10):
         response = client.chat.completions.create(
@@ -216,31 +218,32 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
             messages=filtered_messages,
             tools=tools,
             tool_choice="auto",
-            temperature=1.0  
+            temperature=1.0
         )
         
         assistant_message = response.choices[0].message
         tool_calls = getattr(assistant_message, 'tool_calls', None)
+        assistant_content = assistant_message.content or ""
         
-        # 如果没有工具调用，生成最终回复
+        # 如果没有工具调用，直接返回当前模型答案
         if not tool_calls:
-            logging.info(f"ZhipuAI 第 {iteration + 1} 轮：无工具调用，生成最终回复")
-            final_response = client.chat.completions.create(
-                model="glm-4.5-flash",
-                messages=filtered_messages + [{
-                    "role": "assistant",
-                    "content": assistant_message.content
-                }],
-                temperature=1.0 
-            )
-            return final_response.choices[0].message.content or assistant_message.content
+            logging.info(f"ZhipuAI 第 {iteration + 1} 轮：无工具调用，直接返回答案")
+            content_text = assistant_content
+            if content_text.strip():
+                return content_text
+            if last_tool_payload:
+                fallback = _format_tool_fallback(last_tool_payload) or ""
+                if fallback:
+                    return fallback
+            logging.warning("ZhipuAI 返回内容为空且无可用回退。")
+            return content_text
         
         logging.info(f"ZhipuAI 第 {iteration + 1} 轮：检测到 {len(tool_calls)} 个工具调用")
         
         # 追加助手消息（包含 tool_calls）
         filtered_messages.append({
             "role": "assistant",
-            "content": assistant_message.content,
+            "content": assistant_content,
             "tool_calls": tool_calls
         })
         
@@ -253,7 +256,8 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
                 continue
             
             try:
-                function_args = json.loads(tool_call.function.arguments)
+                raw_args = tool_call.function.arguments or "{}"
+                function_args = json.loads(raw_args)
             except json.JSONDecodeError as e:
                 logging.error(f"ZhipuAI 工具参数解析失败: {e}")
                 function_args = {}
@@ -283,6 +287,7 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
                 "tool_call_id": tool_call.id,
                 "content": json.dumps(tool_result, ensure_ascii=False)
             })
+            last_tool_payload = (function_name, tool_result)
     
     logging.warning("ZhipuAI 工具调用次数超限（10轮）")
     return "抱歉，处理您的请求时遇到了问题，请稍后再试。"
@@ -309,6 +314,8 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
     filtered_messages = [msg for msg in messages if msg.get("content") is not None]
     filtered_messages.insert(0, system_message)
 
+    last_tool_payload = None
+
     try:
         # 工具调用循环（最多10轮）
         for iteration in range(10):
@@ -322,26 +329,27 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
             
             assistant_message = completion.choices[0].message
             tool_calls = getattr(assistant_message, 'tool_calls', None)
+            assistant_content = assistant_message.content or ""
             
-            # 如果没有工具调用，生成最终回复
+            # 如果没有工具调用，直接返回当前模型答案
             if not tool_calls:
-                logging.info(f"Azure 第 {iteration + 1} 轮：无工具调用，生成最终回复")
-                final_completion = client.chat.completions.create(
-                    model="gpt-4",
-                    messages=filtered_messages + [{
-                        "role": "assistant",
-                        "content": assistant_message.content
-                    }],
-                    temperature=1.0
-                )
-                return final_completion.choices[0].message.content or assistant_message.content
+                logging.info(f"Azure 第 {iteration + 1} 轮：无工具调用，直接返回答案")
+                content_text = assistant_content
+                if content_text.strip():
+                    return content_text
+                if last_tool_payload:
+                    fallback = _format_tool_fallback(last_tool_payload) or ""
+                    if fallback:
+                        return fallback
+                logging.warning("Azure 返回内容为空且无可用回退。")
+                return content_text
             
             logging.info(f"Azure 第 {iteration + 1} 轮：检测到 {len(tool_calls)} 个工具调用")
             
             # 追加助手消息（包含 tool_calls）
             filtered_messages.append({
                 "role": "assistant",
-                "content": assistant_message.content,
+                "content": assistant_content,
                 "tool_calls": tool_calls
             })
             
@@ -350,7 +358,8 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
                 function_name = tool_call.function.name
                 
                 try:
-                    function_args = json.loads(tool_call.function.arguments)
+                    raw_args = tool_call.function.arguments or "{}"
+                    function_args = json.loads(raw_args)
                 except json.JSONDecodeError as e:
                     logging.error(f"Azure 工具参数解析失败: {e}")
                     function_args = {}
@@ -380,6 +389,7 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
                     "tool_call_id": tool_call.id,
                     "content": json.dumps(tool_result, ensure_ascii=False)
                 })
+                last_tool_payload = (function_name, tool_result)
         
         logging.warning("Azure 工具调用次数超限（10轮）")
         return "抱歉，处理您的请求时遇到了问题，请稍后再试。"

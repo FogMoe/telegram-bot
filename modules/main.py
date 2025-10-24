@@ -730,17 +730,17 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         impression_display = "未记录"
 
-    chat_type_label = "群聊" if update.effective_chat.type in ("group", "supergroup") else "私聊"
+    chat_type_label = "Group" if update.effective_chat.type in ("group", "supergroup") else "Private"
     prefix = f"[{chat_type_label}] "
 
     # 如果是媒体消息，进行下载、AI分析、格式化描述
     if is_media:
         try:
             if effective_message.photo:
-                media_type = "图片"
+                media_type = "photo"
                 file = await effective_message.photo[-1].get_file()
             else:
-                media_type = "贴纸"
+                media_type = "sticker"
                 file = await effective_message.sticker.get_file()
 
             # 检查是否有文本说明
@@ -764,9 +764,12 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
             # 组合图片描述和用户文本说明
             if caption:
-                formatted_message = f"{prefix}{message_time} @{user_name} 发送了一个{media_type}并说：\n{caption}\n\n图片描述：\n{image_description}"
+                formatted_message = f"""{prefix}{message_time} @{user_name} sent a {media_type} with caption: {caption}
+                 
+                Image description:
+                {image_description}"""
             else:
-                formatted_message = f"{prefix}{message_time} @{user_name} 发送了一个{media_type}，内容描述：\n{image_description}"
+                formatted_message = f"""{prefix}{message_time} @{user_name} sent a {media_type}. Description: {image_description}"""
 
         except Exception as e:
             logging.error(f"处理媒体消息时出错: {str(e)}")
@@ -780,9 +783,12 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if effective_message.reply_to_message:
             quoted_message = effective_message.reply_to_message.text
             quoted_user = effective_message.reply_to_message.from_user.username or "EmptyUsername"  # 引用消息的用户名也需要处理
-            formatted_message = f"「引用 @{quoted_user} 的消息: {quoted_message}」\n\n{prefix}{message_time} @{user_name} 说：\n{user_message}"
+            formatted_message = f"""Replying to @{quoted_user}: {quoted_message}
+             
+            {prefix}{message_time} @{user_name} said: {user_message}
+            """
         else:
-            formatted_message = f"{prefix}{message_time} @{user_name} 说：\n{user_message}"
+            formatted_message = f"{prefix}{message_time} @{user_name} said: {user_message}"
 
     # 异步获取聊天历史
     chat_history = await mysql_connection.async_get_chat_history(conversation_id)

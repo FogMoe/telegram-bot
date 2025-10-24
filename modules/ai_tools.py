@@ -235,7 +235,19 @@ def update_affection_tool(delta: int, **kwargs) -> dict:
         change = -10
 
     try:
-        affection = process_user.update_user_affection(user_id, change)
+        affection = process_user.get_user_affection(user_id)
+    except Exception as exc:
+        logging.exception("Failed to fetch affection: %s", exc)
+        return {"error": "查询好感度时出现错误，请稍后再试"}
+
+    if affection is None:
+        return {"error": "未找到用户好感度数据"}
+
+    if (affection >= 100 and change > 0) or (affection <= -100 and change < 0):
+        return {"error": "好感度已达到极限，无法继续调整"}
+
+    try:
+        new_affection = process_user.update_user_affection(user_id, change)
     except Exception as exc:
         logging.exception("Failed to update affection: %s", exc)
         return {"error": "更新好感度时出现错误，请稍后再试"}
@@ -243,8 +255,8 @@ def update_affection_tool(delta: int, **kwargs) -> dict:
     return {
         "user_id": user_id,
         "change": change,
-        "affection": affection,
-        "message": f"好感度已调整 {change:+d}，当前值为 {affection}",
+        "affection": new_affection,
+        "message": f"好感度已调整 {change:+d}，当前值为 {new_affection}",
     }
 
 
@@ -404,7 +416,7 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
                 ),
                 "amount": types.Schema(
                     type=types.Type.INTEGER,
-                            description=("Amount of coins to gift. Range: 1-10"),
+                            description=("Amount of coins to gift. Range: 1~10"),
                 ),
             },
             required=["recipient_username"],
@@ -418,7 +430,7 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
             properties={
                 "delta": types.Schema(
                     type=types.Type.INTEGER,
-                            description=("Affection level change value. Positive numbers indicate increase, negative numbers indicate decrease. Range: 1-10"),
+                            description=("Affection level change value. Positive numbers indicate increase, negative numbers indicate decrease. Range: -10~10"),
                 ),
             },
             required=["delta"],
@@ -443,7 +455,8 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     types.FunctionDeclaration(
         name="fetch_permanent_summaries",
         description=(
-            "Fetch user's historical conversation summaries, returns up to 10 entries"
+            "Fetch user's historical conversation summaries(up to 10, newest first) "
+            "Response includes 'total' count"
 ),
         parameters=types.Schema(
             type=types.Type.OBJECT,
