@@ -91,7 +91,7 @@ class RateLimiter:
 
 
 # 创建 RotatingFileHandler，最大文件大小设为1MB，最多保留5个备份
-handler = RotatingFileHandler('tgbot.log', maxBytes=1*1024*1024, backupCount=5, encoding='utf-8')
+handler = RotatingFileHandler(config.BASE_DIR / 'tgbot.log', maxBytes=1*1024*1024, backupCount=5, encoding='utf-8')
 
 log_level = getattr(logging, config.LOG_LEVEL.upper(), logging.INFO)
 

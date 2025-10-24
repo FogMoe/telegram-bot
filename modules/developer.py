@@ -132,7 +132,7 @@ async def view_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines = min(int(context.args[0]), 200)  # 限制最多显示200行
         
         # 读取日志文件的最后N行
-        log_path = 'tgbot.log'
+        log_path = config.BASE_DIR / 'tgbot.log'
         if not os.path.exists(log_path):
             await update.message.reply_text("日志文件不存在")
             return
