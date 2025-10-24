@@ -167,7 +167,9 @@ def _sync_analyze_image(base64_str):
     return response.choices[0].message.content
 
 
-def _compose_system_prompt(tool_context: Optional[Dict[str, object]]) -> str:
+def _compose_system_prompt(
+    tool_context: Optional[Dict[str, object]],
+) -> str:
     """Return the base system prompt with any dynamic additions."""
     extra_prompt = ""
     if tool_context:
@@ -198,7 +200,10 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
     }])
 
     # 添加系统消息
-    system_message = {"role": "system", "content": _compose_system_prompt(tool_context)}
+    system_message = {
+        "role": "system",
+        "content": _compose_system_prompt(tool_context),
+    }
     
     # 过滤掉 content 为 null 的消息
     filtered_messages = [msg for msg in messages if msg.get("content") is not None]
@@ -206,13 +211,12 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
 
     # 工具调用循环（最多10轮）
     for iteration in range(10):
-        # 使用低温进行工具决策
         response = client.chat.completions.create(
             model="glm-4.5-flash",
             messages=filtered_messages,
             tools=tools,
             tool_choice="auto",
-            temperature=0.3  # 低温用于工具决策
+            temperature=1.0  
         )
         
         assistant_message = response.choices[0].message
@@ -221,14 +225,13 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
         # 如果没有工具调用，生成最终回复
         if not tool_calls:
             logging.info(f"ZhipuAI 第 {iteration + 1} 轮：无工具调用，生成最终回复")
-            # 使用高温生成最终回复
             final_response = client.chat.completions.create(
                 model="glm-4.5-flash",
                 messages=filtered_messages + [{
                     "role": "assistant",
                     "content": assistant_message.content
                 }],
-                temperature=1.0  # 高温用于创意回复
+                temperature=1.0 
             )
             return final_response.choices[0].message.content or assistant_message.content
         
@@ -309,13 +312,12 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
     try:
         # 工具调用循环（最多10轮）
         for iteration in range(10):
-            # 使用低温进行工具决策
             completion = client.chat.completions.create(
                 model="gpt-4",
                 messages=filtered_messages,
                 tools=tools,
                 tool_choice="auto",
-                temperature=0.3  # 低温用于工具决策
+                temperature=1.0
             )
             
             assistant_message = completion.choices[0].message
@@ -324,14 +326,13 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
             # 如果没有工具调用，生成最终回复
             if not tool_calls:
                 logging.info(f"Azure 第 {iteration + 1} 轮：无工具调用，生成最终回复")
-                # 使用高温生成最终回复
                 final_completion = client.chat.completions.create(
                     model="gpt-4",
                     messages=filtered_messages + [{
                         "role": "assistant",
                         "content": assistant_message.content
                     }],
-                    temperature=1.0  # 高温用于创意回复
+                    temperature=1.0
                 )
                 return final_completion.choices[0].message.content or assistant_message.content
             
@@ -436,26 +437,22 @@ def get_ai_response_google(messages, user_id: int, tool_context: Optional[Dict[s
             model_name="gemini-flash-latest",
             contents=contents,
             generation_config_kwargs=generation_config_kwargs,
-            tool_decision_temperature=0.3,
-            reply_temperature=1.0,
-            tool_decision_model="gemini-flash-lite-latest",  # 使用 flash-lite 进行工具决策
+            temperature=1.0,
         )
     except Exception as e:
         error_str = str(e)
         if 'RESOURCE_EXHAUSTED' in error_str:
-            logging.warning(f"gemini-2.5-flash资源耗尽错误，尝试使用 gemini-2.5-pro 模型重试: {error_str}")
+            logging.warning(f"gemini-flash资源耗尽错误，尝试使用 gemini-flash-lite 模型重试: {error_str}")
             try:
                 return _generate_gemini_response(
                     client=client,
-                    model_name="gemini-2.5-pro",
+                    model_name="gemini-flash-lite-latest",
                     contents=contents,
                     generation_config_kwargs=generation_config_kwargs,
-                    tool_decision_temperature=0.3,
-                    reply_temperature=1.0,
-                    tool_decision_model="gemini-flash-lite-latest",  # 降级时也使用 flash-lite 进行工具决策
+                    temperature=1.0,
                 )
             except Exception as retry_e:
-                logging.error(f"使用 gemini-2.5-pro 重试失败: {str(retry_e)}")
+                logging.error(f"使用 gemini-flash-lite 重试失败: {str(retry_e)}")
                 raise retry_e
         if 'SAFETY' in error_str and 'blocked' in error_str:
             logging.warning("Gemini safety block triggered: %s", error_str)
@@ -539,40 +536,24 @@ def _generate_gemini_response(
     model_name,
     contents,
     generation_config_kwargs,
-    tool_decision_temperature: float,
-    reply_temperature: float,
-    tool_decision_model: str = None,
+    temperature: float,
 ):
     """
     调用 Gemini models.generate_content，自动处理函数调用并返回最终文本。
-    
-    Args:
-        tool_decision_model: 用于工具决策的模型名称，如果为None则使用主模型
     """
     conversation = list(contents)
     last_tool_payload = None
 
-    # 决定使用哪个模型进行工具决策
-    decision_model = tool_decision_model or model_name
-
-    tool_config = types.GenerateContentConfig(
+    generate_config = types.GenerateContentConfig(
         **generation_config_kwargs,
-        temperature=tool_decision_temperature,
-    )
-
-    reply_config_kwargs = dict(generation_config_kwargs)
-    reply_config_kwargs.pop("tool_config", None)
-    reply_config_kwargs["tools"] = []
-    reply_config = types.GenerateContentConfig(
-        **reply_config_kwargs,
-        temperature=reply_temperature,
+        temperature=temperature,
     )
 
     while True:
         response = client.models.generate_content(
-            model=decision_model,  # 使用决策模型
+            model=model_name,
             contents=conversation,
-            config=tool_config,
+            config=generate_config,
         )
 
         if getattr(response, "function_calls", None):
@@ -583,10 +564,16 @@ def _generate_gemini_response(
 
         function_call = _extract_function_call(response)
         if not function_call:
-            logging.info(
-                "Gemini reply generated without tool usage; transitioning to high-temperature response."
-            )
-            break
+            final_text = response.text or ""
+            if final_text.strip():
+                return final_text
+            if last_tool_payload:
+                summary_text = _format_tool_fallback(last_tool_payload)
+                if summary_text:
+                    logging.info("Gemini text empty after tool call; using fallback summary.")
+                    return summary_text
+                logging.warning("Gemini text empty after tool call and no fallback available.")
+            return final_text
 
         tool_name = getattr(function_call, "name", None)
         handler = GEMINI_TOOL_HANDLERS.get(tool_name)
@@ -650,29 +637,6 @@ def _generate_gemini_response(
                 ],
             )
         )
-
-    final_response = client.models.generate_content(
-        model=model_name,
-        contents=conversation,
-        config=reply_config,
-    )
-
-    logging.info(
-        "Gemini high-temperature response generated (temperature=%s).",
-        reply_temperature,
-    )
-
-    if getattr(final_response, "function_calls", None):
-        logging.warning("Final high-temperature generation unexpectedly requested function call.")
-
-    final_text = final_response.text or ""
-    if not final_text.strip() and last_tool_payload:
-        summary_text = _format_tool_fallback(last_tool_payload)
-        if summary_text:
-            logging.info("Gemini text empty after tool call; using fallback summary.")
-            return summary_text
-        logging.warning("Gemini text empty after tool call and no fallback available.")
-    return final_text
 
 
 def _format_tool_fallback(payload):

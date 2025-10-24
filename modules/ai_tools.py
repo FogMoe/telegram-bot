@@ -357,20 +357,20 @@ GEMINI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
 GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     types.FunctionDeclaration(
         name="get_help_text",
-        description=("返回用户可用的Telegram指令和功能的列表"),
+        description=("Returns a list of available Telegram commands and features for users"),
         parameters=types.Schema(type=types.Type.OBJECT,
     properties={},
-    description="无需参数"),
+    description="No parameters required"),
     ),
     types.FunctionDeclaration(
         name="google_search",
-        description=("使用Google搜索引擎获取最新的信息和答案"),
+        description=("Use Google search engine to obtain the latest information and answers"),
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
                 "query": types.Schema(
                     type=types.Type.STRING,
-                    description=("搜索查询字符串。可以是关键词、短语或完整问题"),
+                    description=("Search query string. Can be keywords, phrases, or complete questions"),
                 ),
             },
             required=["query"],
@@ -378,14 +378,14 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     ),
     types.FunctionDeclaration(
         name="fetch_group_context",
-        description=("获取群聊的消息记录"),
+        description=("Fetch message history from group chat"),
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
                 "window_size": types.Schema(
                     type=types.Type.INTEGER,
                     description=(
-                        "要检索的历史消息数量，默认值：5，范围：1-100"
+                        "Number of historical messages to retrieve. Range: 1-100"
                     ),
                 ),
             },
@@ -394,17 +394,17 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     ),
     types.FunctionDeclaration(
         name="kindness_gift",
-        description=("根据你对用户的好感度，赠送一定数量的金币给用户"),
+        description=("Gift a certain amount of coins to the user based on your affection level towards them"),
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
                 "recipient_username": types.Schema(
                     type=types.Type.STRING,
-                    description=("用户的 Telegram 用户名，不含 @ 符号"),
+                    description=("User's Telegram username, without the @ symbol"),
                 ),
                 "amount": types.Schema(
                     type=types.Type.INTEGER,
-                            description=("赠送的金币数量，范围 1-10"),
+                            description=("Amount of coins to gift. Range: 1-10"),
                 ),
             },
             required=["recipient_username"],
@@ -412,13 +412,13 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     ),
     types.FunctionDeclaration(
         name="update_affection",
-        description=("调整你对用户的好感度数值"),
+        description=("Adjust your affection level towards the user"),
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
                 "delta": types.Schema(
                     type=types.Type.INTEGER,
-                            description=("好感度变化值，正数表示上升，负数表示下降，范围 1-10"),
+                            description=("Affection level change value. Positive numbers indicate increase, negative numbers indicate decrease. Range: 1-10"),
                 ),
             },
             required=["delta"],
@@ -426,14 +426,14 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     ),
     types.FunctionDeclaration(
         name="update_impression",
-        description=("更新对用户的永久印象"),
+        description=("Update permanent impression of the user"),
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
                 "impression": types.Schema(
                     type=types.Type.STRING,
                             description=(
-            "新的印象文本，完整且自包含的描述"
+            "New impression text, complete and self-contained description"
         ),
                 ),
             },
@@ -443,7 +443,7 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     types.FunctionDeclaration(
         name="fetch_permanent_summaries",
         description=(
-            "获取用户的历史对话摘要，最多返回 10 条"
+            "Fetch user's historical conversation summaries, returns up to 10 entries"
 ),
         parameters=types.Schema(
             type=types.Type.OBJECT,
@@ -451,13 +451,13 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
                 "start": types.Schema(
                     type=types.Type.INTEGER,
                     description=(
-            "起始位置"
+            "Start position"
         ),
                 ),
                 "end": types.Schema(
                     type=types.Type.INTEGER,
                     description=(
-            "结束位置"
+            "End position"
         ),
                 ),
             },

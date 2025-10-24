@@ -818,11 +818,11 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "user_id": user_id,
         "user_state_prompt": 
         (f"""        
-# 用户状态
- - 用户的金币: {user_coins}
- - 用户的权限: {user_permission} 
- - 你对其的好感度: {user_affection}
- - 你对其的印象: {impression_display}
+# User Status
+ - User's coins: {user_coins}
+ - User's permission: {user_permission} 
+ - Your affection towards them:: {user_affection}
+ - Your impression of them: {impression_display}
         """),
     }
 
