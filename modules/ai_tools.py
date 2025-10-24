@@ -75,11 +75,11 @@ def fetch_group_context_tool(
     """Retrieve recent messages before the current group chat message."""
     context = _get_tool_request_context()
     if not context.get("is_group"):
-        return {"error": "当前对话不是群聊，无法获取上下文。"}
+        return {"error": "当前对话不是群聊，无法获取上下文"}
 
     target_group_id = context.get("group_id")
     if not target_group_id:
-        return {"error": "缺少群聊标识，无法获取上下文。"}
+        return {"error": "缺少群聊标识，无法获取上下文"}
 
     current_message_id = context.get("message_id")
 
@@ -146,15 +146,15 @@ def kindness_gift_tool(
     context = _get_tool_request_context()
     donor_id = context.get("user_id")
     if not donor_id:
-        return {"error": "缺少赠送者身份信息，无法执行赠礼。"}
+        return {"error": "缺少赠送者身份信息，无法执行赠礼"}
 
     username = (recipient_username or "").strip().lstrip("@")
     if not username:
-        return {"error": "请输入有效的用户名。"}
+        return {"error": "请输入有效的用户名"}
 
     recipient = _get_user_by_username(username)
     if not recipient:
-        return {"error": f"未找到用户名为 @{username} 的用户。"}
+        return {"error": f"未找到用户名为 @{username} 的用户"}
 
     last_record = _get_last_kindness(donor_id)
     if last_record and last_record.get("created_at"):
@@ -166,7 +166,7 @@ def kindness_gift_tool(
                 "status": "cooldown",
                 "last_amount": last_record["amount"],
                 "last_time": last_time.isoformat(sep=" "),
-                "message": "失败！今天已经使用过雾萌娘的仁慈，请24小时后再试。",
+                "message": "失败，冷却时间24小时未到，无法再次赠送金币",
             }
 
     try:
@@ -188,7 +188,7 @@ def kindness_gift_tool(
     except Exception as exc:
         connection.rollback()
         logging.error("Failed to record kindness gift: %s", exc)
-        return {"error": "记录赠礼时出现问题，请稍后再试。"}
+        return {"error": "记录赠礼时出现问题，请稍后再试"}
     finally:
         cursor.close()
         connection.close()
@@ -213,7 +213,7 @@ def kindness_gift_tool(
         "last_amount": last_amount,
         "recipient_coins_before": recipient["coins"],
         "recipient_coins_after": recipient["coins"] + amt,
-        "message": f"已赠送 {amt} 枚金币给 @{username}，愿仁慈常伴。",
+        "message": f"已成功赠送 {amt} 枚金币给 @{username}",
     }
 
 
@@ -222,12 +222,12 @@ def update_affection_tool(delta: int, **kwargs) -> dict:
     context = _get_tool_request_context()
     user_id = context.get("user_id")
     if not user_id:
-        return {"error": "缺少用户信息，无法更新好感度。"}
+        return {"error": "缺少用户信息，无法更新好感度"}
 
     try:
         change = int(delta)
     except (TypeError, ValueError):
-        return {"error": "好感度变化值必须是整数。"}
+        return {"error": "好感度变化值必须是整数"}
 
     if change > 10:
         change = 10
@@ -238,13 +238,13 @@ def update_affection_tool(delta: int, **kwargs) -> dict:
         affection = process_user.update_user_affection(user_id, change)
     except Exception as exc:
         logging.exception("Failed to update affection: %s", exc)
-        return {"error": "更新好感度时出现错误，请稍后再试。"}
+        return {"error": "更新好感度时出现错误，请稍后再试"}
 
     return {
         "user_id": user_id,
         "change": change,
         "affection": affection,
-        "message": f"好感度已调整 {change:+d}，当前值为 {affection}。",
+        "message": f"好感度已调整 {change:+d}，当前值为 {affection}",
     }
 
 
@@ -253,7 +253,7 @@ def update_impression_tool(impression: str, **kwargs) -> dict:
     context = _get_tool_request_context()
     user_id = context.get("user_id")
     if not user_id:
-        return {"error": "缺少用户信息，无法更新印象。"}
+        return {"error": "缺少用户信息，无法更新印象"}
 
     text = (impression or "").strip()
     if len(text) > 500:
@@ -263,12 +263,12 @@ def update_impression_tool(impression: str, **kwargs) -> dict:
         saved = process_user.update_user_impression(user_id, text)
     except Exception as exc:
         logging.exception("Failed to update impression: %s", exc)
-        return {"error": "更新印象时出现错误，请稍后再试。"}
+        return {"error": "更新印象时出现错误"}
 
     return {
         "user_id": user_id,
         "impression": saved,
-        "message": "印象记录已更新。",
+        "message": "印象记录已更新",
     }
 
 
@@ -277,7 +277,7 @@ def fetch_permanent_summaries_tool(start: Optional[int] = None, end: Optional[in
     context = _get_tool_request_context()
     user_id = context.get("user_id")
     if not user_id:
-        return {"error": "缺少用户信息，无法检索摘要。"}
+        return {"error": "缺少用户信息，无法检索摘要"}
 
     try:
         start_idx = int(start) if start is not None else 1
@@ -357,31 +357,20 @@ GEMINI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
 GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     types.FunctionDeclaration(
         name="get_help_text",
-        description=(
-    "查询机器人的功能列表和用户可用命令。"
-    "返回预配置的帮助文本，包含所有可用命令（如 /lottery、/me）及其用法说明。"
-    "此工具无需参数，始终返回完整的命令清单。"
-),
+        description=("返回用户可用的Telegram指令和功能的列表，帮助用户了解能做什么"),
         parameters=types.Schema(type=types.Type.OBJECT,
     properties={},
     description="无需参数"),
     ),
     types.FunctionDeclaration(
         name="google_search",
-        description=(
-    "通过 Api 执行 Google 搜索，获取实时网络信息。"
-    "适用场景：用户询问最新新闻、实时数据（天气、股票）、超出知识截止日期的信息。"
-    "返回搜索元数据和自然搜索结果列表（包含标题、链接、摘要）。"
-),
+        description=("使用Google搜索引擎获取最新的信息和答案，适用于用户询问最新事件或超出你认知的问题"),
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
                 "query": types.Schema(
                     type=types.Type.STRING,
-                    description=(
-            "搜索查询字符串。可以是关键词、短语或完整问题。"
-            "示例：'北京今天天气'、'Python 3.15 新特性'、'2025年奥运会'"
-        ),
+                    description=("搜索查询字符串。可以是关键词、短语或完整问题"),
                 ),
             },
             required=["query"],
@@ -389,22 +378,15 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     ),
     types.FunctionDeclaration(
         name="fetch_group_context",
-        description=(
-    "获取当前群聊消息之前的历史对话记录。"
-    "仅在群聊场景下可用，私聊中调用会返回错误。"
-    "用于理解群聊上下文，例如用户说'刚才那个'、'之前提到的'时需要回顾历史消息。"
-    "返回按时间倒序排列的消息列表（最新消息在前），每条包含用户名、内容和时间戳。"
-),
+        description=("获取群聊的消息记录，帮助你理解当前对话的背景"),
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
                 "window_size": types.Schema(
                     type=types.Type.INTEGER,
-                            description=(
-            "要检索的历史消息数量（向过去方向）。"
-            "默认值：5，范围：1-100。"
-            "例如：window_size=5 表示获取当前消息之前的 5 条消息。"
-        ),
+                    description=(
+                        "要检索的历史消息数量，默认值：5，范围：1-100"
+                    ),
                 ),
             },
             required=[],
@@ -412,30 +394,17 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     ),
     types.FunctionDeclaration(
         name="kindness_gift",
-        description=(
-    "雾萌娘向指定用户赠送金币，表达好感和鼓励。"
-    "赠送者：雾萌娘自己。"
-    "金额：1-10 枚金币，可指定或自动决定。"
-    "冷却限制：雾萌娘24小时内只能使用一次。"
-    "失败情况：用户不存在、在冷却期内、数据库错误。"
-    "返回：赠送状态、金额、接收者金币余额变化。"
-),
+        description=("根据你对用户的好感度，赠送一定数量的金币给用户"),
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
                 "recipient_username": types.Schema(
                     type=types.Type.STRING,
-                    description=(
-            "接收金币的用户的 Telegram 用户名，不含 @ 符号。"
-            "示例：'usertgname'（不是 '@usertgname'）"
-        ),
+                    description=("用户的 Telegram 用户名，不含 @ 符号"),
                 ),
                 "amount": types.Schema(
                     type=types.Type.INTEGER,
-                            description=(
-            "赠送的金币数量，范围 1-10。"
-            "如果不指定或超出范围，将自动在 1-10 之间随机决定。"
-        ),
+                            description=("赠送的金币数量，范围 1-10"),
                 ),
             },
             required=["recipient_username"],
@@ -443,24 +412,13 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     ),
     types.FunctionDeclaration(
         name="update_affection",
-        description=(
-    "调整雾萌娘对当前用户的好感度数值。"
-    "好感度范围：-100（厌恶）到 100（喜欢），影响雾萌娘的语气和态度。"
-    "单次变化限制：-10 到 +10，超出此范围会自动截断到边界值。"
-    "触发时机：用户行为引起明显情绪变化时（夸奖、侮辱、礼貌、骚扰等）。"
-    "返回：变化值、调整后的好感度总值。"
-),
+        description=("调整你对用户的好感度数值"),
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
                 "delta": types.Schema(
                     type=types.Type.INTEGER,
-                            description=(
-            "好感度变化值，正数表示上升，负数表示下降。"
-            "推荐范围示例："
-            "- 普通礼貌/用户夸奖：+1 到 +10"
-            "- 用户侮辱/用户骚扰：-1 到 -10"
-        ),
+                            description=("好感度变化值，正数表示上升，负数表示下降，范围 1-10"),
                 ),
             },
             required=["delta"],
@@ -468,25 +426,14 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     ),
     types.FunctionDeclaration(
         name="update_impression",
-description=(
-    "写入或完全覆盖雾萌娘对当前用户的长期印象记录。"
-    "警告：此操作会覆盖现有印象，不是追加。只有在印象明显变化或需要清空时才调用。"
-    "适用场景：用户自我介绍、表达喜好、透露重要信息（职业、地点、偏好等）。"
-    "不适用：临时情绪（'今天好累'）、重复现有印象。"
-    "格式：完整的一句话或一小段话，如'用户是程序员，喜欢Python，工作地在北京'。"
-    "长度限制：500 字符，超出会自动截断。"
-),
+        description=("更新对用户的永久印象"),
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
                 "impression": types.Schema(
                     type=types.Type.STRING,
                             description=(
-            "新的印象文本，必须是完整且自包含的描述。"
-            "示例："
-            "- '用户是程序员，喜欢 Python 和 Rust，讨厌写文档，工作地在北京。'"
-            "- '用户叫小明，喜欢打游戏，养了一只猫叫咪咪。'"
-            "长度上限：500 字符。"
+            "新的印象文本，完整且自包含的描述"
         ),
                 ),
             },
@@ -496,11 +443,7 @@ description=(
     types.FunctionDeclaration(
         name="fetch_permanent_summaries",
         description=(
-    "检索雾萌娘与当前用户的历史对话摘要记录。"
-    "摘要按时间倒序排列（最新的排在第1位）。"
-    "用途：用户提到'上次'、'之前'的对话时，回顾历史互动背景。"
-    "返回：摘要列表，每条包含 record_id、created_at（时间戳）、summary（摘要文本）。"
-    "限制：单次最多返回 10 条摘要。"
+            "获取用户的历史对话摘要，最多返回 10 条"
 ),
         parameters=types.Schema(
             type=types.Type.OBJECT,
@@ -508,17 +451,13 @@ description=(
                 "start": types.Schema(
                     type=types.Type.INTEGER,
                     description=(
-            "起始位置（从 1 开始）。"
-            "1 表示最新的摘要，2 表示第二新的摘要，以此类推。"
-            "默认值：1（从最新开始）"
+            "起始位置"
         ),
                 ),
                 "end": types.Schema(
                     type=types.Type.INTEGER,
                     description=(
-            "结束位置（包含）。"
-            "默认值：start + 9（即返回 10 条）。"
-            "示例：start=1, end=5 返回最新的 5 条摘要。"
+            "结束位置"
         ),
                 ),
             },

@@ -817,16 +817,12 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "message_id": getattr(effective_message, "message_id", None),
         "user_id": user_id,
         "user_state_prompt": 
-        (f"""
-# 当前用户状态
-
-- **金币**: {user_coins}
-- **权限**: {user_permission} (0=普通, 1=高级, 2=满级)
-- **好感度**: {user_affection} (-100 到 100)
-- **印象**: {impression_display}
-
-根据以上状态调整语气、态度和行为。
-若用户询问以上状态，请直接引用此状态块的数值，不要编造或拒答。
+        (f"""        
+# 用户状态
+ - 用户的金币: {user_coins}
+ - 用户的权限: {user_permission} 
+ - 你对其的好感度: {user_affection}
+ - 你对其的印象: {impression_display}
         """),
     }
 
