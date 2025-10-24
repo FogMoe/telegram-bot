@@ -390,7 +390,7 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     ),
     types.FunctionDeclaration(
         name="fetch_group_context",
-        description=("Fetch message history from group chat"),
+        description=("Fetch message history from group chat (group chats only)"),
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
