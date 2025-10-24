@@ -397,7 +397,7 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
                 "window_size": types.Schema(
                     type=types.Type.INTEGER,
                     description=(
-                        "Number of historical messages to retrieve. Range: 1-100"
+                        "Number of historical messages to retrieve. Range: 1 to 100"
                     ),
                 ),
             },
@@ -416,7 +416,7 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
                 ),
                 "amount": types.Schema(
                     type=types.Type.INTEGER,
-                            description=("Amount of coins to gift. Range: 1~10"),
+                            description=("Amount of coins to gift. Range: 1 to 10"),
                 ),
             },
             required=["recipient_username"],
@@ -424,13 +424,13 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     ),
     types.FunctionDeclaration(
         name="update_affection",
-        description=("Adjust your affection level towards the user"),
+        description=("Adjust your affection level towards the user (range: -100 to 100)"),
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
                 "delta": types.Schema(
                     type=types.Type.INTEGER,
-                            description=("Affection level change value. Positive numbers indicate increase, negative numbers indicate decrease. Range: -10~10"),
+                            description=("Affection level change value. Positive numbers indicate increase, negative numbers indicate decrease. Range: -10 to 10"),
                 ),
             },
             required=["delta"],
@@ -455,8 +455,8 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     types.FunctionDeclaration(
         name="fetch_permanent_summaries",
         description=(
-            "Fetch user's historical conversation summaries(up to 10, newest first) "
-            "Response includes 'total' count"
+            "Fetch user's historical conversation summaries (up to 10, newest first) "
+            "Response includes total count"
 ),
         parameters=types.Schema(
             type=types.Type.OBJECT,
