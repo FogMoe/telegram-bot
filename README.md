@@ -211,10 +211,10 @@ venv\Scripts\activate
 
 ## 📊 项目统计
 
-![GitHub stars](https://img.shields.io/github/stars/你的用户名/Multi-Functional-Telegram-Bot?style=social)
-![GitHub forks](https://img.shields.io/github/forks/你的用户名/Multi-Functional-Telegram-Bot?style=social)
-![GitHub issues](https://img.shields.io/github/issues/你的用户名/Multi-Functional-Telegram-Bot)
-![GitHub pull requests](https://img.shields.io/github/issues-pr/你的用户名/Multi-Functional-Telegram-Bot)
+![GitHub stars](https://img.shields.io/github/stars/fogmoe/telegram-bot?style=social)
+![GitHub forks](https://img.shields.io/github/forks/fogmoe/telegram-bot?style=social)
+![GitHub issues](https://img.shields.io/github/issues/fogmoe/telegram-bot)
+![GitHub pull requests](https://img.shields.io/github/issues-pr/fogmoe/telegram-bot)
 
 ---
 
