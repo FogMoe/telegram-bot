@@ -477,6 +477,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             context.bot.send_message,
             chat_id=update.effective_chat.id,
         ),
+        disable_web_page_preview=True,
     )
 
 
