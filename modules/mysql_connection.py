@@ -35,6 +35,7 @@ def insert_chat_record(conversation_id, role, content):
     cursor = connection.cursor()
 
     snapshot_created = False
+    warning_level = None
 
     # 使用参数化查询，防止SQL注入
     select_query = "SELECT messages FROM chat_records WHERE conversation_id = %s"
@@ -50,9 +51,9 @@ def insert_chat_record(conversation_id, role, content):
     else:
         messages = []
 
-    # Check if messages length exceeds 900000 characters
+    # Check if messages length exceeds thresholds
     current_payload = json.dumps(messages, ensure_ascii=False)
-    if len(current_payload) > 900000:
+    if len(current_payload) > 110000:
         if result and raw_messages:
             snapshot_value = raw_messages if isinstance(raw_messages, str) else json.dumps(messages, ensure_ascii=False)
             cursor.execute(
@@ -75,7 +76,10 @@ def insert_chat_record(conversation_id, role, content):
                 (conversation_id, conversation_id),
             )
             snapshot_created = True
+        warning_level = "overflow"
         messages = []
+    elif len(current_payload) > 100000:
+        warning_level = "near_limit"
 
     # Append new message
     messages.append({"role": role, "content": content})
@@ -92,7 +96,7 @@ def insert_chat_record(conversation_id, role, content):
     cursor.close()
     connection.close()
 
-    return snapshot_created
+    return snapshot_created, warning_level
 
 
 async def async_insert_chat_record(conversation_id, role, content):

@@ -674,6 +674,35 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message_time = effective_message.date.strftime('%Y-%m-%d %H:%M:%S') if effective_message.date else time.strftime('%Y-%m-%d %H:%M:%S')
     conversation_id = user_id
 
+    history_warning_levels_sent = set()
+
+    async def notify_history_warning(level):
+        if not level or level in history_warning_levels_sent:
+            return
+        history_warning_levels_sent.add(level)
+        if level == "near_limit":
+            warning_text = (
+                "提醒：当前会话历史记录已接近系统容量上限。\n"
+                "雾萌娘可能会在稍后自动归档较早的消息以保持体验顺畅。\n"
+                "如果希望立即整理，可以使用 /clear 清空当前历史。"
+            )
+        elif level == "overflow":
+            warning_text = (
+                "提示：为了保证会话流畅，部分较早的聊天记录已被自动归档保存。\n"
+                "当前对话不受影响，若需要查看完整历史请告诉雾萌娘。"
+            )
+        else:
+            return
+
+        await safe_send_markdown(
+            partial_send(
+                context.bot.send_message,
+                chat_id=update.effective_chat.id,
+            ),
+            warning_text,
+            logger=logger,
+        )
+
     # 如果是媒体消息（图片或贴纸），固定硬币消耗3
     if effective_message.photo or effective_message.sticker:
         coin_cost = 3
@@ -684,12 +713,12 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not user_message:
             logging.warning("收到没有文本内容的消息，忽略处理")
             return
-        if len(user_message) > 5000:
+        if len(user_message) > 4096:
             await effective_message.reply_text("消息过长，无法处理。请缩短消息长度！\nThe message is too long to process. Please shorten the message.")
             return
-        elif len(user_message) > 600:
+        elif len(user_message) > 1000:
             coin_cost = 3
-        elif len(user_message) > 300:
+        elif len(user_message) > 500:
             coin_cost = 2
         else:
             coin_cost = 1
@@ -803,15 +832,19 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # 如果是新对话，添加个人信息
     if not chat_history:
         personal_info = await process_user.async_get_user_personal_info(user_id)
-        if (personal_info):
-            personal_snapshot = await mysql_connection.async_insert_chat_record(conversation_id, 'user', personal_info)
+        if personal_info:
+            personal_snapshot, personal_warning = await mysql_connection.async_insert_chat_record(conversation_id, 'user', personal_info)
+            if personal_warning:
+                await notify_history_warning(personal_warning)
             if personal_snapshot:
                 summary.schedule_summary_generation(conversation_id)
             # 重新获取更新后的聊天历史
             chat_history = await mysql_connection.async_get_chat_history(conversation_id)
 
     # 异步插入用户消息
-    user_snapshot_created = await mysql_connection.async_insert_chat_record(conversation_id, 'user', formatted_message)
+    user_snapshot_created, user_storage_warning = await mysql_connection.async_insert_chat_record(conversation_id, 'user', formatted_message)
+    if user_storage_warning:
+        await notify_history_warning(user_storage_warning)
     if user_snapshot_created:
         summary.schedule_summary_generation(conversation_id)
     
@@ -868,12 +901,16 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 },
                 ensure_ascii=False,
             )
-        tool_snapshot_created = await mysql_connection.async_insert_chat_record(conversation_id, 'tool', tool_content)
+        tool_snapshot_created, tool_storage_warning = await mysql_connection.async_insert_chat_record(conversation_id, 'tool', tool_content)
+        if tool_storage_warning:
+            await notify_history_warning(tool_storage_warning)
         if tool_snapshot_created:
             summary.schedule_summary_generation(conversation_id)
 
     # 异步插入AI回复到聊天记录
-    assistant_snapshot_created = await mysql_connection.async_insert_chat_record(conversation_id, 'assistant', assistant_message)
+    assistant_snapshot_created, assistant_storage_warning = await mysql_connection.async_insert_chat_record(conversation_id, 'assistant', assistant_message)
+    if assistant_storage_warning:
+        await notify_history_warning(assistant_storage_warning)
     if assistant_snapshot_created:
         summary.schedule_summary_generation(conversation_id)
 

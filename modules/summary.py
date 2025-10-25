@@ -15,7 +15,7 @@ APIKEY=config.GEMINI_API_KEY
 
 SUMMARY_MODEL = "gemini-flash-latest"
 SUMMARY_FALLBACK_MODEL = "gemini-flash-lite-latest"  # 失败重试时使用的降级模型
-SUMMARY_MAX_CHARS = 10_000
+SUMMARY_MAX_CHARS = 8000
 SUMMARY_RETRY_LIMIT = 3
 SUMMARY_SYSTEM_PROMPT = (
     "你是雾萌娘的对话归档整理员，负责撰写客观、中立的会话摘要。"
@@ -82,7 +82,7 @@ def _generate_summary(user_id: int, snapshot_text: str) -> Optional[str]:
 
     prompt = (
         "你是一名聊天记录整理助手。接下来是一段雾萌娘与用户的完整对话历史（JSON列表格式）。"
-        "请提炼要点，提供一份概述，控制在10000个字符以内，可以分段或列举重点。"
+        "请提炼要点，提供一份概述，控制在8000个字符以内，可以分段或列举重点。"
         "请覆盖：对话背景、重要事件或需求、情绪氛围、需要跟进的事项。"
         "如果内容无有效对话，请返回\"暂无摘要\"。\n\n"
         f"对话内容：\n{snapshot_text}"
@@ -95,7 +95,7 @@ def _generate_summary(user_id: int, snapshot_text: str) -> Optional[str]:
     config = types.GenerateContentConfig(
         system_instruction=SUMMARY_SYSTEM_PROMPT,
         temperature=0.2,
-        max_output_tokens=8192,
+        max_output_tokens=7680,
     )
 
     # 首先尝试使用主模型

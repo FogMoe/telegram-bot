@@ -462,28 +462,19 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
     types.FunctionDeclaration(
         name="fetch_permanent_summaries",
         description=(
-            "Fetch user's historical conversation summaries (newest first)"
-),
+            "Fetch user's historical conversation summaries (newest on top, max 10 results per request)"),
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
                 "start": types.Schema(
                     type=types.Type.INTEGER,
-                    description=(
-            "Start position (1-based, inclusive)"
-        ),
-                    default=1,
-                    minimum=1,
-                    maximum=10
+                    description=("Start position (inclusive)"),
+                    default=1
                 ),
                 "end": types.Schema(
                     type=types.Type.INTEGER,
-                    description=(
-            "End position (1-based, inclusive)"
-        ),
-                    default=3,
-                    minimum=1,
-                    maximum=10
+                    description=("End position (inclusive)"),
+                    default=2
                 ),
             },
             required=[],
