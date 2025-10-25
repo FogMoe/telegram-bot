@@ -39,6 +39,9 @@
 ### fetch_url
  - Call this tool to fetch and read webpage content in real-time
 
+### execute_python_code
+ - Call this tool when you or the user needs to run Python code for complex tasks, like calculations, data processing, or testing
+
 # Conversation Rules
 ## Response Guidelines
  - Do not use any Markdown formatting unless the user explicitly requests it (use Telegram MarkdownV2)

@@ -17,11 +17,14 @@ import group_chat_history
 import random
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
+import base64
 
 import mysql_connection
 import process_user
 
 SERPAPI_API_KEY = getattr(config, "SERPAPI_API_KEY", "")
+JUDGE0_API_URL = getattr(config, "JUDGE0_API_URL", "")
+JUDGE0_API_KEY = getattr(config, "JUDGE0_API_KEY", "")
 
 _REQUEST_CONTEXT: ContextVar[Dict[str, object]] = ContextVar("tool_request_context", default={})
 
@@ -149,6 +152,71 @@ def fetch_url_tool(
         "status_code": response.status_code,
         "content_type": response.headers.get("Content-Type"),
         "content": response.text,
+    }
+
+
+def execute_python_code_tool(
+    source_code: str,
+    stdin: Optional[str] = None,
+    **kwargs,
+) -> dict:
+    """Execute Python code remotely via Judge0."""
+    if not (source_code and source_code.strip()):
+        return {"error": "Source code is required"}
+
+    base_url = (JUDGE0_API_URL or "").strip()
+    if not base_url:
+        return {"error": "Judge0 API URL is not configured"}
+
+    request_url = f"{base_url.rstrip('/')}/submissions?base64_encoded=true&wait=true"
+
+    headers = {"Content-Type": "application/json"}
+    if JUDGE0_API_KEY:
+        headers["X-Auth-Token"] = JUDGE0_API_KEY
+
+    try:
+        payload: Dict[str, object] = {
+            "language_id": 71,
+            "source_code": base64.b64encode(source_code.encode("utf-8")).decode("ascii"),
+        }
+        if stdin:
+            payload["stdin"] = base64.b64encode(stdin.encode("utf-8")).decode("ascii")
+
+        response = requests.post(request_url, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+    except requests.HTTPError as exc:
+        detail = exc.response.text[:500] if exc.response is not None else str(exc)
+        return {
+            "error": "Submission failed",
+            "status_code": getattr(exc.response, "status_code", None),
+            "details": detail,
+        }
+    except requests.RequestException as exc:
+        logging.exception("Request failed: %s", exc)
+        return {"error": f"Failed to contact: {exc}"}
+
+    def _decode_field(value: Optional[str]) -> Optional[str]:
+        if value in (None, ""):
+            return ""
+        try:
+            return base64.b64decode(value).decode("utf-8", errors="replace")
+        except Exception:
+            logging.warning("Failed to decode Judge0 field")
+            return value
+
+    status_info = result.get("status") or {}
+
+    return {
+        "token": result.get("token"),
+        "status_id": status_info.get("id"),
+        "status_description": status_info.get("description"),
+        "stdout": _decode_field(result.get("stdout")),
+        "stderr": _decode_field(result.get("stderr")),
+        "compile_output": _decode_field(result.get("compile_output")),
+        "message": result.get("message"),
+        "time": result.get("time"),
+        "memory": result.get("memory"),
     }
 
 
@@ -405,6 +473,7 @@ GEMINI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
     "fetch_group_context": fetch_group_context_tool,
     "kindness_gift": kindness_gift_tool,
     "fetch_url": fetch_url_tool,
+    "execute_python_code": execute_python_code_tool,
     "update_affection": update_affection_tool,
     "update_impression": update_impression_tool,
     "fetch_permanent_summaries": fetch_permanent_summaries_tool,
@@ -464,6 +533,24 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
                 ),
             },
             required=["url"],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="execute_python_code",
+        description=("Run Python code remotely and return its output"),
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "source_code": types.Schema(
+                    type=types.Type.STRING,
+                    description=("Python source code snippet to execute"),
+                ),
+                "stdin": types.Schema(
+                    type=types.Type.STRING,
+                    description=("Optional standard input for the program"),
+                ),
+            },
+            required=["source_code"],
         ),
     ),
     types.FunctionDeclaration(
@@ -543,6 +630,7 @@ __all__ = [
     "set_tool_request_context",
     "clear_tool_request_context",
     "fetch_url_tool",
+    "execute_python_code_tool",
     "kindness_gift_tool",
     "update_affection_tool",
     "update_impression_tool",
