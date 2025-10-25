@@ -24,25 +24,25 @@ async def bribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     args: Sequence[str] = context.args or []
     if not args:
-        await _reply(update, "用法：/bribe <金币数量> （每1000金币随机提升1-10好感度）")
+        await _reply(update, "用法：/bribe <金币数量> （每100金币随机提升1-10好感度）")
         return
 
     try:
         coins_to_spend = int(args[0])
     except ValueError:
-        await _reply(update, "请输入有效的金币数量，例如 /bribe 3000")
+        await _reply(update, "请输入有效的金币数量，例如 /bribe 300")
         return
 
     if coins_to_spend <= 0:
         await _reply(update, "金币数量必须为正整数哦。")
         return
 
-    if coins_to_spend < 1000:
-        await _reply(update, "至少需要 1000 枚金币才能打动雾萌娘喵！")
+    if coins_to_spend < 100:
+        await _reply(update, "至少需要 100 枚金币才能打动雾萌娘喵！")
         return
 
-    if coins_to_spend % 1000 != 0:
-        await _reply(update, "为了公平起见，金币数量必须是 1000 的整数倍。")
+    if coins_to_spend % 100 != 0:
+        await _reply(update, "为了公平起见，金币数量必须是 100 的整数倍。")
         return
 
     affection_before = process_user.get_user_affection(user_id)
@@ -78,7 +78,7 @@ async def bribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         cursor.close()
         connection.close()
 
-    batches = coins_to_spend // 1000
+    batches = coins_to_spend // 100
     total_gain = 0
     current_affection = affection_before
 

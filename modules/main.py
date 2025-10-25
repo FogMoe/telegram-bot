@@ -730,7 +730,14 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         impression_display = "未记录"
 
-    chat_type_label = "Group" if update.effective_chat.type in ("group", "supergroup") else "Private"
+    if update.effective_chat.type in ("group", "supergroup"):
+        group_title = (update.effective_chat.title or "").strip()
+        if group_title:
+            chat_type_label = f"Group: {group_title}"
+        else:
+            chat_type_label = "Group"
+    else:
+        chat_type_label = "Private"
     prefix = f"[{chat_type_label}] "
 
     # 如果是媒体消息，进行下载、AI分析、格式化描述
@@ -827,8 +834,8 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # User Status
 ## Coins
  - **User's coins**: {user_coins}
- - Typically, users consume 1-3 coins per conversation with you
- - User's assets, used for conversation consumption or utilizing Telegram Bot features
+ - User's consumption: 1 to 3 coins per message (system-managed)
+ - Used for conversations and bot features (system handles this automatically)
 
 ## Permission Level
  - **User's permission**: {user_permission} 

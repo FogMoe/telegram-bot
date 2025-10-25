@@ -222,7 +222,8 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
             messages=filtered_messages,
             tools=tools,
             tool_choice="auto",
-            temperature=1.0
+            temperature=1.0,
+            max_tokens=4096,
         )
         
         assistant_message = response.choices[0].message
@@ -334,7 +335,8 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
                 messages=filtered_messages,
                 tools=tools,
                 tool_choice="auto",
-                temperature=1.0
+                temperature=1.0,
+                max_tokens=4096,
             )
             
             assistant_message = completion.choices[0].message
@@ -454,12 +456,16 @@ def get_ai_response_google(messages, user_id: int, tool_context: Optional[Dict[s
             function_calling_config=types.FunctionCallingConfig(mode="AUTO")
         ),
         safety_settings=safety_settings,
+        max_output_tokens=4096,
+        thinking_config=types.ThinkingConfig(
+            thinking_budget=2048,
+        ),
     )
 
     try:
         return _generate_gemini_response(
             client=client,
-            model_name="gemini-flash-latest",
+            model_name="gemini-2.5-flash",
             contents=contents,
             generation_config_kwargs=generation_config_kwargs,
             temperature=1.0,
@@ -467,17 +473,17 @@ def get_ai_response_google(messages, user_id: int, tool_context: Optional[Dict[s
     except Exception as e:
         error_str = str(e)
         if 'RESOURCE_EXHAUSTED' in error_str:
-            logging.warning(f"gemini-flash资源耗尽错误，尝试使用 gemini-flash-lite 模型重试: {error_str}")
+            logging.warning(f"gemini-2.5-flash资源耗尽错误，尝试使用 gemini-2.5-pro 模型重试: {error_str}")
             try:
                 return _generate_gemini_response(
                     client=client,
-                    model_name="gemini-flash-lite-latest",
+                    model_name="gemini-2.5-pro",
                     contents=contents,
                     generation_config_kwargs=generation_config_kwargs,
                     temperature=1.0,
                 )
             except Exception as retry_e:
-                logging.error(f"使用 gemini-flash-lite 重试失败: {str(retry_e)}")
+                logging.error(f"使用 gemini-2.5-pro 重试失败: {str(retry_e)}")
                 raise retry_e
         if 'SAFETY' in error_str and 'blocked' in error_str:
             logging.warning("Gemini safety block triggered: %s", error_str)
