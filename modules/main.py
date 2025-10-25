@@ -485,13 +485,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def github_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send repository link with Markdown formatting."""
     await safe_send_markdown(
-        partial_send(
+        update.message.reply_text,
+        "**Open Source**:\n"
+        "[AGPL3.0](https://github.com/FogMoe/telegram-bot)",
+        logger=logger,
+        fallback_send=partial_send(
             context.bot.send_message,
             chat_id=update.effective_chat.id,
         ),
-        "**Open Source**:"
-        "[AGPL3.0](https://github.com/FogMoe/telegram-bot)",
-        logger=logger,
     )
 
 
