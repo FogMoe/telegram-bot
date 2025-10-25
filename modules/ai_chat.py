@@ -36,7 +36,7 @@ AIResponse = Tuple[str, List[ToolLog]]
 
 
 def _convert_gemini_tools_to_openai_format() -> list:
-    """将 Gemini 工具定义转换为 OpenAI/ZhipuAI 格式"""
+    """将 Gemini 工具定义转换为 OpenAI/ZhipuAI 格式(因格式没有统一暂不可用)"""
     tools = []
     for func_decl in GEMINI_FUNCTION_DECLARATIONS:
         tools.append({
@@ -73,14 +73,6 @@ class APIRateLimiter:
 
 # 创建全局限速器实例
 translate_limiter = APIRateLimiter(max_requests=10, time_window=60)
-
-
-# def add_prompt_user_extra_info(user_id: int):
-#     """为用户添加系统提示和额外信息"""
-#     user_coins = process_user.get_user_coins(user_id)
-#     user_permissions = process_user.get_user_permission(user_id)
-#     return "\n## 状态信息 - 用户硬币数量: {user_coins}，权限等级: {user_permissions}。".format(user_coins=user_coins, user_permissions=user_permissions)
-
 
 async def translate_text(text: str) -> str:
     """专门用于文本翻译的AI函数（异步版本）"""
