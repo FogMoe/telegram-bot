@@ -69,7 +69,7 @@ def google_search_tool(query: str) -> dict:
 
 
 def fetch_group_context_tool(
-    window_size: int = 5,
+    window_size: int = 10,
     **kwargs,
 ) -> dict:
     """Retrieve recent messages before the current group chat message."""
@@ -86,7 +86,7 @@ def fetch_group_context_tool(
     try:
         window_size = max(1, min(int(window_size), 100))
     except (TypeError, ValueError):
-        window_size = 5
+        window_size = 10
 
     around_message_id = current_message_id
 
@@ -394,7 +394,7 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
                     description=(
                         "Number of historical messages to retrieve"
                     ),
-                    default=5,
+                    default=10,
                     minimum=1,
                     maximum=100
                 ),
