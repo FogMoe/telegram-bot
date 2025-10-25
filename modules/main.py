@@ -55,6 +55,23 @@ import bribe  # 新增贿赂模块
 logger = logging.getLogger(__name__)
 
 
+_BOT_ID: int | None = None
+_BOT_USERNAME: str = "FogMoeBot"
+
+
+def _cache_bot_identity(bot_user: telegram.User) -> None:
+    """Cache bot identity globally and notify group history module."""
+    global _BOT_ID, _BOT_USERNAME
+    _BOT_ID = bot_user.id
+    _BOT_USERNAME = bot_user.username or "FogMoeBot"
+    group_chat_history.set_bot_identity(_BOT_ID, _BOT_USERNAME)
+
+
+async def _post_init(application) -> None:
+    bot_user = await application.bot.get_me()
+    _cache_bot_identity(bot_user)
+
+
 class RateLimiter:
     def __init__(self, max_calls: int, time_window: float):
         self.max_calls = max_calls
@@ -663,11 +680,17 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
     # 如果聊天是群组，则只对包含触发词时进行回复，
     if update.effective_chat.type in ("group", "supergroup"):
-        bot = await context.bot.get_me()
+        if _BOT_ID is None:
+            bot_user = await context.bot.get_me()
+            _cache_bot_identity(bot_user)
         # 记录群聊上下文
         await group_chat_history.log_group_message(effective_message, update.effective_chat.id)
         # 如果消息是回复给机器人的，则直接处理
-        if effective_message.reply_to_message and effective_message.reply_to_message.from_user.id == bot.id:
+        if (
+            effective_message.reply_to_message
+            and _BOT_ID is not None
+            and effective_message.reply_to_message.from_user.id == _BOT_ID
+        ):
             pass
         else:
             text = effective_message.text if effective_message.text else ""
@@ -979,7 +1002,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         summary.schedule_summary_generation(conversation_id)
 
     # 发送AI回复
-    await safe_send_markdown(
+    sent_messages = await safe_send_markdown(
         effective_message.reply_text,
         assistant_message,
         logger=logger,
@@ -988,6 +1011,12 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             chat_id=update.effective_chat.id,
         ),
     )
+
+    if update.effective_chat.type in ("group", "supergroup"):
+        for sent_message in sent_messages:
+            if sent_message is None:
+                continue
+            await group_chat_history.log_group_message(sent_message, update.effective_chat.id)
 
 
 last_rich_query_time = 0  # 新增：记录上次查询富豪榜的时间
@@ -1231,6 +1260,7 @@ if __name__ == '__main__':
     application = ApplicationBuilder() \
         .token(config.TELEGRAM_BOT_TOKEN) \
         .concurrent_updates(True) \
+        .post_init(_post_init) \
         .build()
 
     application.add_error_handler(error_handler)

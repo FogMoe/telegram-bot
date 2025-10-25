@@ -53,7 +53,7 @@ def insert_chat_record(conversation_id, role, content):
 
     # Check if messages length exceeds thresholds
     current_payload = json.dumps(messages, ensure_ascii=False)
-    if len(current_payload) > 110000:
+    if len(current_payload) > 120000:
         if result and raw_messages:
             snapshot_value = raw_messages if isinstance(raw_messages, str) else json.dumps(messages, ensure_ascii=False)
             cursor.execute(
@@ -78,7 +78,7 @@ def insert_chat_record(conversation_id, role, content):
             snapshot_created = True
         warning_level = "overflow"
         messages = []
-    elif len(current_payload) > 100000:
+    elif len(current_payload) > 110000:
         warning_level = "near_limit"
 
     # Append new message

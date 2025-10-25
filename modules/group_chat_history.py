@@ -10,6 +10,17 @@ from typing import Dict, List, Optional, Tuple
 
 from mysql_connection import create_connection, db_executor
 
+_bot_user_id: Optional[int] = None
+_bot_display_name: str = "FogMoeBot"
+
+
+def set_bot_identity(user_id: int, display_name: Optional[str] = None) -> None:
+    """Register the bot's Telegram user id for downstream lookups."""
+    global _bot_user_id, _bot_display_name
+    _bot_user_id = user_id
+    if display_name:
+        _bot_display_name = display_name
+
 
 async def log_group_message(message, group_id: int) -> None:
     """Persist a group chat message asynchronously."""
@@ -166,7 +177,11 @@ def _sync_get_group_context(group_id: int, around_message_id: Optional[int], win
                 "message_id": row["message_id"],
                 "user_id": row["user_id"],
                 "message_type": row["message_type"],
-                "username": row.get("username"),
+                "username": (
+                    _bot_display_name
+                    if _bot_user_id is not None and row["user_id"] == _bot_user_id
+                    else row.get("username")
+                ),
                 "content": (
                     row.get("content", "")
                     if row["message_type"] == "text"
@@ -184,4 +199,9 @@ def _sync_get_group_context(group_id: int, around_message_id: Optional[int], win
         connection.close()
 
 
-__all__ = ["log_group_message", "get_group_context", "async_get_group_context"]
+__all__ = [
+    "log_group_message",
+    "get_group_context",
+    "async_get_group_context",
+    "set_bot_identity",
+]

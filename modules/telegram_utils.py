@@ -53,7 +53,7 @@ async def safe_send_markdown(
     logger: logging.Logger = logging.getLogger(__name__),
     fallback_send: Optional[AsyncSendFunc] = None,
     **kwargs: Any,
-) -> None:
+) -> list[Any]:
     """Send text using Telegram Markdown with graceful fallbacks.
 
     Args:
@@ -62,6 +62,9 @@ async def safe_send_markdown(
         parse_mode: Telegram parse mode to attempt first.
         logger: Logger for warning messages.
         **kwargs: Additional keyword arguments forwarded to ``send_func``.
+
+    Returns:
+        A list of Telegram API responses, one per sent chunk.
     """
 
     def _bad_request_info(error: telegram.error.BadRequest) -> dict:
@@ -80,7 +83,7 @@ async def safe_send_markdown(
         *,
         mode: str | None,
         send_kwargs: dict[str, Any],
-    ) -> None:
+    ) -> Any:
         current_func = target
         attempted_fallback = False
 
@@ -92,11 +95,11 @@ async def safe_send_markdown(
                 call_kwargs.pop("quote", None)
             try:
                 if mode is not None:
-                    await current_func(payload, parse_mode=mode, **call_kwargs)
+                    result = await current_func(payload, parse_mode=mode, **call_kwargs)
                 else:
                     call_kwargs.pop("parse_mode", None)
-                    await current_func(payload, **call_kwargs)
-                return
+                    result = await current_func(payload, **call_kwargs)
+                return result
             except telegram.error.BadRequest as exc:
                 info = _bad_request_info(exc)
 
@@ -114,15 +117,14 @@ async def safe_send_markdown(
                     continue
                 raise
 
-    async def _send_single_chunk(chunk_text: str, chunk_kwargs: dict[str, Any]) -> None:
+    async def _send_single_chunk(chunk_text: str, chunk_kwargs: dict[str, Any]) -> Any:
         try:
-            await _attempt_send(
+            return await _attempt_send(
                 send_func,
                 chunk_text,
                 mode=parse_mode,
                 send_kwargs=chunk_kwargs,
             )
-            return
         except telegram.error.BadRequest as exc:
             if logger:
                 logger.warning("Markdown send failed (%s).", exc)
@@ -134,13 +136,12 @@ async def safe_send_markdown(
                     max_line_length=None,
                     normalize_whitespace=False,
                 )
-                await _attempt_send(
+                return await _attempt_send(
                     send_func,
                     converted,
                     mode=ParseMode.MARKDOWN_V2,
                     send_kwargs=chunk_kwargs,
                 )
-                return
             except telegram.error.BadRequest as conv_exc:
                 if logger:
                     logger.warning(
@@ -148,7 +149,7 @@ async def safe_send_markdown(
                         conv_exc,
                     )
 
-        await _attempt_send(
+        return await _attempt_send(
             send_func,
             chunk_text,
             mode=None,
@@ -157,13 +158,17 @@ async def safe_send_markdown(
 
     chunks = _split_text_segments(text)
 
+    results: list[Any] = []
     for index, chunk in enumerate(chunks):
         chunk_kwargs = dict(kwargs)
         if index > 0:
             chunk_kwargs.pop("reply_to_message_id", None)
             chunk_kwargs.pop("reply_to_message", None)
             chunk_kwargs.pop("quote", None)
-        await _send_single_chunk(chunk, chunk_kwargs)
+        result = await _send_single_chunk(chunk, chunk_kwargs)
+        results.append(result)
+
+    return results
 
 
 def partial_send(bot_method: AsyncSendFunc, /, *args: Any, **kwargs: Any) -> AsyncSendFunc:
