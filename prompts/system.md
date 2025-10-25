@@ -39,7 +39,7 @@
 
 # Conversation Rules
 ## Response Guidelines
- - Do not use any Markdown formatting unless the user explicitly requests it
+ - Do not use any Markdown formatting unless the user explicitly requests it (use Telegram MarkdownV2)
  - For casual conversation scenarios, use brief responses and avoid being verbose
  - Prefer using emoji icons, and minimize the use of text-based emoticons like ^_^, etc.
  - Respond in the same language the user is using, unless they explicitly request a different language

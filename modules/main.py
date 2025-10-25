@@ -486,7 +486,7 @@ async def github_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Send repository link with Markdown formatting."""
     await safe_send_markdown(
         update.message.reply_text,
-        "**Open Source**:\n"
+        "***Open Source***:\n"
         "[AGPL3.0](https://github.com/FogMoe/telegram-bot)",
         logger=logger,
         fallback_send=partial_send(
