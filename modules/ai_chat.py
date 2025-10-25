@@ -208,8 +208,10 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
         "content": _compose_system_prompt(tool_context),
     }
     
-    # 过滤掉 content 为 null 的消息
-    filtered_messages = [msg for msg in messages if msg.get("content") is not None]
+    # 过滤掉完全空的消息，但保留带 tool_calls 的助手消息
+    filtered_messages = [
+        msg for msg in messages if msg.get("content") is not None or msg.get("tool_calls")
+    ]
     filtered_messages.insert(0, system_message)
 
     last_tool_payload = None
@@ -267,6 +269,13 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
                 logging.error(f"ZhipuAI 工具参数解析失败: {e}")
                 function_args = {}
             
+            tool_logs.append({
+                "type": "assistant_tool_call",
+                "tool_name": function_name,
+                "arguments": function_args,
+                "tool_call_id": getattr(tool_call, "id", None),
+            })
+
             # 执行工具
             handler = GEMINI_TOOL_HANDLERS.get(function_name)
             if handler:
@@ -294,9 +303,11 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
             })
             last_tool_payload = (function_name, tool_result)
             tool_logs.append({
+                "type": "tool_result",
                 "tool_name": function_name,
                 "arguments": function_args,
                 "result": tool_result,
+                "tool_call_id": getattr(tool_call, "id", None),
             })
 
     logging.warning("ZhipuAI 工具调用次数超限（10轮）")
@@ -320,8 +331,10 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
         "content": _compose_system_prompt(tool_context)
     }
     
-    # 过滤掉 content 为 null 的消息
-    filtered_messages = [msg for msg in messages if msg.get("content") is not None]
+    # 过滤掉完全空的消息，但保留带 tool_calls 的助手消息
+    filtered_messages = [
+        msg for msg in messages if msg.get("content") is not None or msg.get("tool_calls")
+    ]
     filtered_messages.insert(0, system_message)
 
     last_tool_payload = None
@@ -368,14 +381,21 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
             # 执行所有工具调用
             for tool_call in tool_calls:
                 function_name = tool_call.function.name
-                
+
                 try:
                     raw_args = tool_call.function.arguments or "{}"
                     function_args = json.loads(raw_args)
                 except json.JSONDecodeError as e:
                     logging.error(f"Azure 工具参数解析失败: {e}")
                     function_args = {}
-                
+
+                tool_logs.append({
+                    "type": "assistant_tool_call",
+                    "tool_name": function_name,
+                    "arguments": function_args,
+                    "tool_call_id": getattr(tool_call, "id", None),
+                })
+
                 # 执行工具
                 handler = GEMINI_TOOL_HANDLERS.get(function_name)
                 if handler:
@@ -403,9 +423,11 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
                 })
                 last_tool_payload = (function_name, tool_result)
                 tool_logs.append({
+                    "type": "tool_result",
                     "tool_name": function_name,
                     "arguments": function_args,
                     "result": tool_result,
+                    "tool_call_id": getattr(tool_call, "id", None),
                 })
         
         logging.warning("Azure 工具调用次数超限（10轮）")
@@ -548,7 +570,57 @@ def _build_gemini_contents(messages):
     for message in messages:
         role = message.get("role")
         content = message.get("content")
-        if content is None or role == "system":
+        if role == "system":
+            continue
+
+        if role == "assistant" and message.get("tool_calls"):
+            parts = []
+            for call in message.get("tool_calls", []):
+                function_info = call.get("function") or {}
+                args_str = function_info.get("arguments") or "{}"
+                try:
+                    call_args = json.loads(args_str)
+                except json.JSONDecodeError:
+                    call_args = {}
+                fc_kwargs = {
+                    "name": function_info.get("name"),
+                    "args": call_args,
+                }
+                if call.get("id"):
+                    fc_kwargs["id"] = call.get("id")
+                try:
+                    parts.append(types.Part(function_call=FunctionCall(**fc_kwargs)))
+                except Exception as exc:
+                    logging.warning("Failed to rebuild Gemini function call: %s", exc)
+            if parts:
+                contents.append(types.Content(role="model", parts=parts))
+            continue
+
+        if role == "tool":
+            response_text = content or ""
+            try:
+                response_payload = json.loads(response_text) if response_text else {}
+            except json.JSONDecodeError:
+                response_payload = {"result": response_text}
+
+            fr_kwargs = {
+                "name": message.get("name") or "tool_response",
+                "response": response_payload,
+            }
+            if message.get("tool_call_id"):
+                fr_kwargs["id"] = message["tool_call_id"]
+            try:
+                contents.append(
+                    types.Content(
+                        role="tool",
+                        parts=[types.Part(function_response=FunctionResponse(**fr_kwargs))]
+                    )
+                )
+            except Exception as exc:
+                logging.warning("Failed to rebuild Gemini function response: %s", exc)
+            continue
+
+        if content is None:
             continue
 
         if not isinstance(content, str):
@@ -623,6 +695,13 @@ def _generate_gemini_response(
             raw_args = {}
         call_args = dict(raw_args)
 
+        tool_logs.append({
+            "type": "assistant_tool_call",
+            "tool_name": tool_name,
+            "arguments": call_args,
+            "tool_call_id": getattr(function_call, "id", None),
+        })
+
         try:
             tool_result = handler(**call_args)
         except TypeError as exc:
@@ -673,9 +752,11 @@ def _generate_gemini_response(
             )
         )
         tool_logs.append({
+            "type": "tool_result",
             "tool_name": tool_name,
             "arguments": call_args,
             "result": tool_result,
+            "tool_call_id": getattr(function_call, "id", None),
         })
 
 

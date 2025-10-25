@@ -82,7 +82,12 @@ def insert_chat_record(conversation_id, role, content):
         warning_level = "near_limit"
 
     # Append new message
-    messages.append({"role": role, "content": content})
+    if isinstance(content, dict) and content.get("role"):
+        message_entry = content
+    else:
+        message_entry = {"role": role, "content": content}
+
+    messages.append(message_entry)
 
     # Insert or update the record
     if result:

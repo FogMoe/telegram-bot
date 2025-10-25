@@ -905,19 +905,68 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     assistant_message, tool_logs = await ai_chat.get_ai_response(chat_history_for_ai, user_id, tool_context=tool_context)
 
+    pending_tool_call_ids = []
     for tool_log in tool_logs:
-        try:
-            tool_content = json.dumps(tool_log, ensure_ascii=False)
-        except TypeError:
-            tool_content = json.dumps(
-                {
-                    "tool_name": tool_log.get("tool_name"),
-                    "arguments": tool_log.get("arguments"),
-                    "result": str(tool_log.get("result")),
-                },
-                ensure_ascii=False,
+        entry_type = tool_log.get("type", "tool_result")
+        tool_call_id = tool_log.get("tool_call_id")
+        if not tool_call_id:
+            if entry_type == "tool_result" and pending_tool_call_ids:
+                tool_call_id = pending_tool_call_ids.pop(0)
+            else:
+                tool_call_id = f"auto_{int(time.time() * 1000)}"
+        if entry_type == "assistant_tool_call":
+            pending_tool_call_ids.append(tool_call_id)
+            tool_log["tool_call_id"] = tool_call_id
+
+        if entry_type == "assistant_tool_call":
+            arguments = tool_log.get("arguments") or {}
+            try:
+                arguments_json = json.dumps(arguments, ensure_ascii=False)
+            except TypeError:
+                arguments_json = json.dumps({}, ensure_ascii=False)
+
+            assistant_call_message = {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_log.get("tool_name"),
+                            "arguments": arguments_json,
+                        },
+                    }
+                ],
+            }
+
+            tool_snapshot_created, tool_storage_warning = await mysql_connection.async_insert_chat_record(
+                conversation_id,
+                "assistant",
+                assistant_call_message,
             )
-        tool_snapshot_created, tool_storage_warning = await mysql_connection.async_insert_chat_record(conversation_id, 'tool', tool_content)
+        else:
+            if pending_tool_call_ids and pending_tool_call_ids[0] == tool_call_id:
+                pending_tool_call_ids.pop(0)
+            tool_result = tool_log.get("result")
+            try:
+                tool_result_str = json.dumps(tool_result, ensure_ascii=False, default=str)
+            except TypeError:
+                tool_result_str = str(tool_result)
+
+            tool_message = {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": tool_log.get("tool_name"),
+                "content": tool_result_str,
+            }
+
+            tool_snapshot_created, tool_storage_warning = await mysql_connection.async_insert_chat_record(
+                conversation_id,
+                "tool",
+                tool_message,
+            )
+
         if tool_storage_warning:
             await notify_history_warning(tool_storage_warning)
         if tool_snapshot_created:
