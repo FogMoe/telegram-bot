@@ -790,7 +790,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if effective_message.reply_to_message:
             quoted_message = effective_message.reply_to_message.text
             quoted_user = effective_message.reply_to_message.from_user.username or "EmptyUsername"  # 引用消息的用户名也需要处理
-            formatted_message = f"""Replying to @{quoted_user}: {quoted_message}
+            formatted_message = f"""> Replying to @{quoted_user}: {quoted_message}
              
             {prefix}{message_time} @{user_name} said: {user_message}
             """
