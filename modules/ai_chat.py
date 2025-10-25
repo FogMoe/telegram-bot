@@ -35,18 +35,100 @@ ToolLog = Dict[str, Any]
 AIResponse = Tuple[str, List[ToolLog]]
 
 
-def _convert_gemini_tools_to_openai_format() -> list:
+def _enum_value(value: Any) -> Any:
+    """Return the raw value for IntEnum/Enum or the object itself."""
+    if hasattr(value, "value"):
+        raw = value.value
+        if isinstance(raw, str):
+            return raw.lower()
+        return raw
+    return value
+
+
+def _schema_to_plain(schema: Any) -> Dict[str, Any]:
+    """
+    Convert google.genai.types.Schema into a plain JSON-serializable dict that
+    matches the OpenAI function-calling specification.
+    """
+    if schema is None:
+        return {"type": "object", "properties": {}}
+
+    if isinstance(schema, dict):
+        return {key: _schema_to_plain(val) for key, val in schema.items()}
+
+    if isinstance(schema, list):
+        return [_schema_to_plain(item) for item in schema]
+
+    if not hasattr(schema, "__dict__"):
+        return schema
+
+    result: Dict[str, Any] = {}
+    schema_type = getattr(schema, "type", None)
+    if schema_type is not None:
+        result["type"] = _enum_value(schema_type)
+
+    description = getattr(schema, "description", None)
+    if description:
+        result["description"] = description
+
+    default = getattr(schema, "default", None)
+    if default not in (None, ""):
+        result["default"] = default
+
+    enum_values = getattr(schema, "enum", None)
+    if enum_values:
+        result["enum"] = list(enum_values)
+
+    minimum = getattr(schema, "minimum", None)
+    if minimum is not None:
+        result["minimum"] = minimum
+
+    maximum = getattr(schema, "maximum", None)
+    if maximum is not None:
+        result["maximum"] = maximum
+
+    multiple_of = getattr(schema, "multiple_of", None)
+    if multiple_of is not None:
+        result["multipleOf"] = multiple_of
+
+    pattern = getattr(schema, "pattern", None)
+    if pattern:
+        result["pattern"] = pattern
+
+    properties = getattr(schema, "properties", None)
+    if properties:
+        result["properties"] = {
+            key: _schema_to_plain(val)
+            for key, val in properties.items()
+        }
+    elif "properties" not in result and result.get("type") == "object":
+        result["properties"] = {}
+
+    required = getattr(schema, "required", None)
+    if required:
+        result["required"] = list(required)
+
+    items = getattr(schema, "items", None)
+    if items is not None:
+        result["items"] = _schema_to_plain(items)
+
+    return result
+
+
+def _convert_gemini_tools_to_openai_format() -> List[Dict[str, Any]]:
     """将 Gemini 工具定义转换为 OpenAI/Zai 兼容格式"""
-    tools = []
+    tools: List[Dict[str, Any]] = []
     for func_decl in GEMINI_FUNCTION_DECLARATIONS:
-        tools.append({
+        parameters = _schema_to_plain(getattr(func_decl, "parameters", None))
+        tool_spec = {
             "type": "function",
             "function": {
                 "name": func_decl.name,
-                "description": func_decl.description,
-                "parameters": func_decl.parameters
-            }
-        })
+                "description": getattr(func_decl, "description", ""),
+                "parameters": parameters,
+            },
+        }
+        tools.append(tool_spec)
     return tools
 
 SYSTEM_PROMPT = config.SYSTEM_PROMPT
