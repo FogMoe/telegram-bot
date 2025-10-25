@@ -182,7 +182,7 @@ def execute_python_code_tool(
         if stdin:
             payload["stdin"] = base64.b64encode(stdin.encode("utf-8")).decode("ascii")
 
-        response = requests.post(request_url, json=payload, headers=headers, timeout=30)
+        response = requests.post(request_url, json=payload, headers=headers, timeout=10)
         response.raise_for_status()
         result = response.json()
     except requests.HTTPError as exc:
