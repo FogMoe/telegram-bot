@@ -29,7 +29,6 @@ LOG_LEVEL="INFO"
 
 # help 命令的帮助信息
 HELP_TEXT = (
-        "[***AGPL3.0开源***](https://github.com/FogMoe/telegram-bot)\n\n"
         "***指令列表：***\n"
         "/start - 开始使用\n"
         "/help - 查看帮助文档\n"

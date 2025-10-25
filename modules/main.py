@@ -482,6 +482,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 @cooldown
+async def github_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send repository link with Markdown formatting."""
+    await safe_send_markdown(
+        partial_send(
+            context.bot.send_message,
+            chat_id=update.effective_chat.id,
+        ),
+        "**Open Source**:"
+        "[AGPL3.0](https://github.com/FogMoe/telegram-bot)",
+        logger=logger,
+    )
+
+
+@cooldown
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     conversation_id = user_id  # Assuming conversation_id is the user_id for simplicity
@@ -1188,6 +1202,8 @@ if __name__ == '__main__':
     application.add_handler(lottery_handler)
     help_handler = CommandHandler('help', help_command)
     application.add_handler(help_handler)
+    github_handler = CommandHandler('github', github_command)
+    application.add_handler(github_handler)
     clear_handler = CommandHandler('clear', clear_command)
     application.add_handler(clear_handler)
     admin_announce_handler = CommandHandler('admin_announce', admin_announce)
