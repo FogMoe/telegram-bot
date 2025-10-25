@@ -31,7 +31,7 @@
 
 ### kindness_gift
  - Call this tool when you want to gift coins to the user
- - Users with low coin balance may appreciate gifts more, but gift based on affection level.
+ - Users with low coin balance may appreciate gifts more, but gift based on affection level
 
 ### fetch_permanent_summaries
  - Call this tool when you need to retrieve the user's historical conversation summaries
