@@ -1,4 +1,4 @@
-from zhipuai import ZhipuAI
+from zai import ZaiClient
 import os
 from openai import AzureOpenAI
 import logging
@@ -36,7 +36,7 @@ AIResponse = Tuple[str, List[ToolLog]]
 
 
 def _convert_gemini_tools_to_openai_format() -> list:
-    """将 Gemini 工具定义转换为 OpenAI/ZhipuAI 格式(因格式没有统一暂不可用)"""
+    """将 Gemini 工具定义转换为 OpenAI/Zai 兼容格式"""
     tools = []
     for func_decl in GEMINI_FUNCTION_DECLARATIONS:
         tools.append({
@@ -51,7 +51,7 @@ def _convert_gemini_tools_to_openai_format() -> list:
 
 SYSTEM_PROMPT = config.SYSTEM_PROMPT
 AI_SERVICE_ORDER = config.AI_SERVICE_ORDER
-ZhipuAI_API_KEY = config.ZhipuAI_API_KEY
+ZAI_API_KEY = config.ZAI_API_KEY
 
 # 限速器实现
 class APIRateLimiter:
@@ -74,6 +74,55 @@ class APIRateLimiter:
 # 创建全局限速器实例
 translate_limiter = APIRateLimiter(max_requests=10, time_window=60)
 
+
+def create_zai_client() -> ZaiClient:
+    """Create a configured ZaiClient instance."""
+    if not ZAI_API_KEY:
+        raise RuntimeError("Missing ZAI_API_KEY configuration.")
+    client_kwargs: Dict[str, Any] = {}
+    # if ZAI_BASE_URL:
+    #     client_kwargs["base_url"] = ZAI_BASE_URL
+    return ZaiClient(api_key=ZAI_API_KEY, **client_kwargs)
+
+
+def _tool_call_to_plain(tool_call: Any) -> Dict[str, Any]:
+    """Normalize a tool call object into a plain JSON-serializable dict."""
+    if isinstance(tool_call, dict):
+        plain_call = dict(tool_call)
+        function_payload = plain_call.get("function")
+        if isinstance(function_payload, dict):
+            plain_function = dict(function_payload)
+            arguments = plain_function.get("arguments")
+            if isinstance(arguments, (dict, list)):
+                plain_function["arguments"] = json.dumps(arguments, ensure_ascii=False)
+            elif arguments is None:
+                plain_function["arguments"] = "{}"
+            plain_call["function"] = plain_function
+        return plain_call
+
+    function = getattr(tool_call, "function", None)
+    arguments = getattr(function, "arguments", None) if function else None
+    if isinstance(arguments, (dict, list)):
+        arguments_str = json.dumps(arguments, ensure_ascii=False)
+    else:
+        arguments_str = arguments if arguments is not None else "{}"
+
+    plain = {
+        "id": getattr(tool_call, "id", None),
+        "type": getattr(tool_call, "type", "function"),
+        "function": {
+            "name": getattr(function, "name", None) if function else None,
+            "arguments": arguments_str,
+        },
+    }
+    return plain
+
+
+def _normalise_tool_calls(tool_calls: Optional[List[Any]]) -> List[Dict[str, Any]]:
+    if not tool_calls:
+        return []
+    return [_tool_call_to_plain(call) for call in tool_calls]
+
 async def translate_text(text: str) -> str:
     """专门用于文本翻译的AI函数（异步版本）"""
     try:
@@ -93,7 +142,7 @@ async def translate_text(text: str) -> str:
 
 def _sync_translate_text(text: str) -> str:
     """同步版本的翻译函数，供异步函数调用"""
-    client = ZhipuAI(api_key=ZhipuAI_API_KEY)
+    client = create_zai_client()
     response = client.chat.completions.create(
         model="glm-4.5-flash",
         messages=[
@@ -111,7 +160,7 @@ def _sync_translate_text(text: str) -> str:
 
 
 async def analyze_image(base64_str):
-    """调用ZhipuAI对图像进行分析并返回描述文本（异步版本）"""
+    """调用 Z.ai 对图像进行分析并返回描述文本（异步版本）"""
     try:
         if not base64_str:
             raise ValueError("Image data is empty.")
@@ -128,7 +177,7 @@ async def analyze_image(base64_str):
         return "Image validation failed, please check the image format."
         
     except ConnectionError as e:
-        logging.error(f"连接ZhipuAI服务失败: {str(e)}")
+        logging.error(f"连接 Z.ai 服务失败: {str(e)}")
         return "Failed to connect to AI service."
         
     except Exception as e:
@@ -138,7 +187,7 @@ async def analyze_image(base64_str):
 
 def _sync_analyze_image(base64_str):
     """同步版本的图像分析函数，供异步函数调用"""
-    client = ZhipuAI(api_key=ZhipuAI_API_KEY)
+    client = create_zai_client()
     response = client.chat.completions.create(
         model="GLM-4.1V-Thinking-Flash",
         messages=[
@@ -175,13 +224,13 @@ def _compose_system_prompt(
 
 
 def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[str, object]] = None) -> AIResponse:
-    """同步版本的智谱AI响应函数（支持工具调用）"""
-    client = ZhipuAI(api_key=ZhipuAI_API_KEY)
+    """同步版本的 Z.ai（原智谱）响应函数（支持工具调用）"""
+    client = create_zai_client()
 
     # 获取 OpenAI 格式的工具定义
     tools = _convert_gemini_tools_to_openai_format()
     
-    # 添加 ZhipuAI 特有的网络工具
+    # 添加 Z.ai 特有的网络工具
     tools.extend([{
         "type": "web_search",
         "web_search": {
@@ -221,12 +270,12 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
         )
         
         assistant_message = response.choices[0].message
-        tool_calls = getattr(assistant_message, 'tool_calls', None)
+        raw_tool_calls = getattr(assistant_message, 'tool_calls', None)
         assistant_content = assistant_message.content or ""
         
         # 如果没有工具调用，直接返回当前模型答案
-        if not tool_calls:
-            logging.info(f"ZhipuAI 第 {iteration + 1} 轮：无工具调用，直接返回答案")
+        if not raw_tool_calls:
+            logging.info(f"Z.ai 第 {iteration + 1} 轮：无工具调用，直接返回答案")
             content_text = assistant_content
             if content_text.strip():
                 return content_text, tool_logs
@@ -234,10 +283,11 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
                 fallback = _format_tool_fallback(last_tool_payload) or ""
                 if fallback:
                     return fallback, tool_logs
-            logging.warning("ZhipuAI 返回内容为空且无可用回退。")
+                logging.warning("Z.ai 返回内容为空且无可用回退。")
             return content_text, tool_logs
         
-        logging.info(f"ZhipuAI 第 {iteration + 1} 轮：检测到 {len(tool_calls)} 个工具调用")
+        tool_calls = _normalise_tool_calls(raw_tool_calls)
+        logging.info(f"Z.ai 第 {iteration + 1} 轮：检测到 {len(tool_calls)} 个工具调用")
         
         # 追加助手消息（包含 tool_calls）
         filtered_messages.append({
@@ -248,24 +298,29 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
         
         # 执行所有工具调用
         for tool_call in tool_calls:
-            function_name = tool_call.function.name
-            
-            # 跳过 ZhipuAI 内置工具（web_search, web_browser）
+            function_payload = tool_call.get("function") or {}
+            function_name = function_payload.get("name")
+            if not function_name:
+                logging.warning("Z.ai 返回的工具调用缺少函数名: %s", tool_call)
+                continue
+
+            # 跳过 Z.ai 内置工具（web_search, web_browser）
             if function_name in ["web_search", "web_browser"]:
                 continue
-            
+
+            raw_args = function_payload.get("arguments") or "{}"
             try:
-                raw_args = tool_call.function.arguments or "{}"
                 function_args = json.loads(raw_args)
             except json.JSONDecodeError as e:
-                logging.error(f"ZhipuAI 工具参数解析失败: {e}")
+                logging.error(f"Z.ai 工具参数解析失败: {e}")
                 function_args = {}
-            
+
+            tool_call_id = tool_call.get("id")
             tool_logs.append({
                 "type": "assistant_tool_call",
                 "tool_name": function_name,
                 "arguments": function_args,
-                "tool_call_id": getattr(tool_call, "id", None),
+                "tool_call_id": tool_call_id,
             })
 
             # 执行工具
@@ -274,23 +329,23 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
                 try:
                     tool_result = handler(**function_args)
                     logging.info(
-                        f"ZhipuAI 工具执行成功: {function_name}, "
+                        f"Z.ai 工具执行成功: {function_name}, "
                         f"args={json.dumps(function_args, ensure_ascii=False)}"
                     )
                 except TypeError as e:
-                    logging.error(f"ZhipuAI 工具参数错误: {function_name}, {e}")
+                    logging.error(f"Z.ai 工具参数错误: {function_name}, {e}")
                     tool_result = {"error": f"参数错误: {str(e)}"}
                 except Exception as e:
-                    logging.exception(f"ZhipuAI 工具执行失败: {function_name}, {e}")
+                    logging.exception(f"Z.ai 工具执行失败: {function_name}, {e}")
                     tool_result = {"error": f"执行失败: {str(e)}"}
             else:
-                logging.warning(f"ZhipuAI 未知工具: {function_name}")
+                logging.warning(f"Z.ai 未知工具: {function_name}")
                 tool_result = {"error": f"未知工具: {function_name}"}
             
             # 追加工具返回结果
             filtered_messages.append({
                 "role": "tool",
-                "tool_call_id": tool_call.id,
+                "tool_call_id": tool_call_id,
                 "content": json.dumps(tool_result, ensure_ascii=False)
             })
             last_tool_payload = (function_name, tool_result)
@@ -299,10 +354,10 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
                 "tool_name": function_name,
                 "arguments": function_args,
                 "result": tool_result,
-                "tool_call_id": getattr(tool_call, "id", None),
+                "tool_call_id": tool_call_id,
             })
 
-    logging.warning("ZhipuAI 工具调用次数超限（10轮）")
+    logging.warning("Z.ai 工具调用次数超限（10轮）")
     return "抱歉，处理您的请求时遇到了问题，请稍后再试。", tool_logs
 
 

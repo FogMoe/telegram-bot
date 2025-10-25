@@ -1,6 +1,6 @@
 python-telegram-bot[job-queue]
 mysql-connector-python
-zhipuai
+zai-sdk
 openai
 google-genai
 binance-futures-connector

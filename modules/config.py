@@ -8,7 +8,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env')
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-ZhipuAI_API_KEY = os.getenv("ZHIPUAI_API_KEY")
+ZAI_API_KEY = os.getenv("ZAI_API_KEY") or os.getenv("ZHIPUAI_API_KEY")
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")

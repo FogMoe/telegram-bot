@@ -47,7 +47,6 @@ import web_password  # 导入Web密码模块
 import summary  # 导入会话摘要模块
 
 import group_chat_history
-from zhipuai import ZhipuAI
 from telegram_utils import safe_send_markdown, partial_send
 
 import bribe  # 新增贿赂模块
@@ -72,7 +71,7 @@ class RateLimiter:
         return False
 
 
-_zhipu_allowance = RateLimiter(max_calls=10, time_window=60.0)
+_zai_allowance = RateLimiter(max_calls=10, time_window=60.0)
 
 class RateLimiter:
     def __init__(self, max_calls: int, time_window: float):
@@ -610,7 +609,7 @@ def get_effective_message(update: Update):
 
 async def should_trigger_ai_response(message_text: str) -> bool:
     """
-    使用 ZhipuAI glm-4.5-flash 模型判断群聊消息是否需要调用主 AI 回复。
+    使用 Z.ai glm-4.5-flash 模型判断群聊消息是否需要调用主 AI 回复。
     仅返回布尔结果，出现异常时默认不触发回复。
     """
     if not message_text:
@@ -624,10 +623,10 @@ async def should_trigger_ai_response(message_text: str) -> bool:
 
 
 def _sync_should_trigger_ai_response(message_text: str) -> bool:
-    if not _zhipu_allowance.consume():
-        logging.debug("ZhipuAI rate limiter blocked a request.")
+    if not _zai_allowance.consume():
+        logging.debug("Z.ai rate limiter blocked a request.")
         return False
-    client = ZhipuAI(api_key=config.ZhipuAI_API_KEY)
+    client = ai_chat.create_zai_client()
     try:
         response = client.chat.completions.create(
             model="glm-4.5-flash",
@@ -651,7 +650,7 @@ def _sync_should_trigger_ai_response(message_text: str) -> bool:
         content = response.choices[0].message.content.strip().lower()
         return content.startswith("yes") or content.startswith("是")
     except Exception as exc:
-        logging.error("ZhipuAI 检测是否应回复失败: %s", exc)
+        logging.error("Z.ai 检测是否应回复失败: %s", exc)
         return False
 
 
