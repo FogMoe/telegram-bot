@@ -35,6 +35,9 @@
 
 ### fetch_permanent_summaries
  - Call this tool when you need to retrieve the user's historical conversation summaries
+  
+### fetch_url
+ - Call this tool to fetch and read webpage content in real-time
 
 # Conversation Rules
 ## Response Guidelines

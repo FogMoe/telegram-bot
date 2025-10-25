@@ -16,6 +16,7 @@ import requests
 import group_chat_history
 import random
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 import mysql_connection
 import process_user
@@ -100,6 +101,54 @@ def fetch_group_context_tool(
         "around_message_id": around_message_id,
         "window_size": window_size,
         "messages": context_messages,
+    }
+
+
+def fetch_url_tool(
+    url: str,
+    **kwargs,
+) -> dict:
+    """Fetch and render web content via Jina AI Reader."""
+    if not isinstance(url, str) or not url.strip():
+        return {"error": "Please provide a valid URL"}
+
+    normalized_url = url.strip()
+    if not normalized_url.startswith(("http://", "https://")):
+        normalized_url = f"https://{normalized_url}"
+
+    headers: Dict[str, str] = {}
+
+    try:
+        if "#" in normalized_url:
+            response = requests.post(
+                "https://r.jina.ai/",
+                data={"url": normalized_url},
+                headers=headers,
+                timeout=10,
+            )
+        else:
+            encoded_url = quote(normalized_url, safe=":/?&=#[]@!$&'()*+,;")
+            response = requests.get(
+                f"https://r.jina.ai/{encoded_url}",
+                headers=headers,
+                timeout=10,
+            )
+    except requests.RequestException as exc:
+        logging.exception("Failed to fetch URL : %s", exc)
+        return {"error": f"Failed to fetch URL: {exc}"}
+
+    if response.status_code >= 400:
+        return {
+            "error": "Upstream fetch failed",
+            "status_code": response.status_code,
+            "details": response.text[:500],
+        }
+
+    return {
+        "url": normalized_url,
+        "status_code": response.status_code,
+        "content_type": response.headers.get("Content-Type"),
+        "content": response.text,
     }
 
 
@@ -355,6 +404,7 @@ GEMINI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
     "google_search": google_search_tool,
     "fetch_group_context": fetch_group_context_tool,
     "kindness_gift": kindness_gift_tool,
+    "fetch_url": fetch_url_tool,
     "update_affection": update_affection_tool,
     "update_impression": update_impression_tool,
     "fetch_permanent_summaries": fetch_permanent_summaries_tool,
@@ -400,6 +450,20 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
                 ),
             },
             required=[],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="fetch_url",
+        description=("Fetch and render webpage content for up-to-date browsing"),
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "url": types.Schema(
+                    type=types.Type.STRING,
+                    description=("Fully qualified URL to retrieve"),
+                ),
+            },
+            required=["url"],
         ),
     ),
     types.FunctionDeclaration(
@@ -478,6 +542,7 @@ __all__ = [
     "GEMINI_TOOL_HANDLERS",
     "set_tool_request_context",
     "clear_tool_request_context",
+    "fetch_url_tool",
     "kindness_gift_tool",
     "update_affection_tool",
     "update_impression_tool",
