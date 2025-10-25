@@ -103,13 +103,13 @@ def fetch_group_context_tool(
     }
 
 
-def _get_user_by_username(username: str) -> Optional[Dict[str, object]]:
+def _get_user_by_id(user_id: int) -> Optional[Dict[str, object]]:
     connection = mysql_connection.create_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
-            "SELECT id, name, coins FROM user WHERE name = %s",
-            (username,),
+            "SELECT id, name, coins FROM user WHERE id = %s",
+            (user_id,),
         )
         row = cursor.fetchone()
         if not row:
@@ -120,14 +120,14 @@ def _get_user_by_username(username: str) -> Optional[Dict[str, object]]:
         connection.close()
 
 
-def _get_last_kindness(donor_id: int) -> Optional[Dict[str, object]]:
+def _get_last_kindness_for_recipient(recipient_id: int) -> Optional[Dict[str, object]]:
     connection = mysql_connection.create_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
             "SELECT amount, created_at FROM kindness_gifts "
-            "WHERE donor_id = %s ORDER BY created_at DESC LIMIT 1",
-            (donor_id,),
+            "WHERE recipient_id = %s ORDER BY created_at DESC LIMIT 1",
+            (recipient_id,),
         )
         row = cursor.fetchone()
         if not row:
@@ -139,24 +139,20 @@ def _get_last_kindness(donor_id: int) -> Optional[Dict[str, object]]:
 
 
 def kindness_gift_tool(
-    recipient_username: str,
     amount: Optional[int] = None,
     **kwargs,
 ) -> dict:
     context = _get_tool_request_context()
-    donor_id = context.get("user_id")
-    if not donor_id:
-        return {"error": "Missing sender information, cannot execute gift"}
+    try:
+        recipient_id = int(context.get("user_id"))
+    except (TypeError, ValueError):
+        return {"error": "Missing recipient information, cannot execute gift"}
 
-    username = (recipient_username or "").strip().lstrip("@")
-    if not username:
-        return {"error": "Please enter a valid username"}
-
-    recipient = _get_user_by_username(username)
+    recipient = _get_user_by_id(recipient_id)
     if not recipient:
-        return {"error": f"User @{username} not found"}
+        return {"error": "Recipient user not found"}
 
-    last_record = _get_last_kindness(donor_id)
+    last_record = _get_last_kindness_for_recipient(recipient["id"])
     if last_record and last_record.get("created_at"):
         last_time = last_record["created_at"]
         if last_time.tzinfo is None:
@@ -180,9 +176,9 @@ def kindness_gift_tool(
     try:
         process_user.update_user_coins(recipient["id"], amt)
         cursor.execute(
-            "INSERT INTO kindness_gifts (donor_id, recipient_id, amount, created_at) "
-            "VALUES (%s, %s, %s, NOW())",
-            (donor_id, recipient["id"], amt),
+            "INSERT INTO kindness_gifts (recipient_id, amount, created_at) "
+            "VALUES (%s, %s, NOW())",
+            (recipient["id"], amt),
         )
         connection.commit()
     except Exception as exc:
@@ -193,7 +189,7 @@ def kindness_gift_tool(
         cursor.close()
         connection.close()
 
-    latest = _get_last_kindness(donor_id)
+    latest = _get_last_kindness_for_recipient(recipient["id"])
     last_time_str = None
     last_amount = None
     if latest and latest.get("created_at"):
@@ -205,15 +201,14 @@ def kindness_gift_tool(
 
     return {
         "status": "granted",
-        "donor_id": donor_id,
         "recipient_id": recipient["id"],
-        "recipient_username": f"@{username}",
+        "recipient_username": f"@{recipient['name']}" if recipient.get("name") else None,
         "amount": amt,
         "last_time": last_time_str,
         "last_amount": last_amount,
         "recipient_coins_before": recipient["coins"],
         "recipient_coins_after": recipient["coins"] + amt,
-        "message": f"Successfully gifted {amt} coins to @{username}",
+        "message": f"Successfully gifted {amt} coins to user",
     }
 
 
@@ -413,18 +408,14 @@ GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
-                "recipient_username": types.Schema(
-                    type=types.Type.STRING,
-                    description=("User's Telegram username, without the @ symbol"),
-                ),
                 "amount": types.Schema(
                     type=types.Type.INTEGER,
-                            description=("Amount of coins to gift."),
-                            minimum=1,
-                            maximum=10
+                    description=("Amount of coins to gift"),
+                    minimum=1,
+                    maximum=10
                 ),
             },
-            required=["recipient_username"],
+            required=[],
         ),
     ),
     types.FunctionDeclaration(

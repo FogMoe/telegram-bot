@@ -298,21 +298,11 @@ CREATE TABLE web_password (
 
 CREATE TABLE IF NOT EXISTS `kindness_gifts` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
-  `donor_id` BIGINT NOT NULL,
   `recipient_id` BIGINT NOT NULL,
   `amount` INT NOT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uniq_donor_recipient_day` (`donor_id`, `recipient_id`, `created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-CREATE TABLE IF NOT EXISTS `kindness_gifts` (
-  `id` BIGINT NOT NULL AUTO_INCREMENT,
-  `donor_id` BIGINT NOT NULL,
-  `recipient_id` BIGINT NOT NULL,
-  `amount` INT NOT NULL,
-  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uniq_donor_day` (`donor_id`, `created_at`)
+  KEY `idx_kindness_recipient_created` (`recipient_id`, `created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS `ai_user_affection` (
