@@ -599,7 +599,7 @@ def _generate_gemini_response(
 
         function_call = _extract_function_call(response)
         if not function_call:
-            final_text = response.text or ""
+            final_text = _extract_text_without_thoughts(response)
             if final_text.strip():
                 return final_text, tool_logs
             if last_tool_payload:
@@ -735,3 +735,26 @@ def _extract_function_call(response):
             if function_call:
                 return function_call
     return None
+
+
+def _extract_text_without_thoughts(response) -> str:
+    """Return combined text from response while skipping thought summaries."""
+    candidates = getattr(response, "candidates", []) or []
+    text_segments: List[str] = []
+
+    for candidate in candidates:
+        content = getattr(candidate, "content", None)
+        if not content:
+            continue
+        parts = getattr(content, "parts", []) or []
+        for part in parts:
+            if getattr(part, "thought", None):
+                continue
+            text = getattr(part, "text", None)
+            if text:
+                text_segments.append(text)
+
+    combined = "".join(text_segments).strip()
+    if combined:
+        return combined
+    return (getattr(response, "text", None) or "").strip()
