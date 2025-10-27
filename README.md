@@ -3,7 +3,7 @@
 <div align="center">
 
 ![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)
-![Python](https://img.shields.io/badge/python-3.9+-green.svg)
+![Python](https://img.shields.io/badge/python-3.10+-green.svg)
 ![Telegram Bot](https://img.shields.io/badge/Telegram-Bot-blue.svg)
 
 一个功能丰富、可扩展的 Telegram 机器人，集成 AI 聊天、经济系统、娱乐游戏和群组管理功能。
@@ -55,7 +55,7 @@
 
 ### 环境要求
 
-- **Python**: 3.9 或更高版本
+- **Python**: 3.10 或更高版本
 - **MySQL**: 8.0 或更高版本
 - **操作系统**: Linux / macOS / Windows
 
