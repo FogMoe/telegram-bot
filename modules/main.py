@@ -128,7 +128,7 @@ async def send_message_to_group(message: str):
     bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
     if not CHAT_ID:
         return
-    await safe_send_markdown(partial_send(bot.send_message, chat_id=CHAT_ID), message, logger=logger)
+    await safe_send_markdown(partial_send(bot.send_message, CHAT_ID), message, logger=logger)
 
 
 async def delayed_check_result(trigger_time, trigger_price):
@@ -491,7 +491,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger=logger,
         fallback_send=partial_send(
             context.bot.send_message,
-            chat_id=update.effective_chat.id,
+            update.effective_chat.id,
         ),
         disable_web_page_preview=True,
     )
@@ -507,7 +507,7 @@ async def github_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger=logger,
         fallback_send=partial_send(
             context.bot.send_message,
-            chat_id=update.effective_chat.id,
+            update.effective_chat.id,
         ),
     )
 
@@ -735,7 +735,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await safe_send_markdown(
             partial_send(
                 context.bot.send_message,
-                chat_id=update.effective_chat.id,
+                update.effective_chat.id,
             ),
             warning_text,
             logger=logger,
@@ -1008,7 +1008,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger=logger,
         fallback_send=partial_send(
             context.bot.send_message,
-            chat_id=update.effective_chat.id,
+            update.effective_chat.id,
         ),
     )
 
