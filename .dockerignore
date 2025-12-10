@@ -1,0 +1,15 @@
+# Python caches and virtual envs
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Git & logs
+.git/
+.gitignore
+tgbot.log
+*.log
+
+# Local env & configs
+.env
+.env.local

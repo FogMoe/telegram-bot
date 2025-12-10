@@ -151,6 +151,24 @@ venv\Scripts\activate
 可参考 [@FogMoeBot](https://t.me/FogMoeBot) 或配置文件中的说明进行使用。
 
 
+## 🐳 Docker 部署（仅 Python，外部 MySQL）
+
+无需在容器内运行 MySQL，只容器化机器人。
+
+1. 复制 `.env.example` 为 `.env`，填好 Telegram/AI/MySQL 配置；`MYSQL_HOST` 设为外部数据库地址（宿主机 MySQL 可用 `host.docker.internal` 或宿主机 IP）。  
+2. 构建镜像：
+   ```bash
+   docker compose build bot
+   ```
+3. 后台运行：
+   ```bash
+   docker compose up -d bot
+   ```
+4. 查看日志：`docker compose logs -f bot`。如需把日志落盘到宿主机，取消 `docker-compose.yml` 中 `tgbot.log` 挂载行的注释。
+
+> 默认镜像基于 `python:3.11-slim`，入口命令为 `python -u modules/main.py`，仅依赖外部 MySQL。
+
+
 ### 使用的主要技术
 
 - [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) - Telegram Bot API 封装

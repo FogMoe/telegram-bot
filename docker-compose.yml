@@ -1,0 +1,16 @@
+version: "3.9"
+
+services:
+  bot:
+    build: .
+    image: fogmoe-telegram-bot:latest
+    env_file:
+      - .env
+    environment:
+      # 让容器使用宿主机/外部数据库；根据你的 MySQL 地址修改
+      MYSQL_HOST: ${MYSQL_HOST:-host.docker.internal}
+    volumes: [] # 如需落盘日志，改为下方注释形式
+    # volumes:
+    #   - ./tgbot.log:/app/tgbot.log
+    restart: unless-stopped
+    # 如需使用代理，可在此添加 extra_hosts 或网络设置
