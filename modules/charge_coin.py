@@ -9,7 +9,7 @@ from telegram.ext import CommandHandler, ContextTypes
 import mysql_connection
 import process_user
 from command_cooldown import cooldown
-from main import ADMIN_USER_ID
+import config
 
 # 创建一个锁字典，用于防止同一卡密被并发使用
 code_locks = {}
@@ -19,7 +19,7 @@ code_lock_mutex = RLock()  # 控制对code_locks字典的访问
 UUID_PATTERN = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
 
 # 管理员ID，用于权限验证
-ADMIN_USER_ID = ADMIN_USER_ID  # 管理员的Telegram UserID
+ADMIN_USER_ID = config.ADMIN_USER_ID  # 管理员的Telegram UserID
 
 def is_valid_uuid(code):
     """验证字符串是否为有效的UUID格式"""
