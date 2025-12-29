@@ -21,22 +21,60 @@ def _tool_call_to_plain(tool_call: Any) -> Dict[str, Any]:
                 plain_function["arguments"] = "{}"
             plain_call["function"] = plain_function
         return plain_call
+    plain_call: Dict[str, Any] | None = None
 
-    function = getattr(tool_call, "function", None)
-    arguments = getattr(function, "arguments", None) if function else None
-    if isinstance(arguments, (dict, list)):
-        arguments_str = json.dumps(arguments, ensure_ascii=False)
-    else:
-        arguments_str = arguments if arguments is not None else "{}"
+    for attr in ("model_dump", "dict"):
+        if hasattr(tool_call, attr):
+            try:
+                plain_call = getattr(tool_call, attr)()
+            except TypeError:
+                plain_call = getattr(tool_call, attr)(by_alias=True)
+            except Exception:
+                plain_call = None
+            if isinstance(plain_call, dict):
+                break
 
-    return {
-        "id": getattr(tool_call, "id", None),
-        "type": getattr(tool_call, "type", "function"),
-        "function": {
-            "name": getattr(function, "name", None) if function else None,
-            "arguments": arguments_str,
-        },
-    }
+    if not isinstance(plain_call, dict):
+        function = getattr(tool_call, "function", None)
+        arguments = getattr(function, "arguments", None) if function else None
+        if isinstance(arguments, (dict, list)):
+            arguments_str = json.dumps(arguments, ensure_ascii=False)
+        else:
+            arguments_str = arguments if arguments is not None else "{}"
+
+        return {
+            "id": getattr(tool_call, "id", None),
+            "type": getattr(tool_call, "type", "function"),
+            "function": {
+                "name": getattr(function, "name", None) if function else None,
+                "arguments": arguments_str,
+            },
+        }
+
+    function_payload = plain_call.get("function")
+    if not isinstance(function_payload, dict):
+        for attr in ("model_dump", "dict"):
+            if hasattr(function_payload, attr):
+                try:
+                    function_payload = getattr(function_payload, attr)()
+                except TypeError:
+                    function_payload = getattr(function_payload, attr)(by_alias=True)
+                except Exception:
+                    function_payload = None
+                if isinstance(function_payload, dict):
+                    plain_call["function"] = function_payload
+                break
+
+    if isinstance(function_payload, dict):
+        plain_function = dict(function_payload)
+        arguments = plain_function.get("arguments")
+        if isinstance(arguments, (dict, list)):
+            plain_function["arguments"] = json.dumps(arguments, ensure_ascii=False)
+        elif arguments is None:
+            plain_function["arguments"] = "{}"
+        plain_call["function"] = plain_function
+
+    return plain_call
 
 
 def _normalise_tool_calls(tool_calls: Optional[List[Any]]) -> List[Dict[str, Any]]:

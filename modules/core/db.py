@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_en
 from . import config
 
 _ENGINE: Optional[AsyncEngine] = None
+_MAIN_LOOP: Optional[asyncio.AbstractEventLoop] = None
 
 
 def get_engine() -> AsyncEngine:
@@ -21,6 +22,11 @@ def get_engine() -> AsyncEngine:
             connect_args={"connect_timeout": config.MYSQL_CONNECT_TIMEOUT},
         )
     return _ENGINE
+
+
+def set_main_loop(loop: asyncio.AbstractEventLoop) -> None:
+    global _MAIN_LOOP
+    _MAIN_LOOP = loop
 
 
 @asynccontextmanager
@@ -41,6 +47,10 @@ def run_sync(coro):
     try:
         asyncio.get_running_loop()
     except RuntimeError:
+        loop = _MAIN_LOOP
+        if loop and loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            return future.result()
         return asyncio.run(coro)
     raise RuntimeError("run_sync cannot be used inside a running event loop")
 

@@ -11,7 +11,7 @@ import telegram
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from core import config, group_chat_history, mysql_connection, process_user
+from core import config, db, group_chat_history, mysql_connection, process_user
 from core.telegram_utils import safe_send_markdown, partial_send
 from features.ai import ai_chat, summary
 
@@ -31,6 +31,7 @@ def _cache_bot_identity(bot_user: telegram.User) -> None:
 
 
 async def post_init(application) -> None:
+    db.set_main_loop(asyncio.get_running_loop())
     bot_user = await application.bot.get_me()
     _cache_bot_identity(bot_user)
 
