@@ -1,0 +1,25 @@
+from typing import Callable, Dict
+
+from .code_tools import execute_python_code_tool
+from .http_tools import fetch_url_tool, google_search_tool
+from .memory_tools import (
+    fetch_group_context_tool,
+    fetch_permanent_summaries_tool,
+    get_help_text_tool,
+)
+from .schemas import OPENAI_TOOLS
+from .user_tools import kindness_gift_tool, update_affection_tool, update_impression_tool
+
+AI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
+    "get_help_text": get_help_text_tool,
+    "google_search": google_search_tool,
+    "fetch_group_context": fetch_group_context_tool,
+    "kindness_gift": kindness_gift_tool,
+    "fetch_url": fetch_url_tool,
+    "execute_python_code": execute_python_code_tool,
+    "update_affection": update_affection_tool,
+    "update_impression": update_impression_tool,
+    "fetch_permanent_summaries": fetch_permanent_summaries_tool,
+}
+
+__all__ = ["OPENAI_TOOLS", "AI_TOOL_HANDLERS"]

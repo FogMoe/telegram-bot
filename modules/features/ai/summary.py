@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple
 
 from core import config, mysql_connection
-from .ai_chat import create_gemini_client
+from .clients import create_gemini_client
 
 SUMMARY_MODEL = config.SUMMARY_MODEL
 SUMMARY_FALLBACK_MODEL = config.SUMMARY_FALLBACK_MODEL
