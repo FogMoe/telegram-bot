@@ -15,7 +15,9 @@ def get_ai_response(
 ) -> AIResponse:
     """同步版本的Azure OpenAI响应函数（支持工具调用）"""
     client = create_azure_client()
-    azure_model = config.AZURE_OPENAI_DEPLOYMENT or "gpt-4"
+    azure_model = config.AZURE_OPENAI_MODEL
+    if not azure_model:
+        raise RuntimeError("Missing AZURE_OPENAI_MODEL configuration.")
 
     try:
         return run_tool_loop(
@@ -28,4 +30,3 @@ def get_ai_response(
     except Exception as exc:
         logging.error("Azure OpenAI 请求失败: %s", exc)
         raise
-
