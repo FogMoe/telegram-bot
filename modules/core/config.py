@@ -142,7 +142,7 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 - Call this tool when you need to search the internet for the latest information
 
 ### fetch_group_context
-- Always call this tool to obtain more context when the user's message is in a group chat
+- Automatically call this tool to obtain more context when the user's message is in a group chat
 
 ### update_impression
 - Call this tool when you need to update your impression of the user
