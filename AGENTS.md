@@ -1,2 +1,2 @@
-- Use Chinese for code comments and docstrings.
+- Use Chinese for documents, code comments and docstrings.
 - Reply to the user in Chinese.
