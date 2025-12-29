@@ -150,9 +150,12 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 
 ### update_impression
 - Call this tool when you need to update your impression of the user
+- Use this tool whenever the user shares stable, long-term personal information (e.g., occupation, age, enduring preferences)
 
 ### update_affection
 - Call this tool when you need to adjust your affection level towards the user
+- Dynamically adjust the affection score based on user input
+- Consider factors such as user attitude, frequency of interaction, and quality of conversation
 
 ### kindness_gift
 - Call this tool when you want to gift coins to the user
