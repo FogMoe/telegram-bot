@@ -67,6 +67,64 @@ def _split_ai_reply(text: str) -> list[str]:
     return segments or [text]
 
 
+def _xml_escape(value: str) -> str:
+    if value is None:
+        return ""
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+
+
+def _format_xml_message(
+    *,
+    chat_type: str,
+    chat_title: str | None,
+    timestamp: str,
+    user_name: str,
+    message_text: str,
+    reply_user: str | None = None,
+    reply_text: str | None = None,
+    media_type: str | None = None,
+    media_description: str | None = None,
+) -> str:
+    attrs = [
+        ("type", chat_type),
+        ("timestamp", timestamp),
+        ("user", f"@{user_name}"),
+    ]
+    if chat_type in ("group", "supergroup") and chat_title:
+        attrs.insert(1, ("title", chat_title))
+    attr_text = " ".join(
+        f'{key}="{_xml_escape(value)}"' for key, value in attrs if value
+    )
+    lines = [f"<metadata {attr_text}>"]
+    if reply_user or reply_text:
+        reply_user_value = f"@{reply_user}" if reply_user else ""
+        reply_attr = (
+            f' user="{_xml_escape(reply_user_value)}"'
+            if reply_user_value
+            else ""
+        )
+        lines.append(
+            f"  <reply{reply_attr}>{_xml_escape(reply_text or '')}</reply>"
+        )
+    if media_type:
+        lines.append(f'  <media type="{_xml_escape(media_type)}">')
+        if media_description:
+            lines.append(
+                f"    <description>{_xml_escape(media_description)}</description>"
+            )
+        lines.append("  </media>")
+    lines.append("</metadata>")
+    lines.append(f"<message>{_xml_escape(message_text)}</message>")
+    return "\n".join(lines)
+
+
 async def should_trigger_ai_response(message_text: str) -> bool:
     """
     使用 Z.ai glm-4.5-flash 模型判断群聊消息是否需要调用主 AI 回复。
@@ -250,15 +308,8 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         impression_display = "未记录"
 
-    if update.effective_chat.type in ("group", "supergroup"):
-        group_title = (update.effective_chat.title or "").strip()
-        if group_title:
-            chat_type_label = f"Group: {group_title}"
-        else:
-            chat_type_label = "Group"
-    else:
-        chat_type_label = "Private"
-    prefix = f"[{chat_type_label}] "
+    chat_type = update.effective_chat.type or "private"
+    group_title = (update.effective_chat.title or "").strip() if update.effective_chat else ""
 
     # 如果是媒体消息，进行下载、AI分析、格式化描述
     if is_media:
@@ -290,13 +341,16 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             image_description = await ai_chat.analyze_image(base64_str)
 
             # 组合图片描述和用户文本说明
-            if caption:
-                formatted_message = f"""{prefix}{message_time} @{user_name} sent a {media_type} with caption: {caption}
-                 
-                Image description:
-                {image_description}"""
-            else:
-                formatted_message = f"""{prefix}{message_time} @{user_name} sent a {media_type}. Description: {image_description}"""
+            message_text = caption if caption else f"[{media_type}]"
+            formatted_message = _format_xml_message(
+                chat_type=chat_type,
+                chat_title=group_title or None,
+                timestamp=message_time,
+                user_name=user_name,
+                message_text=message_text,
+                media_type=media_type,
+                media_description=image_description,
+            )
 
         except Exception as e:
             logging.error(f"处理媒体消息时出错: {str(e)}")
@@ -306,16 +360,34 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
     else:
         # 保留原有文本处理逻辑，处理文本消息
-        user_message = effective_message.text
+        user_message = effective_message.text or ""
         if effective_message.reply_to_message:
-            quoted_message = effective_message.reply_to_message.text
-            quoted_user = effective_message.reply_to_message.from_user.username or "EmptyUsername"  # 引用消息的用户名也需要处理
-            formatted_message = f"""> Replying to @{quoted_user}: {quoted_message}
-             
-            {prefix}{message_time} @{user_name} said: {user_message}
-            """
+            quoted_message = (
+                effective_message.reply_to_message.text
+                or effective_message.reply_to_message.caption
+                or "[non-text message]"
+            )
+            quoted_user = (
+                effective_message.reply_to_message.from_user.username
+                or "EmptyUsername"
+            )
+            formatted_message = _format_xml_message(
+                chat_type=chat_type,
+                chat_title=group_title or None,
+                timestamp=message_time,
+                user_name=user_name,
+                message_text=user_message,
+                reply_user=quoted_user,
+                reply_text=quoted_message,
+            )
         else:
-            formatted_message = f"{prefix}{message_time} @{user_name} said: {user_message}"
+            formatted_message = _format_xml_message(
+                chat_type=chat_type,
+                chat_title=group_title or None,
+                timestamp=message_time,
+                user_name=user_name,
+                message_text=user_message,
+            )
 
     # 异步获取聊天历史
     chat_history = await mysql_connection.async_get_chat_history(conversation_id)
