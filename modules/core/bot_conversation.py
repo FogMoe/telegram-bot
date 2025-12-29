@@ -211,8 +211,14 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             (user_id,),
             connection=connection,
         )
-        user_permission = row[0] if row else 0
-        user_coins = row[1] if row else 0
+        if not row:
+            await effective_message.reply_text(
+                "请先使用 /me 命令注册个人信息后再聊天。\n"
+                "Please register first using the /me command before chatting."
+            )
+            return
+        user_permission = row[0]
+        user_coins = row[1]
 
         if user_coins < coin_cost:
             await effective_message.reply_text(

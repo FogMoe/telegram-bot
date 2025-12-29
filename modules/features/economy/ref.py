@@ -3,7 +3,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
 
-from core import mysql_connection
+from core import config, mysql_connection
 import asyncio
 from core.command_cooldown import cooldown 
 
@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 # 邀请奖励的金币数量
 INVITATION_REWARD = 20
+INVITED_USER_REWARD = INVITATION_REWARD + config.NEW_USER_BONUS_COINS
 # GROUP_REWARD = 20
 # MIN_GROUP_MEMBERS = 20
 
@@ -35,8 +36,20 @@ async def process_start_with_args(update: Update, context: ContextTypes.DEFAULT_
         return False
     
     # 添加邀请记录，并给双方发放奖励
-    success = await async_add_invitation_record(user_id, referrer_id, user_name)
+    success, is_new_user = await async_add_invitation_record(
+        user_id,
+        referrer_id,
+        user_name,
+    )
     if success:
+        if is_new_user:
+            reward_message = (
+                f"🎁 您已通过邀请链接加入，获得了 *{INVITATION_REWARD}* 邀请奖励 + "
+                f"*{config.NEW_USER_BONUS_COINS}* 新人奖励（共 *{INVITED_USER_REWARD}* 金币）！"
+            )
+        else:
+            reward_message = f"🎁 您已通过邀请链接加入，获得了 *{INVITATION_REWARD}* 邀请奖励！"
+
         try:
             # 获取邀请人的用户名
             referrer_name = await async_get_user_name(referrer_id)
@@ -61,7 +74,7 @@ async def process_start_with_args(update: Update, context: ContextTypes.DEFAULT_
             
             # 向被邀请用户发送欢迎消息，使用Markdown格式
             await update.message.reply_text(
-                f"🎁 您已通过邀请链接加入，获得了 *{INVITATION_REWARD}* 金币奖励！\n"
+                f"{reward_message}\n"
                 f"您的邀请人是：{referrer_display}",
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -70,7 +83,7 @@ async def process_start_with_args(update: Update, context: ContextTypes.DEFAULT_
             logger.error(f"Error in process_start_with_args when sending message: {e}")
             # 如果获取用户名或发送消息失败，使用原始ID
             await update.message.reply_text(
-                f"🎁 您已通过邀请链接加入，获得了 *{INVITATION_REWARD}* 金币奖励！\n"
+                f"{reward_message}\n"
                 f"您的邀请人是：`{referrer_id}`",
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -113,7 +126,8 @@ async def ref_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"将此链接分享给好友，当他们点击链接并启动机器人时，您将获得 *{INVITATION_REWARD}* 金币奖励！\n\n"
                 f"✨ *邀请规则：*\n"
                 f"- 每邀请一位新用户，您将获得 *{INVITATION_REWARD}* 金币奖励\n"
-                f"- 被邀请用户也将获得 *{INVITATION_REWARD}* 金币奖励\n"
+                f"- 被邀请用户也将获得 *{INVITATION_REWARD}* 邀请奖励 + "
+                f"*{config.NEW_USER_BONUS_COINS}* 新人奖励（共 *{INVITED_USER_REWARD}*）\n"
                 f"- 每个Telegram账号只能被邀请一次\n\n"
                 # f"- 将机器人添加到 *{MIN_GROUP_MEMBERS}* 人以上的群组，可获得 *{GROUP_REWARD}* 金币奖励\n\n"
                 f"如需手动绑定邀请人，请使用命令：`/ref <邀请码>`\n"
@@ -157,9 +171,20 @@ async def ref_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         # 添加邀请记录，并给双方发放奖励
-        success = await async_add_invitation_record(user_id, referrer_id, update.effective_user.full_name)
+        success, is_new_user = await async_add_invitation_record(
+            user_id,
+            referrer_id,
+            update.effective_user.full_name,
+        )
         if success:
-            await update.message.reply_text(f"邀请绑定成功！您获得了 *{INVITATION_REWARD}* 金币奖励！", parse_mode=ParseMode.MARKDOWN)
+            if is_new_user:
+                reward_message = (
+                    f"邀请绑定成功！您获得了 *{INVITATION_REWARD}* 邀请奖励 + "
+                    f"*{config.NEW_USER_BONUS_COINS}* 新人奖励（共 *{INVITED_USER_REWARD}* 金币）！"
+                )
+            else:
+                reward_message = f"邀请绑定成功！您获得了 *{INVITATION_REWARD}* 邀请奖励！"
+            await update.message.reply_text(reward_message, parse_mode=ParseMode.MARKDOWN)
         else:
             # 检查邀请人是否存在
             referrer_exists = await async_check_user_exists(referrer_id)
@@ -263,10 +288,11 @@ async def add_invitation_record(invited_user_id, referrer_id, invited_user_name)
 
     async with processing_lock:
         if invitation_key in processing_invitations:
-            return False
+            return False, False
         processing_invitations.add(invitation_key)
 
     try:
+        is_new_user = False
         async with mysql_connection.transaction() as connection:
             # 检查被邀请用户是否已经有邀请记录
             row = await mysql_connection.fetch_one(
@@ -275,7 +301,7 @@ async def add_invitation_record(invited_user_id, referrer_id, invited_user_name)
                 connection=connection,
             )
             if row:
-                return False
+                return False, False
 
             # 检查邀请人是否存在
             row = await mysql_connection.fetch_one(
@@ -284,7 +310,7 @@ async def add_invitation_record(invited_user_id, referrer_id, invited_user_name)
                 connection=connection,
             )
             if not row:
-                return False
+                return False, False
 
             # 确保被邀请用户存在于user表中
             row = await mysql_connection.fetch_one(
@@ -295,8 +321,9 @@ async def add_invitation_record(invited_user_id, referrer_id, invited_user_name)
             if not row:
                 await connection.exec_driver_sql(
                     "INSERT INTO user (id, name, coins) VALUES (%s, %s, %s)",
-                    (invited_user_id, invited_user_name, INVITATION_REWARD),
+                    (invited_user_id, invited_user_name, INVITED_USER_REWARD),
                 )
+                is_new_user = True
             else:
                 await connection.exec_driver_sql(
                     "UPDATE user SET coins = coins + %s WHERE id = %s",
@@ -313,10 +340,10 @@ async def add_invitation_record(invited_user_id, referrer_id, invited_user_name)
                 (INVITATION_REWARD, referrer_id),
             )
 
-        return True
+        return True, is_new_user
     except Exception as e:
         logger.error(f"Database error in add_invitation_record: {e}")
-        return False
+        return False, False
     finally:
         async with processing_lock:
             processing_invitations.discard(invitation_key)

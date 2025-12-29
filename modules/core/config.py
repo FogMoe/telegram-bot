@@ -42,6 +42,7 @@ JUDGE0_API_URL = "https://ce.judge0.com"
 JUDGE0_API_KEY = os.getenv("JUDGE0_API_KEY")
 
 ADMIN_USER_ID = 1002288404
+NEW_USER_BONUS_COINS = 10
 
 MYSQL_CONFIG = {
     'host': os.getenv("MYSQL_HOST"),

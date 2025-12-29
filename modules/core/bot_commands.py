@@ -240,13 +240,16 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         insert_query = (
-            "INSERT INTO user (id, name) VALUES (%s, %s) "
+            "INSERT INTO user (id, name, coins) VALUES (%s, %s, %s) "
             "ON DUPLICATE KEY UPDATE name = VALUES(name)"
         )
         select_query = "SELECT coins, permission FROM user WHERE id = %s"
 
         async with mysql_connection.transaction() as connection:
-            await connection.exec_driver_sql(insert_query, (user_id, user_name))
+            await connection.exec_driver_sql(
+                insert_query,
+                (user_id, user_name, config.NEW_USER_BONUS_COINS),
+            )
             result = await connection.exec_driver_sql(select_query, (user_id,))
             row = result.fetchone()
             user_coins = row[0] if row else 0
