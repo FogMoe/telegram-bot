@@ -1,9 +1,6 @@
-import asyncio
 import logging
 import hashlib
 import re
-from concurrent.futures import ThreadPoolExecutor
-from threading import RLock
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, CommandHandler
@@ -11,10 +8,6 @@ from telegram.ext import ContextTypes, CommandHandler
 from core import mysql_connection
 from core.command_cooldown import cooldown
 import html
-
-# 创建线程池执行器用于异步数据库操作
-web_password_executor = ThreadPoolExecutor(max_workers=5)
-web_password_lock = RLock()  # 使用可重入锁以确保线程安全
 
 def hash_password(password):
     """对密码进行哈希处理"""
@@ -35,42 +28,37 @@ def validate_password(password):
     
     return True, "密码格式正确"
 
-def get_user_web_password(user_id):
+async def get_user_web_password(user_id):
     """获取用户Web密码信息"""
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT password, created_at, updated_at FROM web_password WHERE user_id = %s", (user_id,))
-        result = cursor.fetchone()
-        return result  # (password_hash, created_at, updated_at) 或 None
+        row = await mysql_connection.fetch_one(
+            "SELECT password, created_at, updated_at FROM web_password WHERE user_id = %s",
+            (user_id,),
+            mapping=True,
+        )
+        return row  # RowMapping 或 None
     except Exception as e:
         logging.error(f"获取用户Web密码信息失败: {str(e)}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
 
-def set_user_web_password(user_id, password_hash):
+async def set_user_web_password(user_id, password_hash):
     """设置用户Web密码"""
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
         # 使用 INSERT ... ON DUPLICATE KEY UPDATE 来更新或插入记录
-        cursor.execute("""
-        INSERT INTO web_password (user_id, password)
-        VALUES (%s, %s)
-        ON DUPLICATE KEY UPDATE password = VALUES(password)
-        """, (user_id, password_hash))
-        connection.commit()
+        await mysql_connection.execute(
+            """
+            INSERT INTO web_password (user_id, password)
+            VALUES (%s, %s)
+            ON DUPLICATE KEY UPDATE password = VALUES(password)
+            """,
+            (user_id, password_hash),
+        )
         return True
     except Exception as e:
         logging.error(f"设置用户Web密码失败: {str(e)}")
         return False
-    finally:
-        cursor.close()
-        connection.close()
 
-def process_set_web_password(user_id, password):
+async def process_set_web_password(user_id, password):
     """处理设置Web密码逻辑"""
     # 验证密码格式
     is_valid, message = validate_password(password)
@@ -84,11 +72,11 @@ def process_set_web_password(user_id, password):
     password_hash = hash_password(password)
     
     # 检查是否已有密码
-    existing_password = get_user_web_password(user_id)
+    existing_password = await get_user_web_password(user_id)
     is_update = existing_password is not None
     
     # 设置密码
-    if set_user_web_password(user_id, password_hash):
+    if await set_user_web_password(user_id, password_hash):
         action = "更新" if is_update else "设置"
         return {
             "success": True,
@@ -100,22 +88,6 @@ def process_set_web_password(user_id, password):
             "success": False,
             "message": "设置Web密码时发生错误，请稍后再试"
         }
-
-async def async_process_set_web_password(user_id, password):
-    """异步处理设置Web密码"""
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        web_password_executor,
-        lambda: process_set_web_password(user_id, password)
-    )
-
-async def async_get_user_web_password(user_id):
-    """异步获取用户Web密码信息"""
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        web_password_executor,
-        lambda: get_user_web_password(user_id)
-    )
 
 @cooldown
 async def webpassword_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -147,14 +119,14 @@ async def webpassword_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     # 检查是否提供了密码参数
     if not context.args:
         # 显示当前密码状态
-        password_info = await async_get_user_web_password(user_id)
+        password_info = await get_user_web_password(user_id)
         if password_info:
             message = (
                 f"🔐 <b>Web密码状态</b>\n\n"
                 f"用户: @{escaped_username}\n"
                 f"状态: <b>已设置</b>\n"
-                f"设置时间: {password_info[1].strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"更新时间: {password_info[2].strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                f"设置时间: {password_info['created_at'].strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"更新时间: {password_info['updated_at'].strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 f"使用方法: <code>/webpassword 新密码</code>\n"
                 f"密码要求: 6-20位，包含字母和数字"
             )
@@ -184,7 +156,7 @@ async def webpassword_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     password = " ".join(context.args)
     
     # 异步处理设置密码
-    result = await async_process_set_web_password(user_id, password)
+    result = await process_set_web_password(user_id, password)
     
     # 构建响应消息
     if result["success"]:

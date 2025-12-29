@@ -2,7 +2,7 @@ import logging
 import os
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
-import mysql.connector
+from sqlalchemy.exc import SQLAlchemyError
 from core import config, mysql_connection
 import tempfile
 from core.command_cooldown import cooldown # 导入冷却装饰器
@@ -19,48 +19,75 @@ async def get_bot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        # 连接数据库
-        connection = mysql_connection.create_connection()
-        cursor = connection.cursor(dictionary=True) # 使用字典游标方便获取列名
-        
-        # --- 获取统计计数 ---
-        cursor.execute("SELECT COUNT(*) as count FROM user")
-        user_count = cursor.fetchone()['count']
-        
-        cursor.execute("SELECT COUNT(DISTINCT group_id) as count FROM group_keywords")
-        keyword_group_count = cursor.fetchone()['count']
-        
-        cursor.execute("SELECT COUNT(*) as count FROM group_verification")
-        verify_group_count = cursor.fetchone()['count']
-        
-        cursor.execute("SELECT COUNT(*) as count FROM group_spam_control WHERE enabled = TRUE")
-        spam_group_count = cursor.fetchone()['count']
-        
-        cursor.execute("SELECT COUNT(DISTINCT group_id) as count FROM group_chart_tokens")
-        chart_group_count = cursor.fetchone()['count']
-        
-        # --- 获取群组 ID 列表 (限制最多20个) ---
-        limit = 20
-        cursor.execute(f"SELECT DISTINCT group_id FROM group_keywords LIMIT {limit}")
-        keyword_group_ids = [str(row['group_id']) for row in cursor.fetchall()]
-        
-        cursor.execute(f"SELECT group_id FROM group_verification LIMIT {limit}") # verification表主键是group_id, 无需distinct
-        verify_group_ids = [str(row['group_id']) for row in cursor.fetchall()]
-        
-        cursor.execute(f"SELECT group_id FROM group_spam_control WHERE enabled = TRUE LIMIT {limit}") # spam表主键是group_id, 无需distinct
-        spam_group_ids = [str(row['group_id']) for row in cursor.fetchall()]
-        
-        cursor.execute(f"SELECT DISTINCT group_id FROM group_chart_tokens LIMIT {limit}")
-        chart_group_ids = [str(row['group_id']) for row in cursor.fetchall()]
+        user_row = await mysql_connection.fetch_one(
+            "SELECT COUNT(*) as count FROM user",
+            mapping=True,
+        )
+        user_count = user_row["count"] if user_row else 0
 
-        # --- 获取用户列表 (按ID降序，作为最近用户) ---
-        cursor.execute("""
+        keyword_row = await mysql_connection.fetch_one(
+            "SELECT COUNT(DISTINCT group_id) as count FROM group_keywords",
+            mapping=True,
+        )
+        keyword_group_count = keyword_row["count"] if keyword_row else 0
+
+        verify_row = await mysql_connection.fetch_one(
+            "SELECT COUNT(*) as count FROM group_verification",
+            mapping=True,
+        )
+        verify_group_count = verify_row["count"] if verify_row else 0
+
+        spam_row = await mysql_connection.fetch_one(
+            "SELECT COUNT(*) as count FROM group_spam_control WHERE enabled = TRUE",
+            mapping=True,
+        )
+        spam_group_count = spam_row["count"] if spam_row else 0
+
+        chart_row = await mysql_connection.fetch_one(
+            "SELECT COUNT(DISTINCT group_id) as count FROM group_chart_tokens",
+            mapping=True,
+        )
+        chart_group_count = chart_row["count"] if chart_row else 0
+
+        limit = 20
+        keyword_group_ids = [
+            str(row["group_id"])
+            for row in await mysql_connection.fetch_all(
+                f"SELECT DISTINCT group_id FROM group_keywords LIMIT {limit}",
+                mapping=True,
+            )
+        ]
+        verify_group_ids = [
+            str(row["group_id"])
+            for row in await mysql_connection.fetch_all(
+                f"SELECT group_id FROM group_verification LIMIT {limit}",
+                mapping=True,
+            )
+        ]
+        spam_group_ids = [
+            str(row["group_id"])
+            for row in await mysql_connection.fetch_all(
+                f"SELECT group_id FROM group_spam_control WHERE enabled = TRUE LIMIT {limit}",
+                mapping=True,
+            )
+        ]
+        chart_group_ids = [
+            str(row["group_id"])
+            for row in await mysql_connection.fetch_all(
+                f"SELECT DISTINCT group_id FROM group_chart_tokens LIMIT {limit}",
+                mapping=True,
+            )
+        ]
+
+        recent_users = await mysql_connection.fetch_all(
+            """
             SELECT id, name
             FROM user 
             ORDER BY id DESC 
             LIMIT 10
-        """)
-        recent_users = cursor.fetchall()
+            """,
+            mapping=True,
+        )
         
         # --- 构建统计信息消息 ---
         stats_message = f"🤖 *机器人统计信息*\n\n"
@@ -87,10 +114,6 @@ async def get_bot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats_message += f"🛡️ 垃圾控制: `{', '.join(spam_group_ids) if spam_group_ids else '无'}`\n"
         stats_message += f"📈 图表: `{', '.join(chart_group_ids) if chart_group_ids else '无'}`\n"
 
-        # 关闭数据库连接
-        cursor.close()
-        connection.close()
-        
         # 发送消息 (如果太长可能需要分段或发文件)
         if len(stats_message) > 4000:
             await update.message.reply_text("统计信息过长，将以文件形式发送。")
@@ -108,7 +131,7 @@ async def get_bot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
            await update.message.reply_text(stats_message, parse_mode='Markdown')
         
-    except mysql.connector.Error as db_err:
+    except SQLAlchemyError as db_err:
         logging.error(f"数据库查询出错: {str(db_err)}")
         await update.message.reply_text(f"数据库查询出错: {str(db_err)}")
     except Exception as e:

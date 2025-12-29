@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import base64
+import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
-from .mysql_connection import create_connection, db_executor
+from sqlalchemy.exc import OperationalError
+
+from . import mysql_connection
 
 _bot_user_id: Optional[int] = None
 _bot_display_name: str = "FogMoeBot"
@@ -36,8 +38,7 @@ async def log_group_message(message, group_id: int) -> None:
     created_at = message.date or datetime.utcnow().replace(tzinfo=timezone.utc)
 
     record = (group_id, message_id, user_id, message_type, content, created_at)
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(db_executor, lambda: _sync_log_group_message(record))
+    await _log_group_message(record)
 
 
 def _encode_non_text(value: str) -> str:
@@ -82,7 +83,7 @@ def _extract_message_payload(message) -> Tuple[str, str]:
     return "other", _encode_non_text("[unsupported message]")
 
 
-def _sync_log_group_message(record: Tuple[int, int, int, str, str, datetime]) -> None:
+async def _log_group_message(record: Tuple[int, int, int, str, str, datetime]) -> None:
     group_id, message_id, user_id, message_type, content, created_at = record
 
     content = content or ""
@@ -90,118 +91,149 @@ def _sync_log_group_message(record: Tuple[int, int, int, str, str, datetime]) ->
     if created_at.tzinfo is not None:
         created_at = created_at.astimezone(timezone.utc).replace(tzinfo=None)
 
-    connection = create_connection()
-    cursor = connection.cursor()
     try:
-        insert_sql = (
-            "INSERT INTO chat_records_group (group_id, message_id, user_id, message_type, content, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s)"
-        )
-        cursor.execute(insert_sql, (group_id, message_id, user_id, message_type, content, created_at))
-        connection.commit()
-
-        cleanup_sql = (
-            "DELETE FROM chat_records_group "
-            "WHERE group_id = %s AND id NOT IN ("
-            "  SELECT id FROM ("
-            "    SELECT id FROM chat_records_group "
-            "    WHERE group_id = %s "
-            "    ORDER BY created_at DESC, id DESC "
-            "    LIMIT 100"
-            "  ) AS recent"
-            ")"
-        )
-        cursor.execute(cleanup_sql, (group_id, group_id))
-        connection.commit()
+        async with mysql_connection.transaction() as connection:
+            insert_sql = (
+                "INSERT INTO chat_records_group (group_id, message_id, user_id, message_type, content, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s)"
+            )
+            await connection.exec_driver_sql(
+                insert_sql,
+                (group_id, message_id, user_id, message_type, content, created_at),
+            )
     except Exception as exc:
         logging.error("Failed to log group message: %s", exc)
-        connection.rollback()
-    finally:
-        cursor.close()
-        connection.close()
+        raise
+
+    # Cleanup is best-effort; avoid failing the message insert on deadlocks.
+    try:
+        await _cleanup_group_history(group_id)
+    except OperationalError as exc:
+        if _is_lock_error(exc):
+            logging.warning("Skipping chat record cleanup due to lock error: %s", exc)
+            return
+        logging.error("Failed to cleanup group history: %s", exc)
+        raise
+    except Exception as exc:
+        logging.error("Failed to cleanup group history: %s", exc)
+        raise
 
 
-def get_group_context(group_id: int, around_message_id: Optional[int] = None, window_size: int = 5) -> List[Dict[str, object]]:
+def _is_lock_error(exc: OperationalError) -> bool:
+    code = getattr(getattr(exc, "orig", None), "args", [None])[0]
+    return code in {1205, 1213}
+
+
+async def _cleanup_group_history(group_id: int, retries: int = 3) -> None:
+    cleanup_sql = (
+        "DELETE FROM chat_records_group "
+        "WHERE group_id = %s AND id NOT IN ("
+        "  SELECT id FROM ("
+        "    SELECT id FROM chat_records_group "
+        "    WHERE group_id = %s "
+        "    ORDER BY created_at DESC, id DESC "
+        "    LIMIT 100"
+        "  ) AS recent"
+        ")"
+    )
+
+    for attempt in range(retries):
+        try:
+            async with mysql_connection.transaction() as connection:
+                await connection.exec_driver_sql(cleanup_sql, (group_id, group_id))
+            return
+        except OperationalError as exc:
+            if _is_lock_error(exc) and attempt < retries - 1:
+                await asyncio.sleep(0.05 * (2**attempt))
+                continue
+            raise
+
+
+def get_group_context(
+    group_id: int,
+    around_message_id: Optional[int] = None,
+    window_size: int = 5,
+) -> List[Dict[str, object]]:
     if not group_id:
         return []
-    return _sync_get_group_context(group_id, around_message_id, window_size)
-
-
-async def async_get_group_context(group_id: int, around_message_id: Optional[int] = None, window_size: int = 5) -> List[Dict[str, object]]:
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        db_executor,
-        lambda: _sync_get_group_context(group_id, around_message_id, window_size)
+    return mysql_connection.run_sync(
+        async_get_group_context(group_id, around_message_id, window_size)
     )
 
 
-def _sync_get_group_context(group_id: int, around_message_id: Optional[int], window_size: int) -> List[Dict[str, object]]:
-    connection = create_connection()
-    cursor = connection.cursor(dictionary=True)
-    try:
-        if around_message_id:
-            cursor.execute(
-                "SELECT cr.id, cr.message_id, cr.user_id, cr.message_type, cr.content, cr.created_at, u.name AS username "
-                "FROM chat_records_group cr "
-                "LEFT JOIN user u ON u.id = cr.user_id "
-                "WHERE group_id = %s AND message_id <= %s "
-                "ORDER BY created_at DESC, id DESC LIMIT %s",
-                (group_id, around_message_id, window_size),
-            )
-            before = cursor.fetchall()
-
-            cursor.execute(
-                "SELECT cr.id, cr.message_id, cr.user_id, cr.message_type, cr.content, cr.created_at, u.name AS username "
-                "FROM chat_records_group cr "
-                "LEFT JOIN user u ON u.id = cr.user_id "
-                "WHERE group_id = %s AND message_id > %s "
-                "ORDER BY created_at ASC, id ASC LIMIT %s",
-                (group_id, around_message_id, window_size),
-            )
-            after = cursor.fetchall()
-
-            records = list(reversed(before)) + after
-        else:
-            cursor.execute(
-                "SELECT cr.id, cr.message_id, cr.user_id, cr.message_type, cr.content, cr.created_at, u.name AS username "
-                "FROM chat_records_group cr "
-                "LEFT JOIN user u ON u.id = cr.user_id "
-                "WHERE group_id = %s "
-                "ORDER BY created_at DESC, id DESC LIMIT %s",
-                (group_id, window_size),
-            )
-            records = list(reversed(cursor.fetchall()))
-
-        return [
-            {
-                "message_id": row["message_id"],
-                "user_id": row["user_id"],
-                "message_type": row["message_type"],
-                "username": (
-                    _bot_display_name
-                    if _bot_user_id is not None and row["user_id"] == _bot_user_id
-                    else row.get("username")
-                ),
-                "content": (
-                    row.get("content", "")
-                    if row["message_type"] == "text"
-                    else _decode_non_text(row.get("content", ""))
-                ),
-                "created_at": row["created_at"].isoformat(sep=" ") if row.get("created_at") else None,
-            }
-            for row in records
-        ]
-    except Exception as exc:
-        logging.error("Failed to fetch group context: %s", exc)
+async def async_get_group_context(
+    group_id: int,
+    around_message_id: Optional[int] = None,
+    window_size: int = 5,
+) -> List[Dict[str, object]]:
+    if not group_id:
         return []
-    finally:
-        cursor.close()
-        connection.close()
+    return await _get_group_context(group_id, around_message_id, window_size)
 
 
-__all__ = [
-    "log_group_message",
-    "get_group_context",
-    "async_get_group_context",
-    "set_bot_identity",
-]
+async def _get_group_context(
+    group_id: int,
+    around_message_id: Optional[int],
+    window_size: int,
+) -> List[Dict[str, object]]:
+    async with mysql_connection.connect() as connection:
+        try:
+            if around_message_id:
+                before = await mysql_connection.fetch_all(
+                    "SELECT cr.id, cr.message_id, cr.user_id, cr.message_type, cr.content, cr.created_at, u.name AS username "
+                    "FROM chat_records_group cr "
+                    "LEFT JOIN user u ON u.id = cr.user_id "
+                    "WHERE group_id = %s AND message_id <= %s "
+                    "ORDER BY created_at DESC, id DESC LIMIT %s",
+                    (group_id, around_message_id, window_size),
+                    mapping=True,
+                    connection=connection,
+                )
+
+                after = await mysql_connection.fetch_all(
+                    "SELECT cr.id, cr.message_id, cr.user_id, cr.message_type, cr.content, cr.created_at, u.name AS username "
+                    "FROM chat_records_group cr "
+                    "LEFT JOIN user u ON u.id = cr.user_id "
+                    "WHERE group_id = %s AND message_id > %s "
+                    "ORDER BY created_at ASC, id ASC LIMIT %s",
+                    (group_id, around_message_id, window_size),
+                    mapping=True,
+                    connection=connection,
+                )
+
+                records = list(reversed(before)) + list(after)
+            else:
+                records = await mysql_connection.fetch_all(
+                    "SELECT cr.id, cr.message_id, cr.user_id, cr.message_type, cr.content, cr.created_at, u.name AS username "
+                    "FROM chat_records_group cr "
+                    "LEFT JOIN user u ON u.id = cr.user_id "
+                    "WHERE group_id = %s "
+                    "ORDER BY created_at DESC, id DESC LIMIT %s",
+                    (group_id, window_size),
+                    mapping=True,
+                    connection=connection,
+                )
+                records = list(reversed(records))
+
+            return [
+                {
+                    "message_id": row["message_id"],
+                    "user_id": row["user_id"],
+                    "message_type": row["message_type"],
+                    "username": (
+                        _bot_display_name
+                        if _bot_user_id is not None and row["user_id"] == _bot_user_id
+                        else row.get("username")
+                    ),
+                    "content": (
+                        row.get("content", "")
+                        if row["message_type"] == "text"
+                        else _decode_non_text(row.get("content", ""))
+                    ),
+                    "created_at": row["created_at"].isoformat(sep=" ") if row.get("created_at") else None,
+                }
+                for row in records
+            ]
+        except Exception as exc:
+            logging.error("Failed to fetch group context: %s", exc)
+            return []

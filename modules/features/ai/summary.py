@@ -51,29 +51,24 @@ def _process_summary_for_user(user_id: int) -> None:
 
 
 def _fetch_pending_snapshot(user_id: int) -> Optional[Tuple[int, str]]:
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
-    try:
-        cursor.execute(
+    row = mysql_connection.run_sync(
+        mysql_connection.fetch_one(
             "SELECT id, conversation_snapshot FROM permanent_chat_records "
             "WHERE user_id = %s AND (summary IS NULL OR summary = '') "
             "ORDER BY created_at DESC, id DESC LIMIT 1",
             (user_id,),
         )
-        row = cursor.fetchone()
-        if not row:
-            return None
+    )
+    if not row:
+        return None
 
-        snapshot = row[1]
-        if isinstance(snapshot, bytes):
-            snapshot = snapshot.decode("utf-8")
-        elif not isinstance(snapshot, str):
-            snapshot = json.dumps(snapshot, ensure_ascii=False)
+    snapshot = row[1]
+    if isinstance(snapshot, bytes):
+        snapshot = snapshot.decode("utf-8")
+    elif not isinstance(snapshot, str):
+        snapshot = json.dumps(snapshot, ensure_ascii=False)
 
-        return row[0], snapshot
-    finally:
-        cursor.close()
-        connection.close()
+    return row[0], snapshot
 
 
 def _generate_summary(user_id: int, snapshot_text: str) -> Optional[str]:
@@ -132,14 +127,9 @@ def _generate_summary(user_id: int, snapshot_text: str) -> Optional[str]:
 
 
 def _store_summary(record_id: int, summary_text: str) -> None:
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
-    try:
-        cursor.execute(
+    mysql_connection.run_sync(
+        mysql_connection.execute(
             "UPDATE permanent_chat_records SET summary = %s WHERE id = %s",
             (summary_text, record_id),
         )
-        connection.commit()
-    finally:
-        cursor.close()
-        connection.close()
+    )

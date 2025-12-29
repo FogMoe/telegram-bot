@@ -2,6 +2,7 @@
 # replace with secure storage (e.g., environment variable / secrets manager)
 from dotenv import load_dotenv
 from pathlib import Path
+from urllib.parse import quote_plus
 import os
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -26,6 +27,27 @@ MYSQL_CONFIG = {
     'password': os.getenv("MYSQL_PASSWORD"),
     'database': os.getenv("MYSQL_DATABASE")
 }
+
+MYSQL_POOL_SIZE = int(os.getenv("MYSQL_POOL_SIZE", "5"))
+MYSQL_MAX_OVERFLOW = int(os.getenv("MYSQL_MAX_OVERFLOW", "10"))
+MYSQL_POOL_RECYCLE = int(os.getenv("MYSQL_POOL_RECYCLE", "1800"))
+MYSQL_CONNECT_TIMEOUT = int(os.getenv("MYSQL_CONNECT_TIMEOUT", "10"))
+
+def _build_mysql_dsn() -> str:
+    user = MYSQL_CONFIG.get("user") or ""
+    password = MYSQL_CONFIG.get("password") or ""
+    host = MYSQL_CONFIG.get("host") or "localhost"
+    database = MYSQL_CONFIG.get("database") or ""
+    port = os.getenv("MYSQL_PORT")
+
+    auth = user
+    if password:
+        auth = f"{user}:{quote_plus(password)}"
+
+    location = f"{host}:{port}" if port else host
+    return f"mysql+asyncmy://{auth}@{location}/{database}?charset=utf8mb4"
+
+SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL") or _build_mysql_dsn()
 
 # 日志级别 (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 LOG_LEVEL="INFO"

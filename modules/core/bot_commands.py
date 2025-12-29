@@ -8,7 +8,7 @@ from telegram import InlineQueryResultArticle, InputTextMessageContent, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 import telegram
-import mysql.connector
+from sqlalchemy.exc import SQLAlchemyError
 
 from core import config, mysql_connection, process_user
 from core.command_cooldown import cooldown
@@ -151,35 +151,21 @@ async def admin_announce(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_ids = set()
     group_ids = set()
 
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
-        # 获取用户ID
-        cursor.execute("SELECT id FROM user")
-        users = cursor.fetchall()
+        users = await mysql_connection.fetch_all("SELECT id FROM user")
         user_ids.update(user[0] for user in users)
 
-        # 获取群组ID (从多个表中收集)
-        group_tables = ['group_keywords', 'group_verification', 'group_spam_control', 'group_chart_tokens']
+        group_tables = ["group_keywords", "group_verification", "group_spam_control", "group_chart_tokens"]
         for table in group_tables:
             try:
-                # 假设这些表都有 group_id 列
-                cursor.execute(f"SELECT DISTINCT group_id FROM {table}")
-                groups = cursor.fetchall()
+                groups = await mysql_connection.fetch_all(f"SELECT DISTINCT group_id FROM {table}")
                 group_ids.update(group[0] for group in groups)
-            except mysql.connector.Error as table_err:
-                # 如果某个表不存在或查询出错，记录日志并继续
+            except SQLAlchemyError as table_err:
                 logging.warning(f"查询群组表 {table} 时出错: {table_err}")
-
-    except mysql.connector.Error as db_err:
+    except SQLAlchemyError as db_err:
         logging.error(f"数据库查询出错: {db_err}")
         await update.message.reply_text(f"数据库查询时出错: {db_err}")
-        cursor.close()
-        connection.close()
-        return # 查询出错则不继续发送
-    finally:
-        cursor.close()
-        connection.close()
+        return
 
     # --- 发送公告 ---
     user_success = 0
@@ -252,48 +238,26 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Connect to the database
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
-
     try:
-        # Insert user data into the database
-        insert_query = """
-        INSERT INTO user (id, name) VALUES (%s, %s)
-        ON DUPLICATE KEY UPDATE name = VALUES(name)
-        """
-        cursor.execute(insert_query, (user_id, user_name))
-        connection.commit()
+        insert_query = (
+            "INSERT INTO user (id, name) VALUES (%s, %s) "
+            "ON DUPLICATE KEY UPDATE name = VALUES(name)"
+        )
+        select_query = "SELECT coins, permission FROM user WHERE id = %s"
 
-        # 查询用户信息
-        select_query = """
-        SELECT coins, permission FROM user WHERE id = %s
-        """
-        cursor.execute(select_query, (user_id,))
-        result = cursor.fetchone()
-        user_coins = result[0] if result else 0
-        user_permission = result[1] if result else 0
-    except mysql.connector.Error as err:
-        if err.errno == 1048:  # Column 'name' cannot be null
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="您需要设置Telegram用户名才能使用机器人。\n"
-                     "请在Telegram设置中设置用户名后再尝试。\n\n"
-                     "You need to set a Telegram username to use this bot.\n"
-                     "Please set your username in Telegram settings and try again."
-            )
-            return
-        else:
-            # 其他数据库错误
-            logging.error(f"数据库错误: {err}")
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="发生错误，请稍后再试。\nAn error occurred, please try again later."
-            )
-            return
-    finally:
-        cursor.close()
-        connection.close()
+        async with mysql_connection.transaction() as connection:
+            await connection.exec_driver_sql(insert_query, (user_id, user_name))
+            result = await connection.exec_driver_sql(select_query, (user_id,))
+            row = result.fetchone()
+            user_coins = row[0] if row else 0
+            user_permission = row[1] if row else 0
+    except SQLAlchemyError as err:
+        logging.error(f"数据库错误: {err}")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="发生错误，请稍后再试。\nAn error occurred, please try again later."
+        )
+        return
 
     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"您的信息如下Your info: \n"
                                                                           f"名字Name: @{user_name}\n"
@@ -344,18 +308,14 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_id = update.effective_user.id
     conversation_id = user_id  # Assuming conversation_id is the user_id for simplicity
 
-    # 使用异步方式删除消息记录
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
-
     snapshot_created = False
 
-    try:
-        cursor.execute(
+    async with mysql_connection.transaction() as connection:
+        snapshot_row = await mysql_connection.fetch_one(
             "SELECT messages FROM chat_records WHERE conversation_id = %s",
             (conversation_id,),
+            connection=connection,
         )
-        snapshot_row = cursor.fetchone()
         conversation_snapshot = None
         if snapshot_row and snapshot_row[0]:
             raw_snapshot = snapshot_row[0]
@@ -367,13 +327,13 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 conversation_snapshot = str(raw_snapshot)
 
         if conversation_snapshot:
-            cursor.execute(
+            await connection.exec_driver_sql(
                 "INSERT INTO permanent_chat_records (user_id, conversation_snapshot) VALUES (%s, %s)",
                 (user_id, conversation_snapshot),
             )
             snapshot_created = True
 
-            cursor.execute(
+            await connection.exec_driver_sql(
                 """
                 DELETE FROM permanent_chat_records
                 WHERE user_id = %s
@@ -389,13 +349,10 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 (user_id, user_id),
             )
 
-        # Delete messages for the conversation_id
-        delete_query = "DELETE FROM chat_records WHERE conversation_id = %s"
-        cursor.execute(delete_query, (conversation_id,))
-        connection.commit()
-    finally:
-        cursor.close()
-        connection.close()
+        await connection.exec_driver_sql(
+            "DELETE FROM chat_records WHERE conversation_id = %s",
+            (conversation_id,),
+        )
 
     if snapshot_created:
         summary.schedule_summary_generation(user_id)
@@ -407,17 +364,12 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def setmyinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    # 获取用户当前保存的信息
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
-    try:
-        cursor.execute("SELECT info FROM user WHERE id = %s", (user_id,))
-        result = cursor.fetchone()
-        current_info = result[0] if result else "无"
-        await update.message.reply_text(f"您当前保存的个人自定义信息是Your current personal info is:\n{current_info}")
-    finally:
-        cursor.close()
-        connection.close()
+    current_row = await mysql_connection.fetch_one(
+        "SELECT info FROM user WHERE id = %s",
+        (user_id,),
+    )
+    current_info = current_row[0] if current_row else "无"
+    await update.message.reply_text(f"您当前保存的个人自定义信息是Your current personal info is:\n{current_info}")
 
     if not context.args:
         await update.message.reply_text("请在 /setmyinfo 命令后输入要您要保存的个人自定义信息，仅在新对话中有效。\nThe personal information you want to save should be entered after the command, only available in new conversations.\n\n在命令后输入CLEAR可以清空个人自定义信息（例如/setmyinfo CLEAR ）。\nEnter CLEAR after the command to clear the personal information.(e.g./setmyinfo CLEAR)")
@@ -433,16 +385,11 @@ async def setmyinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("最长500个字符，个人自定义信息长度超过500字符，请重试。\nThe maximum length is 500 characters, the personal information length exceeds 500 characters, please try again.")
         return
 
-    # 更新数据库
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
-    try:
-        cursor.execute("UPDATE user SET info = %s WHERE id = %s", (user_info, user_id))
-        connection.commit()
-        await update.message.reply_text("个人自定义信息已更新。\nPersonal information has been updated.")
-    finally:
-        cursor.close()
-        connection.close()
+    await mysql_connection.execute(
+        "UPDATE user SET info = %s WHERE id = %s",
+        (user_info, user_id),
+    )
+    await update.message.reply_text("个人自定义信息已更新。\nPersonal information has been updated.")
 
 
 @cooldown
@@ -453,18 +400,12 @@ async def rich_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("查询过于频繁，每60秒只能查询一次，请稍后再试。")
         return
     last_rich_query_time = current_time
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
         query = "SELECT name, coins FROM user ORDER BY coins DESC LIMIT 5"
-        cursor.execute(query)
-        results = cursor.fetchall()
+        results = await mysql_connection.fetch_all(query)
     except Exception as e:
         await update.message.reply_text(f"查询富豪榜时出错：{str(e)}")
         return
-    finally:
-        cursor.close()
-        connection.close()
 
     if not results:
         await update.message.reply_text("暂无数据")
@@ -499,48 +440,51 @@ async def give_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     sender_id = update.effective_user.id
 
-    # 连接数据库进行操作
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
-        # 检查发送者是否存在，并获取硬币
-        select_sender = "SELECT coins FROM user WHERE id = %s"
-        cursor.execute(select_sender, (sender_id,))
-        sender_data = cursor.fetchone()
-        if not sender_data:
-            await update.message.reply_text("请先使用 /me 命令注册个人信息。")
-            return
-        sender_coins = sender_data[0]
-        if sender_coins < amount:
-            await update.message.reply_text(f"您的硬币不足，当前硬币：{sender_coins}，需要：{amount}")
-            return
+        async with mysql_connection.transaction() as connection:
+            sender_row = await mysql_connection.fetch_one(
+                "SELECT coins FROM user WHERE id = %s",
+                (sender_id,),
+                connection=connection,
+            )
+            if not sender_row:
+                await update.message.reply_text("请先使用 /me 命令注册个人信息。")
+                return
+            sender_coins = sender_row[0]
+            if sender_coins < amount:
+                await update.message.reply_text(
+                    f"您的硬币不足，当前硬币：{sender_coins}，需要：{amount}"
+                )
+                return
 
-        # 根据目标用户名查找接收者ID
-        select_recipient = "SELECT id FROM user WHERE name = %s"
-        cursor.execute(select_recipient, (target_name,))
-        recipient_data = cursor.fetchone()
-        if not recipient_data:
-            await update.message.reply_text(f"未找到用户名为 '{target_name}' 的用户。")
-            return
-        recipient_id = recipient_data[0]
+            recipient_row = await mysql_connection.fetch_one(
+                "SELECT id FROM user WHERE name = %s",
+                (target_name,),
+                connection=connection,
+            )
+            if not recipient_row:
+                await update.message.reply_text(
+                    f"未找到用户名为 '{target_name}' 的用户。"
+                )
+                return
+            recipient_id = recipient_row[0]
 
-        if sender_id == recipient_id:
-            await update.message.reply_text("不能给自己赠送硬币哦~")
-            return
+            if sender_id == recipient_id:
+                await update.message.reply_text("不能给自己赠送硬币哦~")
+                return
 
-        # 开始转账操作：扣除发送者硬币，加到账户接收者
-        update_sender = "UPDATE user SET coins = coins - %s WHERE id = %s"
-        update_recipient = "UPDATE user SET coins = coins + %s WHERE id = %s"
-        cursor.execute(update_sender, (amount, sender_id))
-        cursor.execute(update_recipient, (amount, recipient_id))
-        connection.commit()
+            await connection.exec_driver_sql(
+                "UPDATE user SET coins = coins - %s WHERE id = %s",
+                (amount, sender_id),
+            )
+            await connection.exec_driver_sql(
+                "UPDATE user SET coins = coins + %s WHERE id = %s",
+                (amount, recipient_id),
+            )
+
         await update.message.reply_text(f"成功赠送 {amount} 枚硬币给用户 {target_name}。")
     except Exception as e:
-        connection.rollback()
         await update.message.reply_text("转账过程中出现错误，请稍后再试。")
-    finally:
-        cursor.close()
-        connection.close()
 
 
 async def my_chat_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -643,16 +587,10 @@ async def tl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
 
-    # 扣除硬币
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
-    try:
-        update_query = "UPDATE user SET coins = coins - %s WHERE id = %s"
-        cursor.execute(update_query, (coin_cost, user_id))
-        connection.commit()
-    finally:
-        cursor.close()
-        connection.close()
+    await mysql_connection.execute(
+        "UPDATE user SET coins = coins - %s WHERE id = %s",
+        (coin_cost, user_id),
+    )
 
     # 不发送正在翻译状态
     # await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
@@ -669,13 +607,7 @@ async def tl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             "翻译服务暂时不可用，请稍后重试。\n"
             "Translation service is temporarily unavailable, please try again later. Your coins have been refunded."
         )
-        # 退还硬币
-        connection = mysql_connection.create_connection()
-        cursor = connection.cursor()
-        try:
-            update_query = "UPDATE user SET coins = coins + %s WHERE id = %s"
-            cursor.execute(update_query, (coin_cost, user_id))
-            connection.commit()
-        finally:
-            cursor.close()
-            connection.close()
+        await mysql_connection.execute(
+            "UPDATE user SET coins = coins + %s WHERE id = %s",
+            (coin_cost, user_id),
+        )

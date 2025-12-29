@@ -85,16 +85,13 @@ def can_trigger_keyword(chat_id):
 
 
 # 从数据库加载指定群组的关键词
-def load_keywords_from_db(chat_id):
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
+async def load_keywords_from_db(chat_id):
     try:
         # 使用参数化查询，chat_id作为参数而非直接拼接
-        cursor.execute(
+        keywords = await mysql_connection.fetch_all(
             "SELECT keyword, response FROM group_keywords WHERE group_id = %s",
-            (chat_id,)
+            (chat_id,),
         )
-        keywords = cursor.fetchall()
         
         # 线程安全地更新缓存
         with cache_lock:
@@ -106,13 +103,10 @@ def load_keywords_from_db(chat_id):
     except Exception as e:
         logging.error(f"从数据库加载关键词时出错: {str(e)}")
         return []
-    finally:
-        cursor.close()
-        connection.close()
 
 
 # 获取群组关键词（优先使用缓存）
-def get_group_keywords(chat_id):
+async def get_group_keywords(chat_id):
     now = time.time()
     
     # 线程安全地读取缓存
@@ -125,7 +119,7 @@ def get_group_keywords(chat_id):
                 return cache_data["keywords"]
     
     # 缓存不存在或已过期，从数据库重新加载
-    return load_keywords_from_db(chat_id)
+    return await load_keywords_from_db(chat_id)
 
 
 @cooldown
@@ -185,7 +179,7 @@ async def show_keywords(update: Update, chat_id: int):
     """显示群组的关键词列表"""
     try:
         # 使用缓存机制获取关键词
-        keywords = get_group_keywords(chat_id)
+        keywords = await get_group_keywords(chat_id)
         
         if not keywords:
             await update.message.reply_text(
@@ -226,13 +220,12 @@ async def add_keyword(update: Update, chat_id: int, user_id: int, keyword: str, 
     # HTML净化
     response = sanitize_html(response)
     
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
         # 首先检查是否是更新现有关键词，安全使用参数
-        cursor.execute("SELECT keyword FROM group_keywords WHERE group_id = %s AND keyword = %s", 
-                      (chat_id, keyword))
-        existing_keyword = cursor.fetchone()
+        existing_keyword = await mysql_connection.fetch_one(
+            "SELECT keyword FROM group_keywords WHERE group_id = %s AND keyword = %s",
+            (chat_id, keyword),
+        )
         
         # 如果不是更新现有关键词，检查群组关键词数量是否已达上限
         if not existing_keyword:
@@ -243,24 +236,28 @@ async def add_keyword(update: Update, chat_id: int, user_id: int, keyword: str, 
                     return
             
             # 缓存不存在或不确定，查询数据库
-            cursor.execute("SELECT COUNT(*) FROM group_keywords WHERE group_id = %s", (chat_id,))
-            keyword_count = cursor.fetchone()[0]
+            count_row = await mysql_connection.fetch_one(
+                "SELECT COUNT(*) FROM group_keywords WHERE group_id = %s",
+                (chat_id,),
+            )
+            keyword_count = count_row[0] if count_row else 0
             
             if keyword_count >= 10:
                 await update.message.reply_text("每个群组最多只能设置10个关键词，请先删除一些关键词再添加。")
                 return
         
         # 添加或更新关键词，使用参数化查询防止注入
-        cursor.execute(
-            """INSERT INTO group_keywords (group_id, keyword, response, created_by) 
+        await mysql_connection.execute(
+            """
+            INSERT INTO group_keywords (group_id, keyword, response, created_by) 
             VALUES (%s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE response = VALUES(response), created_by = VALUES(created_by)""",
-            (chat_id, keyword, response, user_id)
+            ON DUPLICATE KEY UPDATE response = VALUES(response), created_by = VALUES(created_by)
+            """,
+            (chat_id, keyword, response, user_id),
         )
-        connection.commit()
         
         # 更新成功后，强制刷新缓存
-        load_keywords_from_db(chat_id)
+        await load_keywords_from_db(chat_id)
         
         # 检查是更新还是新增
         if existing_keyword:
@@ -270,33 +267,24 @@ async def add_keyword(update: Update, chat_id: int, user_id: int, keyword: str, 
     except Exception as e:
         logging.error(f"添加关键词时出错: {str(e)}")
         await update.message.reply_text(f"添加关键词时出错: {str(e)}")
-    finally:
-        cursor.close()
-        connection.close()
 
 async def del_keyword(update: Update, chat_id: int, keyword: str):
     """删除关键词"""
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
+        rowcount = await mysql_connection.execute(
             "DELETE FROM group_keywords WHERE group_id = %s AND keyword = %s",
-            (chat_id, keyword)
+            (chat_id, keyword),
         )
-        connection.commit()
         
         # 删除后，强制刷新缓存
-        if cursor.rowcount > 0:
-            load_keywords_from_db(chat_id)
+        if rowcount > 0:
+            await load_keywords_from_db(chat_id)
             await update.message.reply_text(f"已删除关键词触发器：'{keyword}'")
         else:
             await update.message.reply_text(f"未找到关键词：'{keyword}'")
     except Exception as e:
         logging.error(f"删除关键词时出错: {str(e)}")
         await update.message.reply_text(f"删除关键词时出错: {str(e)}")
-    finally:
-        cursor.close()
-        connection.close()
 
 # 添加帮助函数获取有效消息
 def get_effective_message(update: Update):
@@ -319,7 +307,7 @@ async def process_group_message(update: Update, context: ContextTypes.DEFAULT_TY
     message_text = effective_message.text
     
     # 使用缓存获取关键词
-    keywords = get_group_keywords(chat_id)
+    keywords = await get_group_keywords(chat_id)
     
     if not keywords:
         return

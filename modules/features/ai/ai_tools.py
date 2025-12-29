@@ -218,38 +218,28 @@ def execute_python_code_tool(
 
 
 def _get_user_by_id(user_id: int) -> Optional[Dict[str, object]]:
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
-    try:
-        cursor.execute(
+    row = mysql_connection.run_sync(
+        mysql_connection.fetch_one(
             "SELECT id, name, coins FROM user WHERE id = %s",
             (user_id,),
         )
-        row = cursor.fetchone()
-        if not row:
-            return None
-        return {"id": row[0], "name": row[1], "coins": row[2]}
-    finally:
-        cursor.close()
-        connection.close()
+    )
+    if not row:
+        return None
+    return {"id": row[0], "name": row[1], "coins": row[2]}
 
 
 def _get_last_kindness_for_recipient(recipient_id: int) -> Optional[Dict[str, object]]:
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
-    try:
-        cursor.execute(
+    row = mysql_connection.run_sync(
+        mysql_connection.fetch_one(
             "SELECT amount, created_at FROM kindness_gifts "
             "WHERE recipient_id = %s ORDER BY created_at DESC LIMIT 1",
             (recipient_id,),
         )
-        row = cursor.fetchone()
-        if not row:
-            return None
-        return {"amount": row[0], "created_at": row[1]}
-    finally:
-        cursor.close()
-        connection.close()
+    )
+    if not row:
+        return None
+    return {"amount": row[0], "created_at": row[1]}
 
 
 def kindness_gift_tool(
@@ -285,23 +275,23 @@ def kindness_gift_tool(
         amt = random.randint(1, 10)
     amt = max(1, min(amt, 10))
 
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
-        process_user.update_user_coins(recipient["id"], amt)
-        cursor.execute(
-            "INSERT INTO kindness_gifts (recipient_id, amount, created_at) "
-            "VALUES (%s, %s, NOW())",
-            (recipient["id"], amt),
-        )
-        connection.commit()
+        async def _record_gift():
+            async with mysql_connection.transaction() as connection:
+                await connection.exec_driver_sql(
+                    "UPDATE user SET coins = coins + %s WHERE id = %s",
+                    (amt, recipient["id"]),
+                )
+                await connection.exec_driver_sql(
+                    "INSERT INTO kindness_gifts (recipient_id, amount, created_at) "
+                    "VALUES (%s, %s, NOW())",
+                    (recipient["id"], amt),
+                )
+
+        mysql_connection.run_sync(_record_gift())
     except Exception as exc:
-        connection.rollback()
         logging.error("Failed to record kindness gift: %s", exc)
         return {"error": "Error recording gift, please try again later"}
-    finally:
-        cursor.close()
-        connection.close()
 
     latest = _get_last_kindness_for_recipient(recipient["id"])
     last_time_str = None
@@ -344,7 +334,7 @@ def update_affection_tool(delta: int, **kwargs) -> dict:
         change = -10
 
     try:
-        affection = process_user.get_user_affection(user_id)
+        affection = process_user.get_user_affection_sync(user_id)
     except Exception as exc:
         logging.exception("Failed to fetch affection: %s", exc)
         return {"error": "Error querying affection level, please try again later"}
@@ -356,7 +346,7 @@ def update_affection_tool(delta: int, **kwargs) -> dict:
         return {"error": "Affection level has reached the limit, cannot adjust further"}
 
     try:
-        new_affection = process_user.update_user_affection(user_id, change)
+        new_affection = process_user.update_user_affection_sync(user_id, change)
     except Exception as exc:
         logging.exception("Failed to update affection: %s", exc)
         return {"error": "Error updating affection level, please try again later"}
@@ -381,7 +371,7 @@ def update_impression_tool(impression: str, **kwargs) -> dict:
         text = text[:500]
 
     try:
-        saved = process_user.update_user_impression(user_id, text)
+        saved = process_user.update_user_impression_sync(user_id, text)
     except Exception as exc:
         logging.exception("Failed to update impression: %s", exc)
         return {"error": "Error updating impression"}
@@ -419,16 +409,16 @@ def fetch_permanent_summaries_tool(start: Optional[int] = None, end: Optional[in
     window_size = max(1, min(window_size, 10))
     offset = start_idx - 1
 
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
-    try:
-        cursor.execute(
+    total_row = mysql_connection.run_sync(
+        mysql_connection.fetch_one(
             "SELECT COUNT(*) FROM permanent_chat_records WHERE user_id = %s AND summary IS NOT NULL AND summary != ''",
             (user_id,),
         )
-        total_rows = cursor.fetchone()[0] or 0
+    )
+    total_rows = total_row[0] if total_row and total_row[0] is not None else 0
 
-        cursor.execute(
+    rows = mysql_connection.run_sync(
+        mysql_connection.fetch_all(
             """
             SELECT id, summary, created_at
             FROM permanent_chat_records
@@ -438,10 +428,7 @@ def fetch_permanent_summaries_tool(start: Optional[int] = None, end: Optional[in
             """,
             (user_id, window_size, offset),
         )
-        rows = cursor.fetchall()
-    finally:
-        cursor.close()
-        connection.close()
+    )
 
     records = []
     for row in rows:

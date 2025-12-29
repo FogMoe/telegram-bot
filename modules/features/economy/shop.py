@@ -102,115 +102,107 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "shop_upgrade_1":
         # 执行购买升级权限到1级的操作
         async with lock:
-            connection = mysql_connection.create_connection()
-            cursor = connection.cursor()
             try:
-                select_query = "SELECT permission, coins FROM user WHERE id = %s"
-                cursor.execute(select_query, (user_id,))
-                result = cursor.fetchone()
-                if not result:
-                    await query.answer("请先使用 /me 命令获取个人信息。", show_alert=True)
-                    return
+                async with mysql_connection.transaction() as connection:
+                    result = await mysql_connection.fetch_one(
+                        "SELECT permission, coins FROM user WHERE id = %s",
+                        (user_id,),
+                        connection=connection,
+                    )
+                    if not result:
+                        await query.answer("请先使用 /me 命令获取个人信息。", show_alert=True)
+                        return
 
-                user_permission, user_coins = result
-                if user_permission != 0:
-                    await query.answer("您已经拥有权限或已升级。", show_alert=True)
-                elif user_coins < 50:
-                    await query.answer("硬币不足，无法购买此商品。", show_alert=True)
-                else:
-                    update_query = "UPDATE user SET coins = coins - %s, permission = %s WHERE id = %s"
-                    cursor.execute(update_query, (50, 1, user_id))
-                    connection.commit()
-                    await query.answer("购买成功！您的权限已升级到1级。", show_alert=True)
+                    user_permission, user_coins = result
+                    if user_permission != 0:
+                        await query.answer("您已经拥有权限或已升级。", show_alert=True)
+                    elif user_coins < 50:
+                        await query.answer("硬币不足，无法购买此商品。", show_alert=True)
+                    else:
+                        await connection.exec_driver_sql(
+                            "UPDATE user SET coins = coins - %s, permission = %s WHERE id = %s",
+                            (50, 1, user_id),
+                        )
+                        await query.answer("购买成功！您的权限已升级到1级。", show_alert=True)
             except Exception:
                 await query.answer("购买出现错误，请稍后再试。", show_alert=True)
-            finally:
-                cursor.close()
-                connection.close()
                 
     elif query.data == "shop_upgrade_2":
         # 执行购买升级权限到2级的操作
         async with lock:
-            connection = mysql_connection.create_connection()
-            cursor = connection.cursor()
             try:
-                select_query = "SELECT permission, coins FROM user WHERE id = %s"
-                cursor.execute(select_query, (user_id,))
-                result = cursor.fetchone()
-                if not result:
-                    await query.answer("请先使用 /me 命令获取个人信息。", show_alert=True)
-                    return
+                async with mysql_connection.transaction() as connection:
+                    result = await mysql_connection.fetch_one(
+                        "SELECT permission, coins FROM user WHERE id = %s",
+                        (user_id,),
+                        connection=connection,
+                    )
+                    if not result:
+                        await query.answer("请先使用 /me 命令获取个人信息。", show_alert=True)
+                        return
 
-                user_permission, user_coins = result
-                if user_permission == 0:
-                    await query.answer("您需要先升级到1级权限。", show_alert=True)
-                elif user_permission >= 2:
-                    await query.answer("您已经拥有2级或更高权限。", show_alert=True)
-                elif user_coins < 100:
-                    await query.answer("硬币不足，无法购买此商品。", show_alert=True)
-                else:
-                    update_query = "UPDATE user SET coins = coins - %s, permission = %s WHERE id = %s"
-                    cursor.execute(update_query, (100, 2, user_id))
-                    connection.commit()
-                    await query.answer("购买成功！您的权限已升级到2级。", show_alert=True)
+                    user_permission, user_coins = result
+                    if user_permission == 0:
+                        await query.answer("您需要先升级到1级权限。", show_alert=True)
+                    elif user_permission >= 2:
+                        await query.answer("您已经拥有2级或更高权限。", show_alert=True)
+                    elif user_coins < 100:
+                        await query.answer("硬币不足，无法购买此商品。", show_alert=True)
+                    else:
+                        await connection.exec_driver_sql(
+                            "UPDATE user SET coins = coins - %s, permission = %s WHERE id = %s",
+                            (100, 2, user_id),
+                        )
+                        await query.answer("购买成功！您的权限已升级到2级。", show_alert=True)
             except Exception:
                 await query.answer("购买出现错误，请稍后再试。", show_alert=True)
-            finally:
-                cursor.close()
-                connection.close()
 
     elif query.data == "shop_scratch":
         # 购买刮刮乐：扣除10金币，随机获得0～20金币
         async with lock:
-            connection = mysql_connection.create_connection()
-            cursor = connection.cursor()
             try:
-                select_query = "SELECT coins FROM user WHERE id = %s"
-                cursor.execute(select_query, (user_id,))
-                result = cursor.fetchone()
-                if not result:
-                    await query.answer("请先使用 /me 命令获取个人信息。", show_alert=True)
-                    return
+                async with mysql_connection.transaction() as connection:
+                    result = await mysql_connection.fetch_one(
+                        "SELECT coins FROM user WHERE id = %s",
+                        (user_id,),
+                        connection=connection,
+                    )
+                    if not result:
+                        await query.answer("请先使用 /me 命令获取个人信息。", show_alert=True)
+                        return
 
-                user_coins = result[0]
-                if user_coins < 10:
-                    await query.answer(f"硬币不足，您当前只有 {user_coins} 个硬币。", show_alert=True)
-                    return
+                    user_coins = result[0]
+                    if user_coins < 10:
+                        await query.answer(f"硬币不足，您当前只有 {user_coins} 个硬币。", show_alert=True)
+                        return
 
-                # 扣除10金币并随机获得0-20金币
-                reward = random.randint(0, 20)
-                new_coins = user_coins - 10 + reward
-                update_query = "UPDATE user SET coins = %s WHERE id = %s"
-                cursor.execute(update_query, (new_coins, user_id))
-                connection.commit()
+                    reward = random.randint(0, 20)
+                    new_coins = user_coins - 10 + reward
+                    await connection.exec_driver_sql(
+                        "UPDATE user SET coins = %s WHERE id = %s",
+                        (new_coins, user_id),
+                    )
 
-                # 更新用户刮刮乐记录，检查保底机制
-                today = date.today()
-                if user_id in scratch_records:
-                    # 检查是否是同一天的抽取
-                    if scratch_records[user_id]['date'] == today:
-                        # 如果奖励小于10，增加计数；否则重置计数
-                        if reward < 10:
-                            scratch_records[user_id]['count'] += 1
+                    today = date.today()
+                    if user_id in scratch_records:
+                        if scratch_records[user_id]['date'] == today:
+                            if reward < 10:
+                                scratch_records[user_id]['count'] += 1
+                            else:
+                                scratch_records[user_id]['count'] = 0
                         else:
-                            scratch_records[user_id]['count'] = 0
+                            scratch_records[user_id] = {'count': 1 if reward < 10 else 0, 'date': today}
                     else:
-                        # 新的一天，重置计数
                         scratch_records[user_id] = {'count': 1 if reward < 10 else 0, 'date': today}
-                else:
-                    # 首次记录
-                    scratch_records[user_id] = {'count': 1 if reward < 10 else 0, 'date': today}
-                
-                # 检查是否触发保底（连续5次小于10金币）
-                bonus_message = ""
-                if scratch_records[user_id]['count'] >= 5:
-                    # 触发保底，额外奖励10金币
-                    update_query = "UPDATE user SET coins = coins + %s WHERE id = %s"
-                    cursor.execute(update_query, (10, user_id))
-                    connection.commit()
-                    # 重置计数
-                    scratch_records[user_id]['count'] = 0
-                    bonus_message = "由于您连续5次都没抽到10个以上的金币，系统赠送您10个金币作为安慰！"
+
+                    bonus_message = ""
+                    if scratch_records[user_id]['count'] >= 5:
+                        await connection.exec_driver_sql(
+                            "UPDATE user SET coins = coins + %s WHERE id = %s",
+                            (10, user_id),
+                        )
+                        scratch_records[user_id]['count'] = 0
+                        bonus_message = "由于您连续5次都没抽到10个以上的金币，系统赠送您10个金币作为安慰！"
 
                 # 弹出提示
                 message = f"恭喜！您获得了 {reward} 个金币。"
@@ -292,72 +284,64 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     }
             except Exception as e:
                 await query.answer(f"购买刮刮乐时出错：{str(e)}", show_alert=True)
-            finally:
-                cursor.close()
-                connection.close()
 
     elif query.data == "shop_huanle":
         # 购买欢乐彩：扣除1金币，根据概率获得奖励
         async with lock:
-            connection = mysql_connection.create_connection()
-            cursor = connection.cursor()
             try:
-                select_query = "SELECT coins FROM user WHERE id = %s"
-                cursor.execute(select_query, (user_id,))
-                result = cursor.fetchone()
-                if not result:
-                    await query.answer("请先使用 /me 命令获取个人信息。", show_alert=True)
-                    return
+                async with mysql_connection.transaction() as connection:
+                    result = await mysql_connection.fetch_one(
+                        "SELECT coins FROM user WHERE id = %s",
+                        (user_id,),
+                        connection=connection,
+                    )
+                    if not result:
+                        await query.answer("请先使用 /me 命令获取个人信息。", show_alert=True)
+                        return
 
-                user_coins = result[0]
-                if user_coins < 1:
-                    await query.answer(f"硬币不足，您当前只有 {user_coins} 个硬币。", show_alert=True)
-                    return
+                    user_coins = result[0]
+                    if user_coins < 1:
+                        await query.answer(f"硬币不足，您当前只有 {user_coins} 个硬币。", show_alert=True)
+                        return
 
-                # 扣除1金币并根据概率获得奖励：
-                # 0金币：80% ； 1金币：19% ； 5金币：0.95% ； 100金币：0.05%
-                p = random.random()
-                if p < 0.80:
-                    reward = 0
-                elif p < 0.80 + 0.19:
-                    reward = 1
-                elif p < 0.80 + 0.19 + 0.0095:
-                    reward = 5
-                else:
-                    reward = 100
-
-                new_coins = user_coins - 1 + reward
-                update_query = "UPDATE user SET coins = %s WHERE id = %s"
-                cursor.execute(update_query, (new_coins, user_id))
-                connection.commit()
-
-                # 更新用户欢乐彩记录，检查保底机制
-                today = date.today()
-                if user_id in huanle_records:
-                    # 检查是否是同一天的抽取
-                    if huanle_records[user_id]['date'] == today:
-                        # 如果奖励等于0，增加计数；否则重置计数
-                        if reward == 0:
-                            huanle_records[user_id]['count'] += 1
-                        else:
-                            huanle_records[user_id]['count'] = 0
+                    # 扣除1金币并根据概率获得奖励：
+                    # 0金币：80% ； 1金币：19% ； 5金币：0.95% ； 100金币：0.05%
+                    p = random.random()
+                    if p < 0.80:
+                        reward = 0
+                    elif p < 0.80 + 0.19:
+                        reward = 1
+                    elif p < 0.80 + 0.19 + 0.0095:
+                        reward = 5
                     else:
-                        # 新的一天，重置计数
+                        reward = 100
+
+                    new_coins = user_coins - 1 + reward
+                    await connection.exec_driver_sql(
+                        "UPDATE user SET coins = %s WHERE id = %s",
+                        (new_coins, user_id),
+                    )
+
+                    today = date.today()
+                    if user_id in huanle_records:
+                        if huanle_records[user_id]['date'] == today:
+                            if reward == 0:
+                                huanle_records[user_id]['count'] += 1
+                            else:
+                                huanle_records[user_id]['count'] = 0
+                        else:
+                            huanle_records[user_id] = {'count': 1 if reward == 0 else 0, 'date': today}
+                    else:
                         huanle_records[user_id] = {'count': 1 if reward == 0 else 0, 'date': today}
-                else:
-                    # 首次记录
-                    huanle_records[user_id] = {'count': 1 if reward == 0 else 0, 'date': today}
-                
-                # 检查是否触发保底（连续5次等于0金币）
-                bonus_message = ""
-                if huanle_records[user_id]['count'] >= 5:
-                    # 触发保底，额外奖励2金币
-                    update_query = "UPDATE user SET coins = coins + %s WHERE id = %s"
-                    cursor.execute(update_query, (2, user_id))
-                    connection.commit()
-                    # 重置计数
-                    huanle_records[user_id]['count'] = 0
-                    bonus_message = "由于您连续5次都没有获得奖励，系统赠送您2个金币作为安慰！"
+
+                    bonus_message = ""
+                    if huanle_records[user_id]['count'] >= 5:
+                        await connection.exec_driver_sql(
+                            "UPDATE user SET coins = coins + %s WHERE id = %s",
+                            (2, user_id),
+                        )
+                        huanle_records[user_id]['count'] = 0
+                        bonus_message = "由于您连续5次都没有获得奖励，系统赠送您2个金币作为安慰！"
 
                 # 弹出提示
                 message = f"恭喜！您获得了 {reward} 个金币。"
@@ -436,9 +420,6 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     }
             except Exception as e:
                 await query.answer("购买欢乐彩时出错，请稍后再试。", show_alert=True)
-            finally:
-                cursor.close()
-                connection.close()
 
 # 修改清理函数以适配JobQueue使用
 async def cleanup_message_records_job(context: ContextTypes.DEFAULT_TYPE):

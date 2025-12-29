@@ -20,43 +20,33 @@ def is_valid_solana_address(address):
     solana_pattern = re.compile(r'^[1-9A-HJ-NP-Za-km-z]{43,44}$')
     return bool(solana_pattern.match(address))
 
-def has_pending_swap_request(user_id):
+async def has_pending_swap_request(user_id):
     """检查用户是否有未完成的兑换请求"""
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
-    try:
-        query = "SELECT COUNT(*) FROM token_swap_requests WHERE user_id = %s AND status = 'pending'"
-        cursor.execute(query, (user_id,))
-        result = cursor.fetchone()
-        return result[0] > 0 if result else False
-    finally:
-        cursor.close()
-        connection.close()
+    row = await mysql_connection.fetch_one(
+        "SELECT COUNT(*) FROM token_swap_requests WHERE user_id = %s AND status = 'pending'",
+        (user_id,),
+    )
+    return row[0] > 0 if row else False
 
-def get_pending_swap_request(user_id):
+async def get_pending_swap_request(user_id):
     """获取用户未完成的兑换请求详情"""
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
-    try:
-        query = """
+    result = await mysql_connection.fetch_one(
+        """
         SELECT amount, wallet_address, request_time 
         FROM token_swap_requests 
         WHERE user_id = %s AND status = 'pending'
         ORDER BY request_time DESC
         LIMIT 1
-        """
-        cursor.execute(query, (user_id,))
-        result = cursor.fetchone()
-        if result:
-            return {
-                "amount": result[0],
-                "wallet_address": result[1],
-                "request_time": result[2]
-            }
-        return None
-    finally:
-        cursor.close()
-        connection.close()
+        """,
+        (user_id,),
+    )
+    if result:
+        return {
+            "amount": result[0],
+            "wallet_address": result[1],
+            "request_time": result[2],
+        }
+    return None
 
 @cooldown
 async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -74,9 +64,9 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # 检查用户是否有待处理的兑换请求
-    if has_pending_swap_request(user_id):
+    if await has_pending_swap_request(user_id):
         # 获取现有请求的详细信息
-        pending_request = get_pending_swap_request(user_id)
+        pending_request = await get_pending_swap_request(user_id)
         if pending_request:
             request_time_str = pending_request["request_time"].strftime("%Y-%m-%d %H:%M:%S")
             await update.message.reply_text(
@@ -167,9 +157,9 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     async with lock:
         # 再次检查是否有待处理的兑换请求
-        if has_pending_swap_request(user_id):
+        if await has_pending_swap_request(user_id):
             # 获取现有请求的详细信息
-            pending_request = get_pending_swap_request(user_id)
+            pending_request = await get_pending_swap_request(user_id)
             if pending_request:
                 request_time_str = pending_request["request_time"].strftime("%Y-%m-%d %H:%M:%S")
                 await update.message.reply_text(
@@ -187,35 +177,34 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             return
         
-        connection = mysql_connection.create_connection()
-        cursor = connection.cursor()
         try:
-            # 检查用户是否仍有足够金币（再次确认）
-            select_query = "SELECT coins FROM user WHERE id = %s"
-            cursor.execute(select_query, (user_id,))
-            result = cursor.fetchone()
-            if not result or result[0] < amount:
-                await update.message.reply_text(
-                    "***您的金币不足，无法完成兑换。***\n"
-                    "***You don't have enough coins to complete this exchange.***",
-                    parse_mode=ParseMode.MARKDOWN
+            async with mysql_connection.transaction() as connection:
+                result = await mysql_connection.fetch_one(
+                    "SELECT coins FROM user WHERE id = %s",
+                    (user_id,),
+                    connection=connection,
                 )
-                return
-            
-            # 扣除用户金币
-            update_query = "UPDATE user SET coins = coins - %s WHERE id = %s"
-            cursor.execute(update_query, (amount, user_id))
-            
-            # 记录兑换请求
-            insert_query = """
-            INSERT INTO token_swap_requests (user_id, username, wallet_address, amount) 
-            VALUES (%s, %s, %s, %s)
-            """
-            cursor.execute(insert_query, (user_id, username, wallet_address, amount))
-            
-            connection.commit()
-            
-            # 通知用户兑换请求已提交
+                if not result or result[0] < amount:
+                    await update.message.reply_text(
+                        "***您的金币不足，无法完成兑换。***\n"
+                        "***You don't have enough coins to complete this exchange.***",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                    return
+
+                await connection.exec_driver_sql(
+                    "UPDATE user SET coins = coins - %s WHERE id = %s",
+                    (amount, user_id),
+                )
+
+                await connection.exec_driver_sql(
+                    """
+                    INSERT INTO token_swap_requests (user_id, username, wallet_address, amount) 
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (user_id, username, wallet_address, amount),
+                )
+
             await update.message.reply_text(
                 f"***您已成功提交兑换请求：***\n\n"
                 f"金币数量: ***{amount}***\n"
@@ -229,20 +218,16 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"***Current exchange rate is 1:1 (1 coin = 1 $FOGMOE). This rate may change at any time, the final exchange rate will be determined at the time of processing.***\n\n"
                 f"Please be patient as processing may take up to 72 hours. Once completed, $FOGMOE tokens will be sent to the wallet address you provided.\n\n"
                 f"Visit [token.fog.moe](https://token.fog.moe/) to learn more about $FOGMOE tokens.",
-                parse_mode=ParseMode.MARKDOWN
+                parse_mode=ParseMode.MARKDOWN,
             )
         except Exception as e:
-            connection.rollback()
             await update.message.reply_text(
                 f"***兑换过程中出现错误:*** {str(e)}\n"
                 f"请稍后重试。\n\n"
                 f"***Error occurred during exchange:*** {str(e)}\n"
                 f"Please try again later.",
-                parse_mode=ParseMode.MARKDOWN
+                parse_mode=ParseMode.MARKDOWN,
             )
-        finally:
-            cursor.close()
-            connection.close()
 
 def setup_swap_handler(application):
     """为代币兑换系统设置处理器"""

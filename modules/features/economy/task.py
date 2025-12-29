@@ -73,17 +73,13 @@ async def task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 检查任务是否已完成
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
-    try:
-        check_query = "SELECT * FROM user_task WHERE user_id = %s AND task_id = %s"
-        cursor.execute(check_query, (user_id, task_id))
-        if cursor.fetchone():
-            await query.answer("您已完成该任务，不能重复领取奖励。", show_alert=True)
-            return
-    finally:
-        cursor.close()
-        connection.close()
+    row = await mysql_connection.fetch_one(
+        "SELECT 1 FROM user_task WHERE user_id = %s AND task_id = %s",
+        (user_id, task_id),
+    )
+    if row:
+        await query.answer("您已完成该任务，不能重复领取奖励。", show_alert=True)
+        return
 
     # 调用 Telegram API 检查用户在目标群组中的状态
     try:
@@ -97,20 +93,16 @@ async def task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 发放奖励并记录任务完成
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
-        # 增加奖励硬币
-        update_query = "UPDATE user SET coins = coins + %s WHERE id = %s"
-        cursor.execute(update_query, (reward_coins, user_id))
-        # 记录任务完成情况
-        insert_query = "INSERT INTO user_task (user_id, task_id) VALUES (%s, %s)"
-        cursor.execute(insert_query, (user_id, task_id))
-        connection.commit()
+        async with mysql_connection.transaction() as connection:
+            await connection.exec_driver_sql(
+                "UPDATE user SET coins = coins + %s WHERE id = %s",
+                (reward_coins, user_id),
+            )
+            await connection.exec_driver_sql(
+                "INSERT INTO user_task (user_id, task_id) VALUES (%s, %s)",
+                (user_id, task_id),
+            )
         await query.answer(f"恭喜您完成任务，获得 {reward_coins} 个硬币奖励！", show_alert=True)
     except Exception:
-        connection.rollback()
         await query.answer("发放奖励时出现错误，请稍后再试。", show_alert=True)
-    finally:
-        cursor.close()
-        connection.close()

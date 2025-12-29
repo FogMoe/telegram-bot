@@ -100,7 +100,7 @@ init_environment() {
     echo ""
     echo "下一步:"
     echo "  1. 配置 .env 文件中的必要参数"
-    echo "  2. 导入数据库结构: mysql -u root -p your_database < MySQL.sql"
+    echo "  2. 运行数据库迁移: alembic upgrade head"
     echo "  3. 启动 bot: $0 start"
 }
 
@@ -329,7 +329,7 @@ show_help() {
     echo "首次使用流程:"
     echo "  1. $0 init                           # 初始化环境"
     echo "  2. 编辑 .env 文件配置必要参数         # nano .env"
-    echo "  3. 导入数据库结构                     # mysql -u root -p db < MySQL.sql"
+    echo "  3. 运行数据库迁移                     # alembic upgrade head"
     echo "  4. $0 start                          # 启动bot"
 }
 

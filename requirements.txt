@@ -1,5 +1,7 @@
 python-telegram-bot[job-queue]
-mysql-connector-python
+SQLAlchemy>=2.0
+asyncmy
+alembic
 zai-sdk
 openai
 google-genai

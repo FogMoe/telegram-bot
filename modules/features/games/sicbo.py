@@ -48,29 +48,24 @@ def get_user_lock(user_id: int) -> asyncio.Lock:
 
 # 安全更新用户金币
 async def update_user_coins_safely(user_id: int, amount: int) -> bool:
-    connection = None
-    cursor = None
     try:
-        connection = mysql_connection.create_connection()
-        cursor = connection.cursor()
-        query = "UPDATE user SET coins = coins + %s WHERE id = %s"
-        cursor.execute(query, (amount, user_id))
-        if cursor.rowcount == 0:
-            connection.rollback()
-            logger.error(f"更新用户金币失败: 用户ID {user_id} 不存在")
-            return False
-        connection.commit()
+        async with mysql_connection.transaction() as connection:
+            row = await mysql_connection.fetch_one(
+                "SELECT id FROM user WHERE id = %s",
+                (user_id,),
+                connection=connection,
+            )
+            if not row:
+                logger.error(f"更新用户金币失败: 用户ID {user_id} 不存在")
+                return False
+            await connection.exec_driver_sql(
+                "UPDATE user SET coins = coins + %s WHERE id = %s",
+                (amount, user_id),
+            )
         return True
     except Exception as e:
-        if connection:
-            connection.rollback()
         logger.error(f"更新用户{user_id}金币时出错: {str(e)}")
         return False
-    finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
 
 # 定期清理过期游戏
 async def cleanup_expired_games(context: ContextTypes.DEFAULT_TYPE) -> None:

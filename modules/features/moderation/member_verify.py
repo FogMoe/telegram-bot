@@ -32,15 +32,10 @@ async def check_bot_permissions(bot, chat_id):
 async def verify_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     # 查询数据库判断当前群组是否已开启接管验证
-    conn = mysql_connection.create_connection()
-    cursor = conn.cursor()
-    try:
-        select_query = "SELECT group_id FROM group_verification WHERE group_id = %s"
-        cursor.execute(select_query, (chat_id,))
-        record = cursor.fetchone()
-    finally:
-        cursor.close()
-        conn.close()
+    record = await mysql_connection.fetch_one(
+        "SELECT group_id FROM group_verification WHERE group_id = %s",
+        (chat_id,),
+    )
 
     if record:
         # 若记录存在，则只有群组管理员才能取消接管
@@ -49,15 +44,10 @@ async def verify_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("只有群组管理员才能取消接管。")
             return
         context.chat_data["enable_verify"] = False
-        conn = mysql_connection.create_connection()
-        cursor = conn.cursor()
-        try:
-            delete_query = "DELETE FROM group_verification WHERE group_id = %s"
-            cursor.execute(delete_query, (chat_id,))
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
+        await mysql_connection.execute(
+            "DELETE FROM group_verification WHERE group_id = %s",
+            (chat_id,),
+        )
         await update.message.reply_text("验证接管已取消。")
         return
 
@@ -73,18 +63,13 @@ async def verify_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     # 启用接管验证，并将当前群组信息存储到数据库中
     context.chat_data["enable_verify"] = True
-    conn = mysql_connection.create_connection()
-    cursor = conn.cursor()
-    try:
-        insert_query = ("INSERT INTO group_verification (group_id, group_name) "
-                        "VALUES (%s, %s) "
-                        "ON DUPLICATE KEY UPDATE group_name = VALUES(group_name)")
-        group_name = update.effective_chat.title if update.effective_chat.title else "未知群组"
-        cursor.execute(insert_query, (chat_id, group_name))
-        conn.commit()
-    finally:
-        cursor.close()
-        conn.close()
+    insert_query = (
+        "INSERT INTO group_verification (group_id, group_name) "
+        "VALUES (%s, %s) "
+        "ON DUPLICATE KEY UPDATE group_name = VALUES(group_name)"
+    )
+    group_name = update.effective_chat.title if update.effective_chat.title else "未知群组"
+    await mysql_connection.execute(insert_query, (chat_id, group_name))
     await update.message.reply_text("新成员验证功能已开启。新成员加入时将被禁言并要求点击【验证】按钮验证，5分钟内有效。")
 
 # 新成员加入事件处理
@@ -92,16 +77,11 @@ async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     chat_id = update.effective_chat.id
     
     # 从数据库直接查询群组是否开启了验证功能
-    conn = mysql_connection.create_connection()
-    cursor = conn.cursor()
-    try:
-        select_query = "SELECT group_id FROM group_verification WHERE group_id = %s"
-        cursor.execute(select_query, (chat_id,))
-        record = cursor.fetchone()
-        verification_enabled = record is not None
-    finally:
-        cursor.close()
-        conn.close()
+    record = await mysql_connection.fetch_one(
+        "SELECT group_id FROM group_verification WHERE group_id = %s",
+        (chat_id,),
+    )
+    verification_enabled = record is not None
     
     # 若未开启验证功能，则直接返回
     if not verification_enabled:
@@ -170,19 +150,15 @@ async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         # 在发送欢迎信息后保存验证任务到数据库
         expire_time = datetime.now() + timedelta(minutes=5)
-        conn = mysql_connection.create_connection()
-        cursor = conn.cursor()
-        try:
-            insert_query = """
-            INSERT INTO verification_tasks (user_id, group_id, message_id, expire_time) 
-            VALUES (%s, %s, %s, %s) 
-            ON DUPLICATE KEY UPDATE message_id = VALUES(message_id), expire_time = VALUES(expire_time)
-            """
-            cursor.execute(insert_query, (user_id, chat_id, welcome_msg.message_id, expire_time))
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
+        insert_query = """
+        INSERT INTO verification_tasks (user_id, group_id, message_id, expire_time) 
+        VALUES (%s, %s, %s, %s) 
+        ON DUPLICATE KEY UPDATE message_id = VALUES(message_id), expire_time = VALUES(expire_time)
+        """
+        await mysql_connection.execute(
+            insert_query,
+            (user_id, chat_id, welcome_msg.message_id, expire_time),
+        )
 
 # 定时任务：等待5分钟后若未验证，则移出群组并编辑欢迎消息
 async def verification_timeout(context: ContextTypes.DEFAULT_TYPE, chat_id, user_id, message_id):
@@ -208,15 +184,10 @@ async def verification_timeout(context: ContextTypes.DEFAULT_TYPE, chat_id, user
         # 清除任务记录
         verify_tasks.pop(user_id, None)
         # 在清除任务记录时同时从数据库删除
-        conn = mysql_connection.create_connection()
-        cursor = conn.cursor()
-        try:
-            delete_query = "DELETE FROM verification_tasks WHERE user_id = %s AND group_id = %s"
-            cursor.execute(delete_query, (user_id, chat_id))
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
+        await mysql_connection.execute(
+            "DELETE FROM verification_tasks WHERE user_id = %s AND group_id = %s",
+            (user_id, chat_id),
+        )
 
 # 回调查询处理：点击验证按钮时解除禁言并更新消息
 async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -261,15 +232,10 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("验证成功！", show_alert=True)
             
             # 从数据库中删除验证任务记录
-            conn = mysql_connection.create_connection()
-            cursor = conn.cursor()
-            try:
-                delete_query = "DELETE FROM verification_tasks WHERE user_id = %s AND group_id = %s"
-                cursor.execute(delete_query, (user_id, update.effective_chat.id))
-                conn.commit()
-            finally:
-                cursor.close()
-                conn.close()
+            await mysql_connection.execute(
+                "DELETE FROM verification_tasks WHERE user_id = %s AND group_id = %s",
+                (user_id, update.effective_chat.id),
+            )
         except Exception as e:
             error_str = str(e)
             if "httpx.ConnectError" in error_str or "Not enough rights" in error_str:
@@ -289,28 +255,21 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 在启动时恢复验证任务
 async def restore_verification_tasks(dispatcher):
     """从数据库恢复所有未完成的验证任务"""
-    conn = mysql_connection.create_connection()
-    cursor = conn.cursor()
-    try:
-        # 查询未过期的验证任务
-        now = datetime.now()
-        cursor.execute(
-            "SELECT user_id, group_id, message_id, expire_time FROM verification_tasks WHERE expire_time > %s",
-            (now,)
-        )
-        tasks = cursor.fetchall()
-        
-        for user_id, chat_id, message_id, expire_time in tasks:
-            # 计算剩余时间
-            remaining_time = (expire_time - now).total_seconds()
-            if (remaining_time > 0):
-                # 重建超时任务
-                asyncio.create_task(
-                    verification_timeout(dispatcher.application, chat_id, user_id, message_id)
-                )
-    finally:
-        cursor.close()
-        conn.close()
+    # 查询未过期的验证任务
+    now = datetime.now()
+    tasks = await mysql_connection.fetch_all(
+        "SELECT user_id, group_id, message_id, expire_time FROM verification_tasks WHERE expire_time > %s",
+        (now,),
+    )
+
+    for user_id, chat_id, message_id, expire_time in tasks:
+        # 计算剩余时间
+        remaining_time = (expire_time - now).total_seconds()
+        if remaining_time > 0:
+            # 重建超时任务
+            asyncio.create_task(
+                verification_timeout(dispatcher.application, chat_id, user_id, message_id)
+            )
 
 # 处理成员离开群组的事件（合并处理机器人和普通用户）
 async def handle_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -321,15 +280,10 @@ async def handle_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # 如果是机器人自己被踢出
     if user.id == bot.id:
         # 清理数据库中的验证配置
-        conn = mysql_connection.create_connection()
-        cursor = conn.cursor()
-        try:
-            delete_query = "DELETE FROM group_verification WHERE group_id = %s"
-            cursor.execute(delete_query, (chat_id,))
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
+        await mysql_connection.execute(
+            "DELETE FROM group_verification WHERE group_id = %s",
+            (chat_id,),
+        )
         return
     
     # 如果是普通成员离开，检查是否有未完成的验证任务
@@ -357,15 +311,10 @@ async def handle_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE)
         verify_tasks.pop(user_id, None)
         
         # 从数据库中删除验证任务
-        conn = mysql_connection.create_connection()
-        cursor = conn.cursor()
-        try:
-            delete_query = "DELETE FROM verification_tasks WHERE user_id = %s AND group_id = %s"
-            cursor.execute(delete_query, (user_id, chat_id))
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
+        await mysql_connection.execute(
+            "DELETE FROM verification_tasks WHERE user_id = %s AND group_id = %s",
+            (user_id, chat_id),
+        )
 
 # 注册该模块的处理器
 def setup_member_verification(dispatcher):

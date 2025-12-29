@@ -40,65 +40,40 @@ async def verify_and_use_code(user_id: int, code: str) -> tuple:
         code_locks[code] = True
 
     try:
-        # 创建数据库连接
-        connection = mysql_connection.create_connection()
-        cursor = connection.cursor()
-        
-        try:
-            # 开启事务
-            connection.start_transaction()
-            
-            # 查询卡密状态
-            cursor.execute(
-                "SELECT id, code, amount, is_used, used_by, used_at FROM redemption_codes WHERE code = %s FOR UPDATE", 
-                (code,)
+        async with mysql_connection.transaction() as connection:
+            result = await mysql_connection.fetch_one(
+                "SELECT id, code, amount, is_used, used_by, used_at FROM redemption_codes WHERE code = %s FOR UPDATE",
+                (code,),
+                connection=connection,
             )
-            result = cursor.fetchone()
-            
-            # 检查卡密是否存在
             if not result:
-                connection.rollback()
                 return False, "无效的充值卡密，此卡密不存在或已被删除"
-            
-            code_id, db_code, amount, is_used, used_by, used_at = result
-            
-            # 检查卡密是否已被使用
+
+            code_id, _, amount, is_used, used_by, used_at = result
+
             if is_used:
                 used_time = used_at.strftime("%Y-%m-%d %H:%M:%S") if used_at else "未知时间"
                 if used_by == user_id:
                     used_msg = f"此卡密已被您在 {used_time} 使用过"
                 else:
                     used_msg = f"此卡密已被其他用户在 {used_time} 使用"
-                connection.rollback()
                 return False, used_msg
-            
-            # 标记卡密为已使用状态
+
             current_time = datetime.now()
-            cursor.execute(
+            await connection.exec_driver_sql(
                 "UPDATE redemption_codes SET is_used = TRUE, used_by = %s, used_at = %s WHERE id = %s",
-                (user_id, current_time, code_id)
+                (user_id, current_time, code_id),
             )
-            
-            # 为用户添加金币
-            cursor.execute(
+
+            await connection.exec_driver_sql(
                 "UPDATE user SET coins = coins + %s WHERE id = %s",
-                (amount, user_id)
+                (amount, user_id),
             )
-            
-            # 提交事务
-            connection.commit()
-            return True, amount
-            
-        except Exception as e:
-            # 发生错误时回滚事务
-            connection.rollback()
-            logging.error(f"充值卡密处理错误: {str(e)}")
-            return False, f"充值处理过程中出现错误，请联系管理员"
-        
-        finally:
-            cursor.close()
-            connection.close()
-            
+
+        return True, amount
+    except Exception as e:
+        logging.error(f"充值卡密处理错误: {str(e)}")
+        return False, "充值处理过程中出现错误，请联系管理员"
     finally:
         # 无论成功与否，都释放锁
         with code_lock_mutex:
@@ -227,46 +202,39 @@ async def admin_create_code(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text("⚠️ 参数必须为整数数字")
         return
     
-    # 生成卡密
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
-    
     try:
         codes = []
         duplicate_count = 0
         max_retries = 3  # 最大重试次数
-        
-        # 开始生成卡密
-        for _ in range(count):
-            retry_count = 0
-            while retry_count < max_retries:
-                # 使用Python的uuid模块生成UUID
-                unique_code = str(uuid.uuid4())
-                
-                # 检查卡密是否已存在
-                cursor.execute("SELECT id FROM redemption_codes WHERE code = %s", (unique_code,))
-                if not cursor.fetchone():
-                    # 卡密不存在，可以插入
-                    cursor.execute(
-                        "INSERT INTO redemption_codes (code, amount) VALUES (%s, %s)",
-                        (unique_code, amount)
+
+        async with mysql_connection.transaction() as connection:
+            for _ in range(count):
+                retry_count = 0
+                while retry_count < max_retries:
+                    unique_code = str(uuid.uuid4())
+                    exists = await mysql_connection.fetch_one(
+                        "SELECT id FROM redemption_codes WHERE code = %s",
+                        (unique_code,),
+                        connection=connection,
                     )
-                    codes.append(unique_code)
-                    break  # 成功插入，跳出重试循环
-                
-                retry_count += 1
-                
-            if retry_count >= max_retries:
-                duplicate_count += 1
-                logging.warning(f"生成唯一卡密失败，重试次数达到上限: {max_retries}")
-        
-        connection.commit()
-        
+                    if not exists:
+                        await connection.exec_driver_sql(
+                            "INSERT INTO redemption_codes (code, amount) VALUES (%s, %s)",
+                            (unique_code, amount),
+                        )
+                        codes.append(unique_code)
+                        break
+                    retry_count += 1
+
+                if retry_count >= max_retries:
+                    duplicate_count += 1
+                    logging.warning(f"生成唯一卡密失败，重试次数达到上限: {max_retries}")
+
         if duplicate_count > 0:
             await update.message.reply_text(
                 f"⚠️ 注意: 有 {duplicate_count} 个卡密因重复而未能生成。实际生成了 {len(codes)} 个卡密。"
             )
-        
+
         if not codes:
             await update.message.reply_text("❌ 未能生成任何卡密，请稍后再试")
             return
@@ -284,12 +252,8 @@ async def admin_create_code(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         logging.info(f"管理员 {update.effective_user.username or user_id} 生成了 {len(codes)} 个价值 {amount} 金币的卡密")
         
     except Exception as e:
-        connection.rollback()
         logging.error(f"生成卡密出错: {str(e)}")
         await update.message.reply_text(f"❌ 生成卡密时出错: {str(e)}")
-    finally:
-        cursor.close()
-        connection.close()
 
 
 def setup_charge_handlers(application):

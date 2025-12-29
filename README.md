@@ -70,6 +70,16 @@ cd telegram-bot
 pip3 install -r requirements.txt
 ```
 
+### 配置环境变量
+
+```bash
+# 复制环境变量模板
+cp .env.example .env
+
+# 编辑 .env 文件，填入你的配置
+nano .env
+```
+
 ### 数据库设置
 
 ```bash
@@ -79,18 +89,8 @@ mysql -u root -p
 # 创建数据库
 CREATE DATABASE fogmoe_telegram_bot_db CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
 
-# 导入表结构
-mysql -u root -p fogmoe_telegram_bot_db < MySQL.sql
-```
-
-### 配置环境变量
-
-```bash
-# 复制环境变量模板
-cp .env.example .env
-
-# 编辑 .env 文件，填入你的配置
-nano .env
+# 运行迁移（确保 .env 中已配置数据库连接信息）
+alembic upgrade head
 ```
 
 ### 启动机器人

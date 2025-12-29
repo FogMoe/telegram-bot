@@ -2,18 +2,14 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
-from mysql.connector import Error
 
-from core import mysql_connection, process_user
+from core import mysql_connection
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from core.command_cooldown import cooldown 
-
-# 创建线程池执行器用于异步数据库操作
-ref_executor = ThreadPoolExecutor(max_workers=5)
 
 # 用于存储正在处理的邀请记录，防止重复处理
 processing_invitations = set()
+processing_lock = asyncio.Lock()
 
 # 配置logger
 logger = logging.getLogger(__name__)
@@ -260,237 +256,156 @@ async def ref_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #             logger.error(traceback.format_exc())
 
 # 数据库操作函数
-def add_invitation_record(invited_user_id, referrer_id, invited_user_name):
+async def add_invitation_record(invited_user_id, referrer_id, invited_user_name):
     """添加邀请记录到数据库，并给邀请人和被邀请人发放奖励"""
     # 如果此邀请组合正在处理中，则跳过
     invitation_key = f"{invited_user_id}_{referrer_id}"
-    if invitation_key in processing_invitations:
-        return False
-    
-    processing_invitations.add(invitation_key)
-    connection = None
-    cursor = None
-    
-    try:
-        connection = mysql_connection.create_connection()
-        if not connection:
-            logger.error("Failed to create database connection in add_invitation_record")
-            processing_invitations.remove(invitation_key)
-            return False
-            
-        cursor = connection.cursor()
-        
-        # 检查被邀请用户是否已经有邀请记录
-        cursor.execute("SELECT referrer_id FROM user_invitations WHERE invited_user_id = %s", (invited_user_id,))
-        if cursor.fetchone():
-            processing_invitations.remove(invitation_key)
-            return False
-        
-        # 检查邀请人是否存在
-        cursor.execute("SELECT id FROM user WHERE id = %s", (referrer_id,))
-        if not cursor.fetchone():
-            processing_invitations.remove(invitation_key)
-            return False
-        
-        # 确保被邀请用户存在于user表中
-        cursor.execute("SELECT id FROM user WHERE id = %s", (invited_user_id,))
-        if not cursor.fetchone():
-            # 如果用户不存在，则创建用户记录
-            cursor.execute(
-                "INSERT INTO user (id, name, coins) VALUES (%s, %s, %s)",
-                (invited_user_id, invited_user_name, INVITATION_REWARD)
-            )
-        else:
-            # 给被邀请用户增加金币奖励
-            cursor.execute(
-                "UPDATE user SET coins = coins + %s WHERE id = %s",
-                (INVITATION_REWARD, invited_user_id)
-            )
-        
-        # 添加邀请记录
-        cursor.execute(
-            "INSERT INTO user_invitations (invited_user_id, referrer_id, invitation_time, reward_claimed) VALUES (%s, %s, NOW(), TRUE)",
-            (invited_user_id, referrer_id)
-        )
-        
-        # 给邀请人增加金币奖励
-        cursor.execute(
-            "UPDATE user SET coins = coins + %s WHERE id = %s",
-            (INVITATION_REWARD, referrer_id)
-        )
-        
-        connection.commit()
-        processing_invitations.remove(invitation_key)
-        return True
-    except Error as e:
-        logger.error(f"Database error in add_invitation_record: {e}")
-        if connection:
-            try:
-                connection.rollback()  # 回滚事务以确保数据一致性
-            except Exception as rollback_error:
-                logger.error(f"Error rolling back transaction: {rollback_error}")
+
+    async with processing_lock:
         if invitation_key in processing_invitations:
-            processing_invitations.remove(invitation_key)
+            return False
+        processing_invitations.add(invitation_key)
+
+    try:
+        async with mysql_connection.transaction() as connection:
+            # 检查被邀请用户是否已经有邀请记录
+            row = await mysql_connection.fetch_one(
+                "SELECT referrer_id FROM user_invitations WHERE invited_user_id = %s",
+                (invited_user_id,),
+                connection=connection,
+            )
+            if row:
+                return False
+
+            # 检查邀请人是否存在
+            row = await mysql_connection.fetch_one(
+                "SELECT id FROM user WHERE id = %s",
+                (referrer_id,),
+                connection=connection,
+            )
+            if not row:
+                return False
+
+            # 确保被邀请用户存在于user表中
+            row = await mysql_connection.fetch_one(
+                "SELECT id FROM user WHERE id = %s",
+                (invited_user_id,),
+                connection=connection,
+            )
+            if not row:
+                await connection.exec_driver_sql(
+                    "INSERT INTO user (id, name, coins) VALUES (%s, %s, %s)",
+                    (invited_user_id, invited_user_name, INVITATION_REWARD),
+                )
+            else:
+                await connection.exec_driver_sql(
+                    "UPDATE user SET coins = coins + %s WHERE id = %s",
+                    (INVITATION_REWARD, invited_user_id),
+                )
+
+            await connection.exec_driver_sql(
+                "INSERT INTO user_invitations (invited_user_id, referrer_id, invitation_time, reward_claimed) VALUES (%s, %s, NOW(), TRUE)",
+                (invited_user_id, referrer_id),
+            )
+
+            await connection.exec_driver_sql(
+                "UPDATE user SET coins = coins + %s WHERE id = %s",
+                (INVITATION_REWARD, referrer_id),
+            )
+
+        return True
+    except Exception as e:
+        logger.error(f"Database error in add_invitation_record: {e}")
         return False
     finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
+        async with processing_lock:
+            processing_invitations.discard(invitation_key)
 
 async def async_add_invitation_record(invited_user_id, referrer_id, invited_user_name):
     """异步添加邀请记录"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        ref_executor, add_invitation_record, invited_user_id, referrer_id, invited_user_name
-    )
+    return await add_invitation_record(invited_user_id, referrer_id, invited_user_name)
 
-def get_invited_users(user_id):
+async def get_invited_users(user_id):
     """获取用户邀请的所有用户信息"""
-    connection = None
-    cursor = None
     try:
-        connection = mysql_connection.create_connection()
-        if not connection:
-            logger.error("Failed to create database connection in get_invited_users")
-            return 0, []
-            
-        cursor = connection.cursor()
-        
         # 获取邀请总数
-        cursor.execute(
+        count_row = await mysql_connection.fetch_one(
             "SELECT COUNT(*) FROM user_invitations WHERE referrer_id = %s",
-            (user_id,)
+            (user_id,),
         )
-        count = cursor.fetchone()[0]
+        count = count_row[0] if count_row else 0
         
         # 获取被邀请用户的详细信息
-        cursor.execute(
+        invited_users = await mysql_connection.fetch_all(
             "SELECT i.invited_user_id, u.name, i.invitation_time "
             "FROM user_invitations i "
             "JOIN user u ON i.invited_user_id = u.id "
             "WHERE i.referrer_id = %s "
             "ORDER BY i.invitation_time DESC",
-            (user_id,)
+            (user_id,),
         )
-        invited_users = cursor.fetchall()
         
         return count, invited_users
-    except Error as e:
+    except Exception as e:
         logger.error(f"Database error in get_invited_users: {e}")
         return 0, []
-    finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
 
 async def async_get_invited_users(user_id):
     """异步获取用户邀请的所有用户信息"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        ref_executor, get_invited_users, user_id
-    )
+    return await get_invited_users(user_id)
 
-def get_user_name(user_id):
+async def get_user_name(user_id):
     """根据用户ID获取用户名"""
-    connection = None
-    cursor = None
     try:
-        connection = mysql_connection.create_connection()
-        if not connection:
-            logger.error(f"Failed to create database connection in get_user_name for user_id: {user_id}")
-            return None
-            
-        cursor = connection.cursor()
-        
         # 获取用户名
-        cursor.execute("SELECT name FROM user WHERE id = %s", (user_id,))
-        result = cursor.fetchone()
+        result = await mysql_connection.fetch_one(
+            "SELECT name FROM user WHERE id = %s",
+            (user_id,),
+        )
         
         if result:
             return result[0]
         return None
-    except Error as e:
+    except Exception as e:
         logger.error(f"Database error in get_user_name for user_id {user_id}: {e}")
         return None
-    finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
 
 async def async_get_user_name(user_id):
     """异步获取用户名的包装函数"""
-    return await asyncio.get_event_loop().run_in_executor(ref_executor, get_user_name, user_id)
+    return await get_user_name(user_id)
 
-def get_referrer(user_id):
+async def get_referrer(user_id):
     """获取用户的邀请人信息"""
-    connection = None
-    cursor = None
     try:
-        connection = mysql_connection.create_connection()
-        if not connection:
-            logger.error("Failed to create database connection in get_referrer")
-            return None
-            
-        cursor = connection.cursor()
-        
         # 查询用户的邀请人
-        cursor.execute(
+        result = await mysql_connection.fetch_one(
             "SELECT ui.referrer_id, u.name "
             "FROM user_invitations ui "
             "JOIN user u ON ui.referrer_id = u.id "
             "WHERE ui.invited_user_id = %s",
-            (user_id,)
+            (user_id,),
         )
-        result = cursor.fetchone()
         
         return result  # 返回 (referrer_id, referrer_name) 或 None
-    except Error as e:
+    except Exception as e:
         logger.error(f"Database error in get_referrer: {e}")
         return None
-    finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
 
 async def async_get_referrer(user_id):
     """异步获取用户的邀请人信息"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        ref_executor, get_referrer, user_id
-    )
+    return await get_referrer(user_id)
 
-def check_user_exists(user_id):
+async def check_user_exists(user_id):
     """检查用户是否存在于数据库中"""
-    connection = None
-    cursor = None
     try:
-        connection = mysql_connection.create_connection()
-        if not connection:
-            logger.error(f"Failed to create database connection in check_user_exists for user_id: {user_id}")
-            return False
-            
-        cursor = connection.cursor()
-        
-        cursor.execute("SELECT id FROM user WHERE id = %s", (user_id,))
-        result = cursor.fetchone()
-        
-        return result is not None
-    except Error as e:
+        return await mysql_connection.check_user_exists(user_id)
+    except Exception as e:
         logger.error(f"Database error in check_user_exists for user_id {user_id}: {e}")
         return False
-    finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
 
 async def async_check_user_exists(user_id):
     """异步检查用户是否存在的包装函数"""
-    return await asyncio.get_event_loop().run_in_executor(ref_executor, check_user_exists, user_id)
+    return await check_user_exists(user_id)
 
 # def record_group_addition(user_id, group_id, group_name, member_count):
 #     """记录机器人被添加到群组的信息"""

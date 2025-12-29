@@ -16,7 +16,7 @@ async def gamble_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     # 判断用户权限是否 >= 1
-    if process_user.get_user_permission(user_id) < 1:
+    if await process_user.get_user_permission(user_id) < 1:
         await update.message.reply_text("您的权限不足，无法使用赌博命令。")
         return
 
@@ -73,24 +73,24 @@ async def gamble_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("数据错误", show_alert=True)
         return
 
-    # 从数据库中检测用户硬币余额是否充足
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
-    select_query = "SELECT coins FROM user WHERE id = %s"
-    cursor.execute(select_query, (user_id,))
-    result = cursor.fetchone()
-    if not result or result[0] < bet_value:
-        cursor.close()
-        connection.close()
-        await query.answer("您的硬币不足", show_alert=True)
+    # 从数据库中检测用户硬币余额是否充足，并扣除押注硬币
+    try:
+        async with mysql_connection.transaction() as connection:
+            result = await mysql_connection.fetch_one(
+                "SELECT coins FROM user WHERE id = %s",
+                (user_id,),
+                connection=connection,
+            )
+            if not result or result[0] < bet_value:
+                await query.answer("您的硬币不足", show_alert=True)
+                return
+            await connection.exec_driver_sql(
+                "UPDATE user SET coins = coins - %s WHERE id = %s",
+                (bet_value, user_id),
+            )
+    except Exception:
+        await query.answer("扣除硬币时出错，请稍后再试。", show_alert=True)
         return
-
-    # 扣除用户押注硬币
-    update_query = "UPDATE user SET coins = coins - %s WHERE id = %s"
-    cursor.execute(update_query, (bet_value, user_id))
-    connection.commit()
-    cursor.close()
-    connection.close()
 
     async with gamble_lock:
         # 记录用户押注
@@ -143,7 +143,7 @@ async def gamble_finish(context: ContextTypes.DEFAULT_TYPE):
             prize = gamble_game["prize"]
 
             # 将奖池金额加入中奖者账户
-            process_user.update_user_coins(winner_id, prize)
+            await process_user.update_user_coins(winner_id, prize)
 
             # 构建参与详情文本
             participants_text = ""

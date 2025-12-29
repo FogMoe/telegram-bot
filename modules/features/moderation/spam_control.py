@@ -2,6 +2,7 @@ from core import mysql_connection
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+import asyncio
 import logging
 import os
 import re
@@ -28,6 +29,7 @@ SPAM_FILE_UPDATE_INTERVAL = 600  # 垃圾词文件检查更新间隔：10分钟
 # 自定义垃圾词缓存 {group_id: {"keywords": [关键词列表], "patterns": [正则列表], "last_updated": timestamp}}
 custom_spam_words_cache = {}
 custom_cache_lock = threading.Lock()  # 自定义垃圾词缓存操作锁
+custom_loading_groups = set()
 
 # 速率限制器 {chat_id: {user_id: count}}
 warning_rate_limiter = defaultdict(lambda: defaultdict(int))
@@ -86,17 +88,14 @@ SPAM_CONTROL_HELP_TEXT_PLAIN = (
 )
 
 # 从数据库加载群组的垃圾信息过滤状态
-def load_spam_control_status(group_id):
+async def load_spam_control_status(group_id):
     """从数据库加载群组的垃圾信息过滤状态"""
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
         # 假设数据库结构已经正确设置，直接查询所有字段
-        cursor.execute(
+        result = await mysql_connection.fetch_one(
             "SELECT enabled, block_links, block_mentions FROM group_spam_control WHERE group_id = %s",
-            (group_id,)
+            (group_id,),
         )
-        result = cursor.fetchone()
         
         with cache_lock:
             if result:
@@ -119,11 +118,8 @@ def load_spam_control_status(group_id):
         logging.error(f"加载垃圾信息过滤状态时出错: {e}")
         # 继续抛出异常，以便调用者处理
         raise
-    finally:
-        cursor.close()
-        connection.close()
 
-def is_spam_control_enabled(group_id):
+async def is_spam_control_enabled(group_id):
     """检查群组是否启用垃圾信息过滤"""
     now = time.time()
     
@@ -134,10 +130,10 @@ def is_spam_control_enabled(group_id):
                 return cache_data["enabled"]
     
     # 缓存不存在或已过期，从数据库加载
-    enabled, _, _ = load_spam_control_status(group_id)
+    enabled, _, _ = await load_spam_control_status(group_id)
     return enabled
 
-def is_link_blocking_enabled(group_id):
+async def is_link_blocking_enabled(group_id):
     """检查群组是否启用链接过滤"""
     now = time.time()
     
@@ -148,10 +144,10 @@ def is_link_blocking_enabled(group_id):
                 return cache_data.get("block_links", False)
     
     # 缓存不存在或已过期，从数据库加载
-    _, block_links, _ = load_spam_control_status(group_id)
+    _, block_links, _ = await load_spam_control_status(group_id)
     return block_links
 
-def is_mention_blocking_enabled(group_id):
+async def is_mention_blocking_enabled(group_id):
     """检查群组是否启用@mention过滤"""
     now = time.time()
     
@@ -162,7 +158,7 @@ def is_mention_blocking_enabled(group_id):
                 return cache_data.get("block_mentions", False)
     
     # 缓存不存在或已过期，从数据库加载
-    _, _, block_mentions = load_spam_control_status(group_id)
+    _, _, block_mentions = await load_spam_control_status(group_id)
     return block_mentions
 
 def contains_url(text):
@@ -233,16 +229,13 @@ def load_spam_words():
     except Exception as e:
         logging.error(f"加载垃圾词列表时出错: {e}")
 
-def load_custom_spam_keywords(group_id):
+async def load_custom_spam_keywords(group_id):
     """从数据库加载群组的自定义垃圾词"""
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
+        results = await mysql_connection.fetch_all(
             "SELECT keyword, is_regex FROM group_spam_keywords WHERE group_id = %s",
-            (group_id,)
+            (group_id,),
         )
-        results = cursor.fetchall()
         
         keywords = []
         patterns = []
@@ -268,11 +261,8 @@ def load_custom_spam_keywords(group_id):
     except Exception as e:
         logging.error(f"加载自定义垃圾词时出错: {e}")
         return [], []
-    finally:
-        cursor.close()
-        connection.close()
 
-def get_custom_spam_keywords(group_id):
+async def get_custom_spam_keywords(group_id):
     """获取群组的自定义垃圾词，优先使用缓存，优化数据库访问"""
     now = time.time()
     
@@ -284,13 +274,12 @@ def get_custom_spam_keywords(group_id):
             if now - cache_data["last_updated"] < CACHE_TIMEOUT:
                 return cache_data["keywords"], cache_data["patterns"]
     
-    # 使用线程锁控制并发数据库访问，避免短时间内对同一群组发起多次相同查询
-    # 这里使用一个静态字典来记录正在查询的群组ID，防止并发重复查询
-    get_custom_spam_keywords._loading_groups = getattr(get_custom_spam_keywords, '_loading_groups', set())
-    
-    # 二次检查：如果此群组正在被另一个线程加载，等待一小段时间后再次检查缓存
-    if group_id in get_custom_spam_keywords._loading_groups:
-        time.sleep(0.1)  # 短暂等待
+    # 二次检查：如果此群组正在被另一个协程加载，等待一小段时间后再次检查缓存
+    with custom_cache_lock:
+        is_loading = group_id in custom_loading_groups
+
+    if is_loading:
+        await asyncio.sleep(0.1)
         with custom_cache_lock:
             if group_id in custom_spam_words_cache:
                 cache_data = custom_spam_words_cache[group_id]
@@ -298,28 +287,30 @@ def get_custom_spam_keywords(group_id):
                     return cache_data["keywords"], cache_data["patterns"]
     
     # 标记该群组为"正在加载"状态
-    get_custom_spam_keywords._loading_groups.add(group_id)
+    with custom_cache_lock:
+        custom_loading_groups.add(group_id)
     
     try:
         # 从数据库加载
-        keywords, patterns = load_custom_spam_keywords(group_id)
+        keywords, patterns = await load_custom_spam_keywords(group_id)
         return keywords, patterns
     finally:
         # 无论加载成功与否，都移除"正在加载"标记
-        get_custom_spam_keywords._loading_groups.discard(group_id)
+        with custom_cache_lock:
+            custom_loading_groups.discard(group_id)
 
-def has_custom_spam_keywords(group_id):
+async def has_custom_spam_keywords(group_id):
     """检查群组是否有自定义垃圾词"""
-    keywords, patterns = get_custom_spam_keywords(group_id)
+    keywords, patterns = await get_custom_spam_keywords(group_id)
     return len(keywords) > 0 or len(patterns) > 0
 
-def is_spam_message(message_text, group_id):
+async def is_spam_message(message_text, group_id):
     """检查消息是否为垃圾信息，返回(是否垃圾信息, 触发的关键词)"""
     if not message_text:
         return False, None
 
     # 检查群组是否有自定义垃圾词，有则优先使用
-    custom_keywords, custom_patterns = get_custom_spam_keywords(group_id)
+    custom_keywords, custom_patterns = await get_custom_spam_keywords(group_id)
     
     # 如果有自定义垃圾词，就只用自定义的
     if custom_keywords or custom_patterns:
@@ -483,21 +474,17 @@ async def toggle_spam_control(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     
     # 获取当前状态
-    current_status = is_spam_control_enabled(chat_id)
+    current_status = await is_spam_control_enabled(chat_id)
     
     # 切换状态
     new_status = not current_status
     
-    # 更新数据库
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
         # 查询当前设置以保留其他配置
-        cursor.execute(
+        result = await mysql_connection.fetch_one(
             "SELECT block_links, block_mentions FROM group_spam_control WHERE group_id = %s",
-            (chat_id,)
+            (chat_id,),
         )
-        result = cursor.fetchone()
         block_links = False
         block_mentions = False
         
@@ -506,20 +493,19 @@ async def toggle_spam_control(update: Update, context: ContextTypes.DEFAULT_TYPE
             block_mentions = result[1]
         
         if new_status:
-            cursor.execute(
+            await mysql_connection.execute(
                 """INSERT INTO group_spam_control (group_id, enabled, block_links, block_mentions, enabled_by) 
                 VALUES (%s, TRUE, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE enabled = TRUE, enabled_by = %s, updated_at = CURRENT_TIMESTAMP""",
-                (chat_id, block_links, block_mentions, user_id, user_id)
+                (chat_id, block_links, block_mentions, user_id, user_id),
             )
         else:
-            cursor.execute(
+            await mysql_connection.execute(
                 """INSERT INTO group_spam_control (group_id, enabled, block_links, block_mentions, enabled_by) 
                 VALUES (%s, FALSE, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE enabled = FALSE, enabled_by = %s, updated_at = CURRENT_TIMESTAMP""",
-                (chat_id, block_links, block_mentions, user_id, user_id)
+                (chat_id, block_links, block_mentions, user_id, user_id),
             )
-        connection.commit()
         
         # 更新缓存，保留所有设置
         with cache_lock:
@@ -555,17 +541,13 @@ async def toggle_spam_control(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             await update.message.reply_text("垃圾信息过滤功能已 ***关闭***。", parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
-        connection.rollback()
         logging.error(f"更新垃圾信息过滤状态时出错: {e}")
         await update.message.reply_text(f"操作失败: {str(e)}")
-    finally:
-        cursor.close()
-        connection.close()
 
 async def toggle_link_blocking(update: Update, chat_id: int, user_id: int, enable: bool):
     """开启或关闭群组链接过滤功能"""
     # 检查垃圾过滤功能是否已启用，只有启用垃圾过滤功能时才能设置链接过滤
-    is_enabled = is_spam_control_enabled(chat_id)
+    is_enabled = await is_spam_control_enabled(chat_id)
     if not is_enabled:
         await update.message.reply_text("请先开启垃圾信息过滤功能（使用 /spam 命令），才能设置链接过滤功能。")
         return
@@ -581,17 +563,13 @@ async def toggle_link_blocking(update: Update, chat_id: int, user_id: int, enabl
         await update.message.reply_text("检查机器人权限时出错，请稍后再试。")
         return
     
-    # 更新数据库
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
         # 直接更新链接过滤设置，假设表结构已经正确
-        cursor.execute(
+        await mysql_connection.execute(
             """UPDATE group_spam_control SET block_links = %s, updated_at = CURRENT_TIMESTAMP
             WHERE group_id = %s""",
-            (enable, chat_id)
+            (enable, chat_id),
         )
-        connection.commit()
         
         # 更新缓存
         with cache_lock:
@@ -605,17 +583,13 @@ async def toggle_link_blocking(update: Update, chat_id: int, user_id: int, enabl
             f"{'所有链接消息将被视为垃圾信息处理。' if enable else ''}"
         )
     except Exception as e:
-        connection.rollback()
         logging.error(f"更新链接过滤状态时出错: {e}")
         await update.message.reply_text(f"操作失败: {str(e)}")
-    finally:
-        cursor.close()
-        connection.close()
 
 async def toggle_mention_blocking(update: Update, chat_id: int, user_id: int, enable: bool):
     """开启或关闭群组@mention过滤功能"""
     # 检查垃圾过滤功能是否已启用，只有启用垃圾过滤功能时才能设置@mention过滤
-    is_enabled = is_spam_control_enabled(chat_id)
+    is_enabled = await is_spam_control_enabled(chat_id)
     if not is_enabled:
         await update.message.reply_text("请先开启垃圾信息过滤功能（使用 /spam 命令），才能设置@mention过滤功能。")
         return
@@ -631,17 +605,13 @@ async def toggle_mention_blocking(update: Update, chat_id: int, user_id: int, en
         await update.message.reply_text("检查机器人权限时出错，请稍后再试。")
         return
     
-    # 更新数据库
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
         # 直接更新@mention过滤设置，假设表结构已经正确
-        cursor.execute(
+        await mysql_connection.execute(
             """UPDATE group_spam_control SET block_mentions = %s, updated_at = CURRENT_TIMESTAMP
             WHERE group_id = %s""",
-            (enable, chat_id)
+            (enable, chat_id),
         )
-        connection.commit()
         
         # 更新缓存
         with cache_lock:
@@ -655,12 +625,8 @@ async def toggle_mention_blocking(update: Update, chat_id: int, user_id: int, en
             f"{'所有包含@mention的消息将被自动删除。' if enable else ''}"
         )
     except Exception as e:
-        connection.rollback()
         logging.error(f"更新@mention过滤状态时出错: {e}")
         await update.message.reply_text(f"操作失败: {str(e)}")
-    finally:
-        cursor.close()
-        connection.close()
 
 async def add_custom_spam_keyword(update: Update, chat_id: int, user_id: int, keyword: str):
     """添加自定义垃圾词"""
@@ -682,39 +648,35 @@ async def add_custom_spam_keyword(update: Update, chat_id: int, user_id: int, ke
         await update.message.reply_text("垃圾词太长，请不要超过255个字符。")
         return
     
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
         # 检查是否已存在该关键词
-        cursor.execute(
+        existing_keyword = await mysql_connection.fetch_one(
             "SELECT id FROM group_spam_keywords WHERE group_id = %s AND keyword = %s",
-            (chat_id, keyword)
+            (chat_id, keyword),
         )
-        existing_keyword = cursor.fetchone()
         
         # 检查自定义垃圾词数量是否达到上限
         if not existing_keyword:
-            cursor.execute(
+            count_row = await mysql_connection.fetch_one(
                 "SELECT COUNT(*) FROM group_spam_keywords WHERE group_id = %s",
-                (chat_id,)
+                (chat_id,),
             )
-            count = cursor.fetchone()[0]
+            count = count_row[0] if count_row else 0
             
             if count >= 10:
                 await update.message.reply_text("每个群组最多只能设置10个自定义垃圾词，请先删除一些再添加。")
                 return
         
         # 添加或更新自定义垃圾词
-        cursor.execute(
+        await mysql_connection.execute(
             """INSERT INTO group_spam_keywords (group_id, keyword, is_regex, created_by) 
             VALUES (%s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE is_regex = VALUES(is_regex), created_by = VALUES(created_by)""",
-            (chat_id, keyword, is_regex, user_id)
+            (chat_id, keyword, is_regex, user_id),
         )
-        connection.commit()
         
         # 更新缓存
-        load_custom_spam_keywords(chat_id)
+        await load_custom_spam_keywords(chat_id)
         
         if existing_keyword:
             await update.message.reply_text(f"已更新自定义垃圾词: '{keyword}'")
@@ -723,48 +685,36 @@ async def add_custom_spam_keyword(update: Update, chat_id: int, user_id: int, ke
     except Exception as e:
         logging.error(f"添加自定义垃圾词时出错: {e}")
         await update.message.reply_text(f"添加自定义垃圾词时出错: {str(e)}")
-    finally:
-        cursor.close()
-        connection.close()
 
 async def del_custom_spam_keyword(update: Update, chat_id: int, keyword: str):
     """删除自定义垃圾词"""
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
         # 如果输入的是正则表达式格式，去掉前缀
         if keyword.startswith('//'):
             keyword = keyword[2:].strip()
             
-        cursor.execute(
+        rowcount = await mysql_connection.execute(
             "DELETE FROM group_spam_keywords WHERE group_id = %s AND keyword = %s",
-            (chat_id, keyword)
+            (chat_id, keyword),
         )
-        connection.commit()
         
-        if cursor.rowcount > 0:
+        if rowcount > 0:
             # 更新缓存
-            load_custom_spam_keywords(chat_id)
+            await load_custom_spam_keywords(chat_id)
             await update.message.reply_text(f"已删除自定义垃圾词: '{keyword}'")
         else:
             await update.message.reply_text(f"未找到自定义垃圾词: '{keyword}'")
     except Exception as e:
         logging.error(f"删除自定义垃圾词时出错: {e}")
         await update.message.reply_text(f"删除自定义垃圾词时出错: {str(e)}")
-    finally:
-        cursor.close()
-        connection.close()
 
 async def list_custom_spam_keywords(update: Update, chat_id: int):
     """列出群组的自定义垃圾词"""
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute(
+        keywords = await mysql_connection.fetch_all(
             "SELECT keyword, is_regex FROM group_spam_keywords WHERE group_id = %s",
-            (chat_id,)
+            (chat_id,),
         )
-        keywords = cursor.fetchall()
         
         if not keywords:
             await update.message.reply_text("当前群组没有设置任何自定义垃圾词。")
@@ -784,9 +734,6 @@ async def list_custom_spam_keywords(update: Update, chat_id: int):
     except Exception as e:
         logging.error(f"获取自定义垃圾词列表时出错: {e}")
         await update.message.reply_text(f"获取自定义垃圾词列表时出错: {str(e)}")
-    finally:
-        cursor.close()
-        connection.close()
 
 async def show_spam_control_help(update: Update):
     """显示垃圾信息过滤功能的帮助信息"""
@@ -881,7 +828,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # 提前检查群组是否启用了垃圾信息过滤（性能优化）
-    if not is_spam_control_enabled(chat_id):
+    if not await is_spam_control_enabled(chat_id):
         return
     
     user_id = effective_message.from_user.id
@@ -916,7 +863,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return  # 跳过对管理员消息的检测
     
     # 首先检查链接过滤设置
-    if is_link_blocking_enabled(chat_id):
+    if await is_link_blocking_enabled(chat_id):
         has_url, found_url = contains_url(message_text)
         if has_url:
             user_mention = effective_message.from_user.mention_html()
@@ -949,7 +896,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logging.error(f"处理链接消息时出错: {e}")
     
     # 检查@mention过滤设置
-    if is_mention_blocking_enabled(chat_id):
+    if await is_mention_blocking_enabled(chat_id):
         has_mention, found_mention = contains_mention(message_text)
         if has_mention:
             user_mention = effective_message.from_user.mention_html()
@@ -982,7 +929,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logging.error(f"处理@mention消息时出错: {e}")
     
     # 继续检查是否为垃圾信息
-    is_spam, trigger_word = is_spam_message(message_text, chat_id)
+    is_spam, trigger_word = await is_spam_message(message_text, chat_id)
     if is_spam:
         user_mention = effective_message.from_user.mention_html()
         warning_count = update_warning_count(chat_id, user_id)

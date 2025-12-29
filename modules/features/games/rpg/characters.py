@@ -1,88 +1,48 @@
 import logging
-import asyncio
 import re
 from typing import Optional, Dict, Any
 
+from sqlalchemy.exc import IntegrityError
+
 from core import mysql_connection, process_user
 
-from .utils import rpg_db_executor, get_level_from_exp
+from .utils import get_level_from_exp
 
 # --- 数据库交互函数 (RPG 角色) ---
 
 async def get_character(user_id: int) -> Optional[Dict[str, Any]]:
     """异步获取用户角色数据"""
-    loop = asyncio.get_running_loop()
-    
-    # 使用线程池异步执行数据库操作
-    def db_operation():
-        connection = mysql_connection.create_connection()
-        if not connection:
-            logging.error("无法连接到数据库")
-            return None
-        
-        cursor = None
-        try:
-            # 使用字典cursor=True以便按列名访问
-            cursor = connection.cursor(dictionary=True)
-            select_query = "SELECT * FROM rpg_characters WHERE user_id = %s"
-            cursor.execute(select_query, (user_id,))
-            result = cursor.fetchone()
-            return result # 返回字典或 None
-        except Exception as e:
-            logging.error(f"获取角色数据时出错 (用户ID: {user_id}): {e}")
-            return None
-        finally:
-            if cursor:
-                cursor.close()
-            if connection and connection.is_connected():
-                connection.close()
-    
-    # 使用线程池异步执行数据库操作
-    return await loop.run_in_executor(rpg_db_executor, db_operation)
+    try:
+        row = await mysql_connection.fetch_one(
+            "SELECT * FROM rpg_characters WHERE user_id = %s",
+            (user_id,),
+            mapping=True,
+        )
+        return dict(row) if row else None
+    except Exception as e:
+        logging.error(f"获取角色数据时出错 (用户ID: {user_id}): {e}")
+        return None
 
 
 async def create_character(user_id: int) -> bool:
     """异步为用户创建初始角色"""
-    loop = asyncio.get_running_loop()
-    
-    # 使用线程池异步执行数据库操作
-    def db_operation():
-        connection = mysql_connection.create_connection()
-        if not connection:
-            logging.error("无法连接到数据库")
-            return False
-        
-        cursor = None
-        try:
-            cursor = connection.cursor()
-            insert_query = """
+    try:
+        await mysql_connection.execute(
+            """
             INSERT INTO rpg_characters (user_id, level, hp, max_hp, atk, matk, def, experience, allow_battle)
             VALUES (%s, 1, 10, 10, 2, 0, 1, 0, TRUE)
-            """
-            cursor.execute(insert_query, (user_id,))
-            connection.commit()
-            logging.info(f"为用户 {user_id} 创建了 RPG 角色")
-            return True
-        except mysql_connection.mysql.connector.IntegrityError:
-            # 用户可能已经有角色了（例如并发创建），忽略错误
-            logging.warning(f"尝试为用户 {user_id} 创建角色，但似乎已存在。")
-            # 确保回滚以防事务未完成
-            if connection.in_transaction:
-                connection.rollback()
-            return True # 认为创建（或已存在）成功
-        except Exception as e:
-            logging.error(f"创建角色时出错 (用户ID: {user_id}): {e}")
-            if connection.in_transaction:
-                connection.rollback()
-            return False
-        finally:
-            if cursor:
-                cursor.close()
-            if connection and connection.is_connected():
-                connection.close()
-    
-    # 使用线程池异步执行数据库操作
-    return await loop.run_in_executor(rpg_db_executor, db_operation)
+            """,
+            (user_id,),
+        )
+        logging.info(f"为用户 {user_id} 创建了 RPG 角色")
+        return True
+    except IntegrityError:
+        # 用户可能已经有角色了（例如并发创建），忽略错误
+        logging.warning(f"尝试为用户 {user_id} 创建角色，但似乎已存在。")
+        return True
+    except Exception as e:
+        logging.error(f"创建角色时出错 (用户ID: {user_id}): {e}")
+        return False
 
 # --- 获取用户ID通过用户名 ---
 async def get_user_id_by_username(username: str) -> Optional[int]:
@@ -92,34 +52,15 @@ async def get_user_id_by_username(username: str) -> Optional[int]:
     if not clean_username:
         return None
 
-    loop = asyncio.get_running_loop()
-    
-    # 使用线程池异步执行数据库操作
-    def db_operation():
-        connection = mysql_connection.create_connection()
-        if not connection:
-            logging.error("无法连接到数据库 (get_user_id_by_username)")
-            return None
-        
-        cursor = None
-        try:
-            cursor = connection.cursor()
-            # 注意：查询 user 表的 name 列
-            select_query = "SELECT id FROM user WHERE name = %s"
-            cursor.execute(select_query, (clean_username,))
-            result = cursor.fetchone()
-            return result[0] if result else None
-        except Exception as e:
-            logging.error(f"通过用户名获取用户ID时出错 (用户名: {clean_username}): {e}")
-            return None
-        finally:
-            if cursor:
-                cursor.close()
-            if connection and connection.is_connected():
-                connection.close()
-    
-    # 使用线程池异步执行数据库操作
-    return await loop.run_in_executor(rpg_db_executor, db_operation)
+    try:
+        result = await mysql_connection.fetch_one(
+            "SELECT id FROM user WHERE name = %s",
+            (clean_username,),
+        )
+        return result[0] if result else None
+    except Exception as e:
+        logging.error(f"通过用户名获取用户ID时出错 (用户名: {clean_username}): {e}")
+        return None
 
 # --- 更新角色数据 ---
 async def update_character_stats(user_id: int, updates: dict) -> bool:
@@ -127,55 +68,34 @@ async def update_character_stats(user_id: int, updates: dict) -> bool:
     if not updates:
         return False # 没有要更新的内容
 
-    loop = asyncio.get_running_loop()
-    
-    # 使用线程池异步执行数据库操作
-    def db_operation():
-        connection = mysql_connection.create_connection()
-        if not connection:
-            logging.error("无法连接到数据库 (update_character_stats)")
-            return False
-        
-        cursor = None
-        try:
-            # 构建 SET 子句和值列表
-            set_parts = []
-            values = []
-            for key, value in updates.items():
-                # 简单的验证，防止非法字段名 (更健壮的方法是预定义允许的字段)
-                if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', key):
-                    set_parts.append(f"{key} = %s")
-                    values.append(value)
-                else:
-                    logging.warning(f"尝试更新非法字段名: {key}")
-                    return False # 阻止更新
+    # 构建 SET 子句和值列表
+    set_parts = []
+    values = []
+    for key, value in updates.items():
+        # 简单的验证，防止非法字段名 (更健壮的方法是预定义允许的字段)
+        if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', key):
+            set_parts.append(f"{key} = %s")
+            values.append(value)
+        else:
+            logging.warning(f"尝试更新非法字段名: {key}")
+            return False # 阻止更新
 
-            if not set_parts:
-                return False # 没有有效的更新字段
+    if not set_parts:
+        return False # 没有有效的更新字段
 
-            set_clause = ", ".join(set_parts)
-            values.append(user_id) # 添加 user_id 到值的末尾用于 WHERE 子句
+    set_clause = ", ".join(set_parts)
+    values.append(user_id) # 添加 user_id 到值的末尾用于 WHERE 子句
 
-            cursor = connection.cursor()
+    try:
+        async with mysql_connection.transaction() as connection:
             update_query = f"UPDATE rpg_characters SET {set_clause} WHERE user_id = %s"
-            cursor.execute(update_query, tuple(values))
-            rows_affected = cursor.rowcount
-            connection.commit()
-            logging.info(f"更新了用户 {user_id} 的角色数据: {updates}, 影响行数: {rows_affected}")
-            return rows_affected > 0
-        except Exception as e:
-            logging.error(f"更新角色数据时出错 (用户ID: {user_id}, 更新: {updates}): {e}")
-            if connection and connection.in_transaction:
-                connection.rollback()
-            return False
-        finally:
-            if cursor:
-                cursor.close()
-            if connection and connection.is_connected():
-                connection.close()
-    
-    # 使用线程池异步执行数据库操作
-    return await loop.run_in_executor(rpg_db_executor, db_operation)
+            result = await connection.exec_driver_sql(update_query, tuple(values))
+            rows_affected = result.rowcount
+        logging.info(f"更新了用户 {user_id} 的角色数据: {updates}, 影响行数: {rows_affected}")
+        return rows_affected > 0
+    except Exception as e:
+        logging.error(f"更新角色数据时出错 (用户ID: {user_id}, 更新: {updates}): {e}")
+        return False
 
 # --- 设置是否允许被挑战 ---
 async def set_battle_allowance(update, context, allow: bool):

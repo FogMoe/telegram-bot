@@ -44,38 +44,35 @@ async def bribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _reply(update, "为了公平起见，金币数量必须是 100 的整数倍。")
         return
 
-    affection_before = process_user.get_user_affection(user_id)
+    affection_before = await process_user.async_get_user_affection(user_id)
     if affection_before >= 100:
         await _reply(update, "雾萌娘已经对你满怀好感啦，再多金币也没有上限可涨了！")
         return
 
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
     try:
-        cursor.execute("SELECT coins FROM user WHERE id = %s", (user_id,))
-        row = cursor.fetchone()
-        if not row:
-            await _reply(update, "请先使用 /me 命令注册个人信息。")
-            return
+        async with mysql_connection.transaction() as connection:
+            row = await mysql_connection.fetch_one(
+                "SELECT coins FROM user WHERE id = %s",
+                (user_id,),
+                connection=connection,
+            )
+            if not row:
+                await _reply(update, "请先使用 /me 命令注册个人信息。")
+                return
 
-        current_coins = row[0]
-        if current_coins < coins_to_spend:
-            await _reply(update, f"您的金币不足，当前拥有 {current_coins} 枚，无法支付 {coins_to_spend} 枚。")
-            return
+            current_coins = row[0]
+            if current_coins < coins_to_spend:
+                await _reply(update, f"您的金币不足，当前拥有 {current_coins} 枚，无法支付 {coins_to_spend} 枚。")
+                return
 
-        cursor.execute(
-            "UPDATE user SET coins = coins - %s WHERE id = %s",
-            (coins_to_spend, user_id),
-        )
-        connection.commit()
+            await connection.exec_driver_sql(
+                "UPDATE user SET coins = coins - %s WHERE id = %s",
+                (coins_to_spend, user_id),
+            )
     except Exception as exc:
-        connection.rollback()
         logging.error("/bribe 扣除金币失败: %s", exc)
         await _reply(update, "贿赂过程中出现问题，请稍后再试。")
         return
-    finally:
-        cursor.close()
-        connection.close()
 
     batches = coins_to_spend // 100
     total_gain = 0
@@ -83,7 +80,7 @@ async def bribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     for _ in range(batches):
         delta = random.randint(1, 10)
-        new_affection = process_user.update_user_affection(user_id, delta)
+        new_affection = await process_user.async_update_user_affection(user_id, delta)
         gained = max(0, new_affection - current_affection)
         total_gain += gained
         current_affection = new_affection

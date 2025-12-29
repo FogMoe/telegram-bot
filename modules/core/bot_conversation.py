@@ -205,15 +205,14 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             coin_cost = 1
         is_media = False
 
-    # 异步方式获取并更新用户硬币
-    connection = mysql_connection.create_connection()
-    cursor = connection.cursor()
-    try:
-        select_query = "SELECT permission, coins FROM user WHERE id = %s"
-        cursor.execute(select_query, (user_id,))
-        result = cursor.fetchone()
-        user_permission = result[0] if result else 0
-        user_coins = result[1] if result else 0
+    async with mysql_connection.transaction() as connection:
+        row = await mysql_connection.fetch_one(
+            "SELECT permission, coins FROM user WHERE id = %s",
+            (user_id,),
+            connection=connection,
+        )
+        user_permission = row[0] if row else 0
+        user_coins = row[1] if row else 0
 
         if user_coins < coin_cost:
             await effective_message.reply_text(
@@ -222,13 +221,11 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"Try using /lottery to get some coins!")
             return
 
-        update_query = "UPDATE user SET coins = coins - %s WHERE id = %s"
-        cursor.execute(update_query, (coin_cost, user_id))
-        connection.commit()
+        await connection.exec_driver_sql(
+            "UPDATE user SET coins = coins - %s WHERE id = %s",
+            (coin_cost, user_id),
+        )
         user_coins = max(user_coins - coin_cost, 0)
-    finally:
-        cursor.close()
-        connection.close()
 
     user_affection = await process_user.async_get_user_affection(user_id)
     user_impression_raw = await process_user.async_get_user_impression(user_id)

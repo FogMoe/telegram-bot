@@ -7,12 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 import telegram
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
 from core import mysql_connection
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from core.command_cooldown import cooldown
-
-# 创建线程池执行器用于异步数据库操作
-omikuji_executor = ThreadPoolExecutor(max_workers=3)
 
 # 防止用户快速多次点击的锁
 # 格式: {user_id: lock_until_timestamp}
@@ -291,117 +286,85 @@ def get_daily_fortune(user_id: int) -> str:
     return fortune
 
 
-# 修改为同步函数，不再使用async
-def check_and_deduct_coins_sync(user_id: int) -> bool:
-    """
-    同步版本：检查用户是否有足够的金币并扣除
-    """
+async def check_and_deduct_coins(user_id: int) -> bool:
+    """检查用户是否有足够的金币并扣除"""
     try:
-        connection = mysql_connection.create_connection()
-        cursor = connection.cursor()
-        try:
-            # 检查用户是否存在
-            cursor.execute("SELECT id, coins FROM user WHERE id = %s", (user_id,))
-            user = cursor.fetchone()
-            
+        async with mysql_connection.transaction() as connection:
+            user = await mysql_connection.fetch_one(
+                "SELECT id, coins FROM user WHERE id = %s",
+                (user_id,),
+                connection=connection,
+            )
+
             if not user:
                 logger.warning(f"用户 {user_id} 不存在")
                 return False
-            
-            # 检查金币是否足够
+
             if user[1] < 1:
                 logger.info(f"用户 {user_id} 金币不足，当前金币: {user[1]}")
                 return False
-            
-            # 扣除金币
-            cursor.execute("UPDATE user SET coins = coins - 1 WHERE id = %s", (user_id,))
-            connection.commit()
+
+            await connection.exec_driver_sql(
+                "UPDATE user SET coins = coins - 1 WHERE id = %s",
+                (user_id,),
+            )
             logger.info(f"用户 {user_id} 扣除1金币成功，剩余金币: {user[1] - 1}")
             return True
-        finally:
-            cursor.close()
-            connection.close()
     except Exception as e:
         logger.error(f"扣除金币时出错: {str(e)}")
         return False
 
 
-# 修改为同步函数，不再使用async
-def get_user_daily_fortune_sync(user_id: int):
+async def get_user_daily_fortune(user_id: int):
     """
-    同步版本：从数据库获取用户当天的抽签记录
+    从数据库获取用户当天的抽签记录
     如果存在记录，返回(True, fortune)
     如果不存在记录，返回(False, None)
     """
     try:
         today = datetime.now().strftime("%Y-%m-%d")
-        connection = mysql_connection.create_connection()
-        cursor = connection.cursor()
-        
-        try:
-            cursor.execute(
-                "SELECT fortune FROM user_omikuji WHERE user_id = %s AND fortune_date = %s",
-                (user_id, today)
-            )
-            result = cursor.fetchone()
-            
-            if result:
-                logger.info(f"用户 {user_id} 今日已抽签，结果: {result[0]}")
-                return True, result[0]
-            logger.info(f"用户 {user_id} 今日尚未抽签")
-            return False, None
-        finally:
-            cursor.close()
-            connection.close()
+        result = await mysql_connection.fetch_one(
+            "SELECT fortune FROM user_omikuji WHERE user_id = %s AND fortune_date = %s",
+            (user_id, today),
+        )
+
+        if result:
+            logger.info(f"用户 {user_id} 今日已抽签，结果: {result[0]}")
+            return True, result[0]
+        logger.info(f"用户 {user_id} 今日尚未抽签")
+        return False, None
     except Exception as e:
         logger.error(f"获取用户抽签记录时出错: {str(e)}")
         return False, None
 
 
-# 修改为同步函数，不再使用async
-def save_user_fortune_sync(user_id: int, fortune: str) -> bool:
-    """
-    同步版本：保存用户的抽签记录到数据库
-    """
+async def save_user_fortune(user_id: int, fortune: str) -> bool:
+    """保存用户的抽签记录到数据库"""
     try:
         today = datetime.now().strftime("%Y-%m-%d")
-        connection = mysql_connection.create_connection()
-        cursor = connection.cursor()
-        
-        try:
-            cursor.execute(
-                "INSERT INTO user_omikuji (user_id, fortune_date, fortune) VALUES (%s, %s, %s) "
-                "ON DUPLICATE KEY UPDATE fortune = VALUES(fortune)",
-                (user_id, today, fortune)
-            )
-            connection.commit()
-            logger.info(f"用户 {user_id} 抽签结果 {fortune} 已保存")
-            return True
-        finally:
-            cursor.close()
-            connection.close()
+        await mysql_connection.execute(
+            "INSERT INTO user_omikuji (user_id, fortune_date, fortune) VALUES (%s, %s, %s) "
+            "ON DUPLICATE KEY UPDATE fortune = VALUES(fortune)",
+            (user_id, today, fortune),
+        )
+        logger.info(f"用户 {user_id} 抽签结果 {fortune} 已保存")
+        return True
     except Exception as e:
         logger.error(f"保存用户抽签记录时出错: {str(e)}")
         return False
 
 
-# 修改为同步函数，不再使用async
-def check_user_registered_sync(user_id: int) -> bool:
-    """
-    同步版本：检查用户是否已注册
-    """
+async def check_user_registered(user_id: int) -> bool:
+    """检查用户是否已注册"""
     try:
-        connection = mysql_connection.create_connection()
-        cursor = connection.cursor()
-        try:
-            cursor.execute("SELECT id FROM user WHERE id = %s", (user_id,))
-            result = cursor.fetchone() is not None
-            if not result:
-                logger.info(f"用户 {user_id} 未注册")
-            return result
-        finally:
-            cursor.close()
-            connection.close()
+        result = await mysql_connection.fetch_one(
+            "SELECT id FROM user WHERE id = %s",
+            (user_id,),
+        )
+        is_registered = result is not None
+        if not is_registered:
+            logger.info(f"用户 {user_id} 未注册")
+        return is_registered
     except Exception as e:
         logger.error(f"检查用户注册状态时出错: {str(e)}")
         return False
@@ -418,12 +381,8 @@ async def omikuji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         logger.info(f"用户 {user_id} ({user_name}) 请求抽签")
         
-        # 检查用户是否注册 - 使用同步函数在线程池中执行
-        loop = asyncio.get_running_loop()
-        is_registered = await loop.run_in_executor(
-            omikuji_executor,
-            lambda: check_user_registered_sync(user_id)
-        )
+        # 检查用户是否注册
+        is_registered = await check_user_registered(user_id)
         
         if not is_registered:
             await update.message.reply_text(
@@ -446,11 +405,8 @@ async def omikuji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # 设置3秒锁定
         omikuji_locks[user_id] = current_time + 3
         
-        # 检查用户今天是否已经抽过签 - 使用同步函数在线程池中执行
-        has_drawn, existing_fortune = await loop.run_in_executor(
-            omikuji_executor,
-            lambda: get_user_daily_fortune_sync(user_id)
-        )
+        # 检查用户今天是否已经抽过签
+        has_drawn, existing_fortune = await get_user_daily_fortune(user_id)
         
         if has_drawn:
             # 用户今天已经抽过签，直接获取已有结果
@@ -493,11 +449,8 @@ async def omikuji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await update.message.reply_text(message)
             return
         
-        # 异步检查并扣除金币 - 使用同步函数在线程池中执行
-        coins_deducted = await loop.run_in_executor(
-            omikuji_executor,
-            lambda: check_and_deduct_coins_sync(user_id)
-        )
+        # 检查并扣除金币
+        coins_deducted = await check_and_deduct_coins(user_id)
         
         if not coins_deducted:
             await update.message.reply_text(
@@ -527,11 +480,8 @@ async def omikuji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"建议: {random_gen.choice(fortune_info['advice'])}"
         )
         
-        # 保存用户抽签记录 - 使用同步函数在线程池中执行
-        save_result = await loop.run_in_executor(
-            omikuji_executor,
-            lambda: save_user_fortune_sync(user_id, fortune)
-        )
+        # 保存用户抽签记录
+        save_result = await save_user_fortune(user_id, fortune)
         
         if not save_result:
             logger.warning(f"用户 {user_id} 的抽签结果保存失败，但会继续显示结果")
