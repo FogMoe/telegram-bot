@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Any, Iterable, Optional
+from typing import Any, AsyncIterator, Iterable, Optional
 
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
@@ -24,14 +24,14 @@ def get_engine() -> AsyncEngine:
 
 
 @asynccontextmanager
-async def connect() -> AsyncConnection:
+async def connect() -> AsyncIterator[AsyncConnection]:
     engine = get_engine()
     async with engine.connect() as connection:
         yield connection
 
 
 @asynccontextmanager
-async def transaction() -> AsyncConnection:
+async def transaction() -> AsyncIterator[AsyncConnection]:
     engine = get_engine()
     async with engine.begin() as connection:
         yield connection
