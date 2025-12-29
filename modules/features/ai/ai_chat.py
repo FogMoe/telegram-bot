@@ -1,19 +1,8 @@
-from zai import ZaiClient
-import os
-from openai import AzureOpenAI
 import logging
 from typing import Dict, Optional, List, Tuple, Any
-from google import genai
-from google.genai import types
-from google.genai.types import (
-    HarmCategory,
-    HarmBlockThreshold,
-    SafetySetting,
-    FunctionResponse,
-    FunctionCall,
-)
-from core import config, process_user
-import base64
+
+from openai import OpenAI
+from core import config
 import json
 from collections import deque
 import time
@@ -21,8 +10,8 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 from .ai_tools import (
-    GEMINI_FUNCTION_DECLARATIONS,
-    GEMINI_TOOL_HANDLERS,
+    OPENAI_TOOLS,
+    AI_TOOL_HANDLERS,
     set_tool_request_context,
     clear_tool_request_context,
 )
@@ -33,102 +22,6 @@ executor = ThreadPoolExecutor(max_workers=10)
 ToolLog = Dict[str, Any]
 AIResponse = Tuple[str, List[ToolLog]]
 
-
-def _enum_value(value: Any) -> Any:
-    """Return the raw value for IntEnum/Enum or the object itself."""
-    if hasattr(value, "value"):
-        raw = value.value
-        if isinstance(raw, str):
-            return raw.lower()
-        return raw
-    return value
-
-
-def _schema_to_plain(schema: Any) -> Dict[str, Any]:
-    """
-    Convert google.genai.types.Schema into a plain JSON-serializable dict that
-    matches the OpenAI function-calling specification.
-    """
-    if schema is None:
-        return {"type": "object", "properties": {}}
-
-    if isinstance(schema, dict):
-        return {key: _schema_to_plain(val) for key, val in schema.items()}
-
-    if isinstance(schema, list):
-        return [_schema_to_plain(item) for item in schema]
-
-    if not hasattr(schema, "__dict__"):
-        return schema
-
-    result: Dict[str, Any] = {}
-    schema_type = getattr(schema, "type", None)
-    if schema_type is not None:
-        result["type"] = _enum_value(schema_type)
-
-    description = getattr(schema, "description", None)
-    if description:
-        result["description"] = description
-
-    default = getattr(schema, "default", None)
-    if default not in (None, ""):
-        result["default"] = default
-
-    enum_values = getattr(schema, "enum", None)
-    if enum_values:
-        result["enum"] = list(enum_values)
-
-    minimum = getattr(schema, "minimum", None)
-    if minimum is not None:
-        result["minimum"] = minimum
-
-    maximum = getattr(schema, "maximum", None)
-    if maximum is not None:
-        result["maximum"] = maximum
-
-    multiple_of = getattr(schema, "multiple_of", None)
-    if multiple_of is not None:
-        result["multipleOf"] = multiple_of
-
-    pattern = getattr(schema, "pattern", None)
-    if pattern:
-        result["pattern"] = pattern
-
-    properties = getattr(schema, "properties", None)
-    if properties:
-        result["properties"] = {
-            key: _schema_to_plain(val)
-            for key, val in properties.items()
-        }
-    elif "properties" not in result and result.get("type") == "object":
-        result["properties"] = {}
-
-    required = getattr(schema, "required", None)
-    if required:
-        result["required"] = list(required)
-
-    items = getattr(schema, "items", None)
-    if items is not None:
-        result["items"] = _schema_to_plain(items)
-
-    return result
-
-
-def _convert_gemini_tools_to_openai_format() -> List[Dict[str, Any]]:
-    """将 Gemini 工具定义转换为 OpenAI/Zai 兼容格式"""
-    tools: List[Dict[str, Any]] = []
-    for func_decl in GEMINI_FUNCTION_DECLARATIONS:
-        parameters = _schema_to_plain(getattr(func_decl, "parameters", None))
-        tool_spec = {
-            "type": "function",
-            "function": {
-                "name": func_decl.name,
-                "description": getattr(func_decl, "description", ""),
-                "parameters": parameters,
-            },
-        }
-        tools.append(tool_spec)
-    return tools
 
 SYSTEM_PROMPT = config.SYSTEM_PROMPT
 AI_SERVICE_ORDER = config.AI_SERVICE_ORDER
@@ -156,14 +49,56 @@ class APIRateLimiter:
 translate_limiter = APIRateLimiter(max_requests=10, time_window=60)
 
 
-def create_zai_client() -> ZaiClient:
-    """Create a configured ZaiClient instance."""
+def _build_openai_client(
+    api_key: str,
+    *,
+    base_url: Optional[str] = None,
+    default_headers: Optional[Dict[str, str]] = None,
+    default_query: Optional[Dict[str, str]] = None,
+) -> OpenAI:
+    if not api_key:
+        raise RuntimeError("Missing API key configuration.")
+    client_kwargs: Dict[str, Any] = {"api_key": api_key}
+    if base_url:
+        client_kwargs["base_url"] = base_url
+    if default_headers:
+        client_kwargs["default_headers"] = default_headers
+    if default_query:
+        client_kwargs["default_query"] = default_query
+    return OpenAI(**client_kwargs)
+
+
+def create_zhipu_client() -> OpenAI:
     if not ZAI_API_KEY:
         raise RuntimeError("Missing ZAI_API_KEY configuration.")
-    client_kwargs: Dict[str, Any] = {}
-    # if ZAI_BASE_URL:
-    #     client_kwargs["base_url"] = ZAI_BASE_URL
-    return ZaiClient(api_key=ZAI_API_KEY, **client_kwargs)
+    return _build_openai_client(
+        ZAI_API_KEY,
+        base_url=config.ZHIPU_BASE_URL,
+    )
+
+
+def create_gemini_client() -> OpenAI:
+    if not config.GEMINI_API_KEY:
+        raise RuntimeError("Missing GEMINI_API_KEY configuration.")
+    return _build_openai_client(
+        config.GEMINI_API_KEY,
+        base_url=config.GEMINI_BASE_URL,
+    )
+
+
+def create_azure_client() -> OpenAI:
+    if not config.AZURE_OPENAI_API_KEY:
+        raise RuntimeError("Missing AZURE_OPENAI_API_KEY configuration.")
+    if not config.AZURE_OPENAI_BASE_URL:
+        raise RuntimeError("Missing AZURE_OPENAI_BASE_URL configuration.")
+    default_query = {"api-version": config.AZURE_OPENAI_API_VERSION}
+    default_headers = {"api-key": config.AZURE_OPENAI_API_KEY}
+    return _build_openai_client(
+        config.AZURE_OPENAI_API_KEY,
+        base_url=config.AZURE_OPENAI_BASE_URL,
+        default_headers=default_headers,
+        default_query=default_query,
+    )
 
 
 def _tool_call_to_plain(tool_call: Any) -> Dict[str, Any]:
@@ -223,9 +158,9 @@ async def translate_text(text: str) -> str:
 
 def _sync_translate_text(text: str) -> str:
     """同步版本的翻译函数，供异步函数调用"""
-    client = create_zai_client()
+    client = create_zhipu_client()
     response = client.chat.completions.create(
-        model="glm-4.5-flash",
+        model=config.ZHIPU_TRANSLATE_MODEL,
         messages=[
             {
                 "role": "system",
@@ -268,9 +203,9 @@ async def analyze_image(base64_str):
 
 def _sync_analyze_image(base64_str):
     """同步版本的图像分析函数，供异步函数调用"""
-    client = create_zai_client()
+    client = create_zhipu_client()
     response = client.chat.completions.create(
-        model="GLM-4.1V-Thinking-Flash",
+        model=config.ZHIPU_VISION_MODEL,
         messages=[
             {
                 "role": "user",
@@ -306,23 +241,10 @@ def _compose_system_prompt(
 
 def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[str, object]] = None) -> AIResponse:
     """同步版本的 Z.ai（原智谱）响应函数（支持工具调用）"""
-    client = create_zai_client()
+    client = create_zhipu_client()
 
     # 获取 OpenAI 格式的工具定义
-    tools = _convert_gemini_tools_to_openai_format()
-    
-    # 添加 Z.ai 特有的网络工具
-    tools.extend([{
-        "type": "web_search",
-        "web_search": {
-            "enable": True  # 启用网络搜索
-        }
-    }, {
-        "type": "web_browser",
-        "web_browser": {
-            "browser": "auto"
-        }
-    }])
+    tools = OPENAI_TOOLS
 
     # 添加系统消息
     system_message = {
@@ -342,7 +264,7 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
     # 工具调用循环（最多10轮）
     for iteration in range(10):
         response = client.chat.completions.create(
-            model="glm-4.5-flash",
+            model=config.ZHIPU_MODEL,
             messages=filtered_messages,
             tools=tools,
             tool_choice="auto",
@@ -405,7 +327,7 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
             })
 
             # 执行工具
-            handler = GEMINI_TOOL_HANDLERS.get(function_name)
+            handler = AI_TOOL_HANDLERS.get(function_name)
             if handler:
                 try:
                     tool_result = handler(**function_args)
@@ -427,6 +349,7 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
             filtered_messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call_id,
+                "name": function_name,
                 "content": json.dumps(tool_result, ensure_ascii=False)
             })
             last_tool_payload = (function_name, tool_result)
@@ -444,14 +367,11 @@ def get_ai_response_zhipu(messages, user_id: int, tool_context: Optional[Dict[st
 
 def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[str, object]] = None) -> AIResponse:
     """同步版本的Azure OpenAI响应函数（支持工具调用）"""
-    client = AzureOpenAI(
-        azure_endpoint=config.AZURE_OPENAI_API_ENDPOINT,
-        api_key=config.AZURE_OPENAI_API_KEY,
-        api_version=config.AZURE_OPENAI_API_VERSION,
-    )
+    client = create_azure_client()
+    azure_model = config.AZURE_OPENAI_DEPLOYMENT or "gpt-4"
 
     # 获取 OpenAI 格式的工具定义
-    tools = _convert_gemini_tools_to_openai_format()
+    tools = OPENAI_TOOLS
 
     # 添加系统消息
     system_message = {
@@ -472,7 +392,7 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
         # 工具调用循环（最多10轮）
         for iteration in range(10):
             completion = client.chat.completions.create(
-                model="gpt-4",
+                model=azure_model,
                 messages=filtered_messages,
                 tools=tools,
                 tool_choice="auto",
@@ -481,11 +401,11 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
             )
             
             assistant_message = completion.choices[0].message
-            tool_calls = getattr(assistant_message, 'tool_calls', None)
+            raw_tool_calls = getattr(assistant_message, 'tool_calls', None)
             assistant_content = assistant_message.content or ""
             
             # 如果没有工具调用，直接返回当前模型答案
-            if not tool_calls:
+            if not raw_tool_calls:
                 logging.info(f"Azure 第 {iteration + 1} 轮：无工具调用，直接返回答案")
                 content_text = assistant_content
                 if content_text.strip():
@@ -497,6 +417,7 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
                 logging.warning("Azure 返回内容为空且无可用回退。")
                 return content_text, tool_logs
             
+            tool_calls = _normalise_tool_calls(raw_tool_calls)
             logging.info(f"Azure 第 {iteration + 1} 轮：检测到 {len(tool_calls)} 个工具调用")
             
             # 追加助手消息（包含 tool_calls）
@@ -508,10 +429,14 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
             
             # 执行所有工具调用
             for tool_call in tool_calls:
-                function_name = tool_call.function.name
+                function_payload = tool_call.get("function") or {}
+                function_name = function_payload.get("name")
+                if not function_name:
+                    logging.warning("Azure 返回的工具调用缺少函数名: %s", tool_call)
+                    continue
 
                 try:
-                    raw_args = tool_call.function.arguments or "{}"
+                    raw_args = function_payload.get("arguments") or "{}"
                     function_args = json.loads(raw_args)
                 except json.JSONDecodeError as e:
                     logging.error(f"Azure 工具参数解析失败: {e}")
@@ -521,11 +446,11 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
                     "type": "assistant_tool_call",
                     "tool_name": function_name,
                     "arguments": function_args,
-                    "tool_call_id": getattr(tool_call, "id", None),
+                    "tool_call_id": tool_call.get("id"),
                 })
 
                 # 执行工具
-                handler = GEMINI_TOOL_HANDLERS.get(function_name)
+                handler = AI_TOOL_HANDLERS.get(function_name)
                 if handler:
                     try:
                         tool_result = handler(**function_args)
@@ -546,7 +471,8 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
                 # 追加工具返回结果
                 filtered_messages.append({
                     "role": "tool",
-                    "tool_call_id": tool_call.id,
+                    "tool_call_id": tool_call.get("id"),
+                    "name": function_name,
                     "content": json.dumps(tool_result, ensure_ascii=False)
                 })
                 last_tool_payload = (function_name, tool_result)
@@ -555,7 +481,7 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
                     "tool_name": function_name,
                     "arguments": function_args,
                     "result": tool_result,
-                    "tool_call_id": getattr(tool_call, "id", None),
+                    "tool_call_id": tool_call.get("id"),
                 })
         
         logging.warning("Azure 工具调用次数超限（10轮）")
@@ -567,75 +493,132 @@ def get_ai_response_azure(messages, user_id: int, tool_context: Optional[Dict[st
 
 
 def get_ai_response_google(messages, user_id: int, tool_context: Optional[Dict[str, object]] = None) -> AIResponse:
-    """同步版本的Google Gemini响应函数（使用最新生成接口并支持工具调用）。"""
-    client = genai.Client(api_key=config.GEMINI_API_KEY)
+    """同步版本的Google Gemini响应函数（OpenAI兼容接口）。"""
+    client = create_gemini_client()
+    tools = OPENAI_TOOLS
 
-    system_prompt = _compose_system_prompt(tool_context)
+    system_message = {
+        "role": "system",
+        "content": _compose_system_prompt(tool_context),
+    }
 
-    safety_settings = [
-        SafetySetting(
-            category=HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-            threshold=HarmBlockThreshold.BLOCK_NONE
-        ),
-        SafetySetting(
-            category=HarmCategory.HARM_CATEGORY_HARASSMENT,
-            threshold=HarmBlockThreshold.BLOCK_NONE
-        ),
-        SafetySetting(
-            category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-            threshold=HarmBlockThreshold.BLOCK_NONE
-        ),
-        SafetySetting(
-            category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-            threshold=HarmBlockThreshold.BLOCK_NONE
-        ),
-        SafetySetting(
-            category=HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
-            threshold=HarmBlockThreshold.BLOCK_NONE
-        )
+    filtered_messages = [
+        msg for msg in messages if msg.get("content") is not None or msg.get("tool_calls")
     ]
+    filtered_messages.insert(0, system_message)
 
-    contents = _build_gemini_contents(messages)
+    last_tool_payload = None
+    tool_logs: List[ToolLog] = []
 
-    generation_config_kwargs = dict(
-        system_instruction=system_prompt,
-        tools=[
-            types.Tool(function_declarations=GEMINI_FUNCTION_DECLARATIONS),
-        ],
-        tool_config=types.ToolConfig(
-            function_calling_config=types.FunctionCallingConfig(mode="AUTO")
-        ),
-        safety_settings=safety_settings,
-        max_output_tokens=4096,
-        thinking_config=types.ThinkingConfig(
-            thinking_budget=2048,
-        ),
-    )
+    def _run(model_name: str) -> AIResponse:
+        nonlocal last_tool_payload
+        for iteration in range(10):
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=filtered_messages,
+                tools=tools,
+                tool_choice="auto",
+                temperature=1.0,
+                max_tokens=4096,
+            )
 
+            assistant_message = response.choices[0].message
+            raw_tool_calls = getattr(assistant_message, "tool_calls", None)
+            assistant_content = assistant_message.content or ""
+
+            if not raw_tool_calls:
+                logging.info(f"Gemini 第 {iteration + 1} 轮：无工具调用，直接返回答案")
+                content_text = assistant_content
+                if content_text.strip():
+                    return content_text, tool_logs
+                if last_tool_payload:
+                    fallback = _format_tool_fallback(last_tool_payload) or ""
+                    if fallback:
+                        return fallback, tool_logs
+                logging.warning("Gemini 返回内容为空且无可用回退。")
+                return content_text, tool_logs
+
+            tool_calls = _normalise_tool_calls(raw_tool_calls)
+            logging.info(f"Gemini 第 {iteration + 1} 轮：检测到 {len(tool_calls)} 个工具调用")
+
+            filtered_messages.append({
+                "role": "assistant",
+                "content": assistant_content,
+                "tool_calls": tool_calls,
+            })
+
+            for tool_call in tool_calls:
+                function_payload = tool_call.get("function") or {}
+                function_name = function_payload.get("name")
+                if not function_name:
+                    logging.warning("Gemini 返回的工具调用缺少函数名: %s", tool_call)
+                    continue
+
+                raw_args = function_payload.get("arguments") or "{}"
+                try:
+                    function_args = json.loads(raw_args)
+                except json.JSONDecodeError as e:
+                    logging.error(f"Gemini 工具参数解析失败: {e}")
+                    function_args = {}
+
+                tool_call_id = tool_call.get("id")
+                tool_logs.append({
+                    "type": "assistant_tool_call",
+                    "tool_name": function_name,
+                    "arguments": function_args,
+                    "tool_call_id": tool_call_id,
+                })
+
+                handler = AI_TOOL_HANDLERS.get(function_name)
+                if handler:
+                    try:
+                        tool_result = handler(**function_args)
+                        logging.info(
+                            f"Gemini 工具执行成功: {function_name}, "
+                            f"args={json.dumps(function_args, ensure_ascii=False)}"
+                        )
+                    except TypeError as e:
+                        logging.error(f"Gemini 工具参数错误: {function_name}, {e}")
+                        tool_result = {"error": f"参数错误: {str(e)}"}
+                    except Exception as e:
+                        logging.exception(f"Gemini 工具执行失败: {function_name}, {e}")
+                        tool_result = {"error": f"执行失败: {str(e)}"}
+                else:
+                    logging.warning(f"Gemini 未知工具: {function_name}")
+                    tool_result = {"error": f"未知工具: {function_name}"}
+
+                filtered_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "name": function_name,
+                    "content": json.dumps(tool_result, ensure_ascii=False),
+                })
+                last_tool_payload = (function_name, tool_result)
+                tool_logs.append({
+                    "type": "tool_result",
+                    "tool_name": function_name,
+                    "arguments": function_args,
+                    "result": tool_result,
+                    "tool_call_id": tool_call_id,
+                })
+
+        logging.warning("Gemini 工具调用次数超限（10轮）")
+        return "抱歉，处理您的请求时遇到了问题，请稍后再试。", tool_logs
+
+    primary_model = config.GEMINI_MODEL
+    fallback_model = config.GEMINI_FALLBACK_MODEL
     try:
-        return _generate_gemini_response(
-            client=client,
-            model_name="gemini-2.5-flash",
-            contents=contents,
-            generation_config_kwargs=generation_config_kwargs,
-            temperature=1.0,
-        )
+        return _run(primary_model)
     except Exception as e:
         error_str = str(e)
-        if 'RESOURCE_EXHAUSTED' in error_str:
-            logging.warning(f"gemini-2.5-flash资源耗尽错误，尝试使用 gemini-2.5-pro 模型重试: {error_str}")
-            try:
-                return _generate_gemini_response(
-                    client=client,
-                    model_name="gemini-2.5-pro",
-                    contents=contents,
-                    generation_config_kwargs=generation_config_kwargs,
-                    temperature=1.0,
-                )
-            except Exception as retry_e:
-                logging.error(f"使用 gemini-2.5-pro 重试失败: {str(retry_e)}")
-                raise retry_e
-        if 'SAFETY' in error_str and 'blocked' in error_str:
+        if fallback_model and fallback_model != primary_model:
+            logging.warning(
+                "Gemini 主模型失败，尝试回退模型 %s: %s",
+                fallback_model,
+                error_str,
+            )
+            return _run(fallback_model)
+        if "SAFETY" in error_str and "blocked" in error_str:
             logging.warning("Gemini safety block triggered: %s", error_str)
             raise Exception("SafetyBlockError")
 
@@ -690,204 +673,6 @@ async def get_ai_response(messages, user_id: int, tool_context: Optional[Dict[st
     )
 
 
-def _build_gemini_contents(messages):
-    """
-    将内部消息格式转换为 Gemini 所需的 Contents 列表。
-    """
-    contents = []
-    for message in messages:
-        role = message.get("role")
-        content = message.get("content")
-        if role == "system":
-            continue
-
-        if role == "assistant" and message.get("tool_calls"):
-            parts = []
-            for call in message.get("tool_calls", []):
-                function_info = call.get("function") or {}
-                args_str = function_info.get("arguments") or "{}"
-                try:
-                    call_args = json.loads(args_str)
-                except json.JSONDecodeError:
-                    call_args = {}
-                fc_kwargs = {
-                    "name": function_info.get("name"),
-                    "args": call_args,
-                }
-                if call.get("id"):
-                    fc_kwargs["id"] = call.get("id")
-                try:
-                    parts.append(types.Part(function_call=FunctionCall(**fc_kwargs)))
-                except Exception as exc:
-                    logging.warning("Failed to rebuild Gemini function call: %s", exc)
-            if parts:
-                contents.append(types.Content(role="model", parts=parts))
-            continue
-
-        if role == "tool":
-            response_text = content or ""
-            try:
-                response_payload = json.loads(response_text) if response_text else {}
-            except json.JSONDecodeError:
-                response_payload = {"result": response_text}
-
-            fr_kwargs = {
-                "name": message.get("name") or "tool_response",
-                "response": response_payload,
-            }
-            if message.get("tool_call_id"):
-                fr_kwargs["id"] = message["tool_call_id"]
-            try:
-                contents.append(
-                    types.Content(
-                        role="tool",
-                        parts=[types.Part(function_response=FunctionResponse(**fr_kwargs))]
-                    )
-                )
-            except Exception as exc:
-                logging.warning("Failed to rebuild Gemini function response: %s", exc)
-            continue
-
-        if content is None:
-            continue
-
-        if not isinstance(content, str):
-            logging.warning("Unsupported Gemini message content type: %s", type(content))
-            continue
-
-        gemini_role = "user" if role == "user" else "model"
-        contents.append(
-            types.Content(
-                role=gemini_role,
-                parts=[types.Part(text=content)]
-            )
-        )
-    return contents
-
-
-def _generate_gemini_response(
-    client,
-    model_name,
-    contents,
-    generation_config_kwargs,
-    temperature: float,
-) -> AIResponse:
-    """
-    调用 Gemini models.generate_content，自动处理函数调用并返回最终文本。
-    """
-    conversation = list(contents)
-    last_tool_payload = None
-    tool_logs: List[ToolLog] = []
-
-    generate_config = types.GenerateContentConfig(
-        **generation_config_kwargs,
-        temperature=temperature,
-    )
-
-    while True:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=conversation,
-            config=generate_config,
-        )
-
-        if getattr(response, "function_calls", None):
-            logging.info(
-                "Gemini requested function call(s): %s",
-                [fc.name for fc in response.function_calls],
-            )
-
-        function_call = _extract_function_call(response)
-        if not function_call:
-            final_text = response.text or ""
-            if final_text.strip():
-                return final_text, tool_logs
-            if last_tool_payload:
-                summary_text = _format_tool_fallback(last_tool_payload)
-                if summary_text:
-                    logging.info("Gemini text empty after tool call; using fallback summary.")
-                    return summary_text, tool_logs
-                logging.warning("Gemini text empty after tool call and no fallback available.")
-            return final_text, tool_logs
-
-        tool_name = getattr(function_call, "name", None)
-        handler = GEMINI_TOOL_HANDLERS.get(tool_name)
-
-        if handler is None:
-            logging.warning("Unknown Gemini tool call received: %s", tool_name)
-            return response.text or "", tool_logs
-
-        raw_args = getattr(function_call, "args", {}) or {}
-        if not isinstance(raw_args, dict):
-            logging.warning("Gemini tool args format invalid: %s", raw_args)
-            raw_args = {}
-        call_args = dict(raw_args)
-
-        tool_logs.append({
-            "type": "assistant_tool_call",
-            "tool_name": tool_name,
-            "arguments": call_args,
-            "tool_call_id": getattr(function_call, "id", None),
-        })
-
-        try:
-            tool_result = handler(**call_args)
-        except TypeError as exc:
-            logging.error("Gemini tool parameter error: %s", exc)
-            tool_result = {"error": f"参数错误: {str(exc)}"}
-        except Exception as exc:
-            logging.exception("Gemini tool execution failed: %s", exc)
-            tool_result = {"error": "工具执行失败"}
-
-        logging.info(
-            "Gemini tool executed: %s args=%s result=%s",
-            tool_name,
-            json.dumps(call_args, ensure_ascii=True),
-            json.dumps(tool_result, ensure_ascii=True, default=str),
-        )
-        last_tool_payload = (tool_name, tool_result)
-
-        fc_kwargs = {
-            "name": getattr(function_call, "name", None),
-            "args": call_args,
-        }
-        function_id = getattr(function_call, "id", None)
-        if function_id is not None:
-            fc_kwargs["id"] = function_id
-
-        conversation.append(
-            types.Content(
-                role="model",
-                parts=[types.Part(function_call=FunctionCall(**fc_kwargs))]
-            )
-        )
-
-        fr_kwargs = {
-            "name": tool_name,
-            "response": tool_result,
-        }
-        if function_id is not None:
-            fr_kwargs["id"] = function_id
-
-        conversation.append(
-            types.Content(
-                role="tool",
-                parts=[
-                    types.Part(
-                        function_response=FunctionResponse(**fr_kwargs)
-                    )
-                ],
-            )
-        )
-        tool_logs.append({
-            "type": "tool_result",
-            "tool_name": tool_name,
-            "arguments": call_args,
-            "result": tool_result,
-            "tool_call_id": getattr(function_call, "id", None),
-        })
-
-
 def _format_tool_fallback(payload):
     tool_name, tool_result = payload
     if tool_name == "google_search":
@@ -923,24 +708,3 @@ def _format_tool_fallback(payload):
             lines.append(f"- [{timestamp}] {user_display} ({mtype}): {content}")
         return "\n".join(lines)
     return ""
-
-
-def _extract_function_call(response):
-    """
-    Extract the first function call from a Gemini response, if any.
-    """
-    function_calls = getattr(response, "function_calls", None)
-    if function_calls:
-        return function_calls[0]
-
-    candidates = getattr(response, "candidates", []) or []
-    for candidate in candidates:
-        content = getattr(candidate, "content", None)
-        if not content:
-            continue
-        parts = getattr(content, "parts", []) or []
-        for part in parts:
-            function_call = getattr(part, "function_call", None)
-            if function_call:
-                return function_call
-    return None

@@ -9,12 +9,34 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(BASE_DIR / '.env')
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_BASE_URL = os.getenv("GEMINI_BASE_URL") or "https://generativelanguage.googleapis.com/v1beta/openai/"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-2.5-flash"
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL") or "gemini-2.5-pro"
+
 ZAI_API_KEY = os.getenv("ZAI_API_KEY") or os.getenv("ZHIPUAI_API_KEY")
+ZHIPU_BASE_URL = os.getenv("ZHIPU_BASE_URL") or "https://open.bigmodel.cn/api/paas/v4"
+ZHIPU_MODEL = os.getenv("ZHIPU_MODEL") or "glm-4.5-flash"
+ZHIPU_TRANSLATE_MODEL = os.getenv("ZHIPU_TRANSLATE_MODEL") or ZHIPU_MODEL
+ZHIPU_VISION_MODEL = os.getenv("ZHIPU_VISION_MODEL") or "glm-4.1v-thinking-flash"
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
-AZURE_OPENAI_API_ENDPOINT = os.getenv("AZURE_OPENAI_API_ENDPOINT")
-AZURE_OPENAI_API_VERSION = "2024-12-01-preview"
+AZURE_OPENAI_API_ENDPOINT = os.getenv("AZURE_OPENAI_API_ENDPOINT") or os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION") or "2024-12-01-preview"
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT") or os.getenv("AZURE_OPENAI_MODEL")
+
+def _build_azure_base_url() -> str:
+    if not AZURE_OPENAI_API_ENDPOINT or not AZURE_OPENAI_DEPLOYMENT:
+        return ""
+    return (
+        f"{AZURE_OPENAI_API_ENDPOINT.rstrip('/')}/openai/deployments/"
+        f"{AZURE_OPENAI_DEPLOYMENT}"
+    )
+
+AZURE_OPENAI_BASE_URL = os.getenv("AZURE_OPENAI_BASE_URL") or _build_azure_base_url()
+
+SUMMARY_MODEL = os.getenv("SUMMARY_MODEL") or GEMINI_MODEL
+SUMMARY_FALLBACK_MODEL = os.getenv("SUMMARY_FALLBACK_MODEL") or GEMINI_FALLBACK_MODEL
 
 JUDGE0_API_URL = "https://ce.judge0.com"
 JUDGE0_API_KEY = os.getenv("JUDGE0_API_KEY")

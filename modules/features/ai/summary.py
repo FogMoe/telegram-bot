@@ -1,19 +1,15 @@
-"""Background conversation summarization using Gemini."""
+"""Background conversation summarization using OpenAI-compatible providers."""
 
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple
 
-from google import genai
-from google.genai import types
-
 from core import config, mysql_connection
+from .ai_chat import create_gemini_client
 
-APIKEY=config.GEMINI_API_KEY
-
-SUMMARY_MODEL = "gemini-flash-latest"
-SUMMARY_FALLBACK_MODEL = "gemini-flash-lite-latest"  # 失败重试时使用的降级模型
+SUMMARY_MODEL = config.SUMMARY_MODEL
+SUMMARY_FALLBACK_MODEL = config.SUMMARY_FALLBACK_MODEL
 SUMMARY_MAX_CHARS = 8000
 SUMMARY_RETRY_LIMIT = 3
 SUMMARY_SYSTEM_PROMPT = (
@@ -72,7 +68,7 @@ def _fetch_pending_snapshot(user_id: int) -> Optional[Tuple[int, str]]:
 
 
 def _generate_summary(user_id: int, snapshot_text: str) -> Optional[str]:
-    client = genai.Client(api_key=APIKEY)
+    client = create_gemini_client()
 
     prompt = (
         "你是一名聊天记录整理助手。接下来是一段雾萌娘与用户的完整对话历史（JSON列表格式）。"
@@ -82,26 +78,21 @@ def _generate_summary(user_id: int, snapshot_text: str) -> Optional[str]:
         f"对话内容：\n{snapshot_text}"
     )
 
-    contents = [
-        types.Content(role="user", parts=[types.Part.from_text(text=prompt)])
+    messages = [
+        {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
     ]
 
-    config = types.GenerateContentConfig(
-        system_instruction=SUMMARY_SYSTEM_PROMPT,
-        temperature=0.2,
-        max_output_tokens=7680,
-    )
-
-    # 首先尝试使用主模型
     for attempt in range(1, SUMMARY_RETRY_LIMIT + 1):
         model_to_use = SUMMARY_MODEL if attempt == 1 else SUMMARY_FALLBACK_MODEL
         try:
-            response = client.models.generate_content(
+            response = client.chat.completions.create(
                 model=model_to_use,
-                contents=contents,
-                config=config,
+                messages=messages,
+                temperature=0.2,
+                max_tokens=7680,
             )
-            summary = (response.text or "").strip()
+            summary = (response.choices[0].message.content or "").strip()
             if summary:
                 if len(summary) > SUMMARY_MAX_CHARS:
                     summary = summary[:SUMMARY_MAX_CHARS]

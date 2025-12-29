@@ -1,14 +1,12 @@
 """
-Utility functions and declarations for Gemini tool calling.
+Utility functions and declarations for OpenAI-compatible tool calling.
 
-This module centralizes all tools that Gemini can invoke so ai_chat.py stays focused
-on orchestration logic. Add new tool implementations and register them here.
+This module centralizes all tools that the AI layer can invoke so ai_chat.py stays
+focused on orchestration logic. Add new tool implementations and register them here.
 """
 
 from typing import Callable, Dict, List, Optional
 from contextvars import ContextVar
-
-from google.genai import types
 
 from core import config, group_chat_history, mysql_connection, process_user
 import logging
@@ -451,7 +449,7 @@ def fetch_permanent_summaries_tool(start: Optional[int] = None, end: Optional[in
 
 
 # Build tool handlers once definitions are available.
-GEMINI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
+AI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
     "get_help_text": get_help_text_tool,
     "google_search": google_search_tool,
     "fetch_group_context": fetch_group_context_tool,
@@ -464,153 +462,179 @@ GEMINI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
 }
 
 
-GEMINI_FUNCTION_DECLARATIONS: List[types.FunctionDeclaration] = [
-    types.FunctionDeclaration(
-        name="get_help_text",
-        description=("Returns a list of available Telegram commands and features for users"),
-        parameters=types.Schema(type=types.Type.OBJECT,
-    properties={},
-    description="No parameters required"),
-    ),
-    types.FunctionDeclaration(
-        name="google_search",
-        description=("Use Google search engine to obtain the latest information and answers"),
-        parameters=types.Schema(
-            type=types.Type.OBJECT,
-            properties={
-                "query": types.Schema(
-                    type=types.Type.STRING,
-                    description=("Search query string. Can be keywords, phrases, or complete questions"),
-                ),
+OPENAI_TOOLS: List[Dict[str, object]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_help_text",
+            "description": "Returns a list of available Telegram commands and features for users",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "google_search",
+            "description": "Use Google search engine to obtain the latest information and answers",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query string. Can be keywords, phrases, or complete questions",
+                    }
+                },
+                "required": ["query"],
             },
-            required=["query"],
-        ),
-    ),
-    types.FunctionDeclaration(
-        name="fetch_group_context",
-        description=("Fetch message history from group chat (group chats only)"),
-        parameters=types.Schema(
-            type=types.Type.OBJECT,
-            properties={
-                "window_size": types.Schema(
-                    type=types.Type.INTEGER,
-                    description=(
-                        "Number of historical messages to retrieve"
-                    ),
-                    default=10,
-                    minimum=1,
-                    maximum=100
-                ),
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_group_context",
+            "description": "Fetch message history from group chat (group chats only)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window_size": {
+                        "type": "integer",
+                        "description": "Number of historical messages to retrieve",
+                        "default": 10,
+                        "minimum": 1,
+                        "maximum": 100,
+                    }
+                },
             },
-            required=[],
-        ),
-    ),
-    types.FunctionDeclaration(
-        name="fetch_url",
-        description=("Fetch and render webpage content for up-to-date browsing"),
-        parameters=types.Schema(
-            type=types.Type.OBJECT,
-            properties={
-                "url": types.Schema(
-                    type=types.Type.STRING,
-                    description=("Fully qualified URL to retrieve"),
-                ),
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_url",
+            "description": "Fetch and render webpage content for up-to-date browsing",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Fully qualified URL to retrieve",
+                    }
+                },
+                "required": ["url"],
             },
-            required=["url"],
-        ),
-    ),
-    types.FunctionDeclaration(
-        name="execute_python_code",
-        description=("Run Python code remotely and return its output"),
-        parameters=types.Schema(
-            type=types.Type.OBJECT,
-            properties={
-                "source_code": types.Schema(
-                    type=types.Type.STRING,
-                    description=("Python source code snippet to execute"),
-                ),
-                "stdin": types.Schema(
-                    type=types.Type.STRING,
-                    description=("Optional standard input for the program"),
-                ),
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_python_code",
+            "description": "Run Python code remotely and return its output",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source_code": {
+                        "type": "string",
+                        "description": "Python source code snippet to execute",
+                    },
+                    "stdin": {
+                        "type": "string",
+                        "description": "Optional standard input for the program",
+                    },
+                },
+                "required": ["source_code"],
             },
-            required=["source_code"],
-        ),
-    ),
-    types.FunctionDeclaration(
-        name="kindness_gift",
-        description=("Gift a certain amount of coins to the user based on your affection level towards them"),
-        parameters=types.Schema(
-            type=types.Type.OBJECT,
-            properties={
-                "amount": types.Schema(
-                    type=types.Type.INTEGER,
-                    description=("Amount of coins to gift"),
-                    minimum=1,
-                    maximum=10
-                ),
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "kindness_gift",
+            "description": "Gift a certain amount of coins to the user based on your affection level towards them",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "amount": {
+                        "type": "integer",
+                        "description": "Amount of coins to gift",
+                        "minimum": 1,
+                        "maximum": 10,
+                    }
+                },
             },
-            required=[],
-        ),
-    ),
-    types.FunctionDeclaration(
-        name="update_affection",
-        description=("Adjust your affection level towards the user (range: -100 to 100)"),
-        parameters=types.Schema(
-            type=types.Type.OBJECT,
-            properties={
-                "delta": types.Schema(
-                    type=types.Type.INTEGER,
-                            description=("Affection level change value. Positive numbers indicate increase, negative numbers indicate decrease"),
-                            minimum=-10,
-                            maximum=10
-                ),
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_affection",
+            "description": "Adjust your affection level towards the user (range: -100 to 100)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "delta": {
+                        "type": "integer",
+                        "description": (
+                            "Affection level change value. Positive numbers indicate increase, "
+                            "negative numbers indicate decrease"
+                        ),
+                        "minimum": -10,
+                        "maximum": 10,
+                    }
+                },
+                "required": ["delta"],
             },
-            required=["delta"],
-        ),
-    ),
-    types.FunctionDeclaration(
-        name="update_impression",
-        description=("Update permanent impression of the user"),
-        parameters=types.Schema(
-            type=types.Type.OBJECT,
-            properties={
-                "impression": types.Schema(
-                    type=types.Type.STRING,
-                            description=(
-            "New impression text, complete and self-contained description (max 500 characters)"
-        ),
-                ),
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_impression",
+            "description": "Update permanent impression of the user",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "impression": {
+                        "type": "string",
+                        "description": (
+                            "New impression text, complete and self-contained description "
+                            "(max 500 characters)"
+                        ),
+                        "maxLength": 500,
+                    }
+                },
+                "required": ["impression"],
             },
-            required=["impression"],
-        ),
-    ),
-    types.FunctionDeclaration(
-        name="fetch_permanent_summaries",
-        description=(
-            "Fetch user's historical conversation summaries (newest on top, max 10 results per request)"),
-        parameters=types.Schema(
-            type=types.Type.OBJECT,
-            properties={
-                "start": types.Schema(
-                    type=types.Type.INTEGER,
-                    description=("Start position (inclusive)"),
-                    default=1
-                ),
-                "end": types.Schema(
-                    type=types.Type.INTEGER,
-                    description=("End position (inclusive)"),
-                    default=2
-                ),
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_permanent_summaries",
+            "description": (
+                "Fetch user's historical conversation summaries (newest on top, max 10 results per request)"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start": {
+                        "type": "integer",
+                        "description": "Start position (inclusive)",
+                        "default": 1,
+                    },
+                    "end": {
+                        "type": "integer",
+                        "description": "End position (inclusive)",
+                        "default": 2,
+                    },
+                },
             },
-            required=[],
-        ),
-    ),
+        },
+    },
 ]
 
 __all__ = [
-    "GEMINI_FUNCTION_DECLARATIONS",
-    "GEMINI_TOOL_HANDLERS",
+    "OPENAI_TOOLS",
+    "AI_TOOL_HANDLERS",
     "set_tool_request_context",
     "clear_tool_request_context",
     "fetch_url_tool",

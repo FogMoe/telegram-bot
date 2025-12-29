@@ -11,7 +11,7 @@ import telegram
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from core import group_chat_history, mysql_connection, process_user
+from core import config, group_chat_history, mysql_connection, process_user
 from core.telegram_utils import safe_send_markdown, partial_send
 from features.ai import ai_chat, summary
 
@@ -79,10 +79,10 @@ def _sync_should_trigger_ai_response(message_text: str) -> bool:
     if not _zai_allowance.consume():
         logging.debug("Z.ai rate limiter blocked a request.")
         return False
-    client = ai_chat.create_zai_client()
+    client = ai_chat.create_zhipu_client()
     try:
         response = client.chat.completions.create(
-            model="glm-4.5-flash",
+            model=config.ZHIPU_MODEL,
             messages=[
                 {
                     "role": "system",
