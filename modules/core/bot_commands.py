@@ -43,7 +43,7 @@ async def inline_translate(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             InlineQueryResultArticle(
                 id=str(uuid4()),
                 title="请先获取个人信息 Please Register First",
-                description="私聊 @FogMoeBot 使用 /me 命令后即可使用翻译功能。 Using the /me command in private chat with @FogMoeBot to translate.",
+                description="使用 /me 命令后即可使用翻译功能。 Using the /me command first to translate.",
                 input_message_content=InputTextMessageContent(
                     message_text=f"{query}",
                     parse_mode=ParseMode.MARKDOWN

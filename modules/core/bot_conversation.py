@@ -126,6 +126,34 @@ def _format_xml_message(
     return "\n".join(lines)
 
 
+def _format_user_state_prompt(
+    *,
+    user_coins: int,
+    user_permission: int,
+    user_affection: int,
+    impression: str,
+) -> str:
+    permission_labels = {
+        0: "Normal",
+        1: "Advanced",
+        2: "Maximum",
+    }
+    permission_label = permission_labels.get(user_permission, "Unknown")
+    attrs = [
+        ("coins", str(user_coins)),
+        ("permission", str(user_permission)),
+        ("permission_label", permission_label),
+        ("affection", str(user_affection)),
+    ]
+    attr_text = " ".join(
+        f'{key}="{_xml_escape(value)}"' for key, value in attrs if value
+    )
+    lines = [f"<user_state {attr_text}>"]
+    lines.append(f"  <impression>{_xml_escape(impression)}</impression>")
+    lines.append("</user_state>")
+    return "\n".join(lines)
+
+
 async def should_trigger_ai_response(message_text: str) -> bool:
     """
     使用 Z.ai glm-4.5-flash 模型判断群聊消息是否需要调用主 AI 回复。
@@ -426,29 +454,12 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "group_id": update.effective_chat.id if update.effective_chat.type in ("group", "supergroup") else None,
         "message_id": getattr(effective_message, "message_id", None),
         "user_id": user_id,
-        "user_state_prompt":
-        (f"""
-# User Status
-## Coins
-- **User's coins**: {user_coins}
-- User's consumption: 1 to 3 coins per message (system-managed)
-- Used for conversations and bot features (system handles this automatically)
-
-## Permission Level
-- **User's permission**: {user_permission} 
-- Level: 0=Normal, 1=Advanced, 2=Maximum
-- Higher permission levels indicate wealthier users who can access more advanced features
-
-## Affection Level
-- **Your affection towards them**: {user_affection}
-- Range: -100 to 100
-- Adjust your tone and attitude based on your affection level towards the user
-
-## Impression
-- **Your impression of them**: {impression_display}
-- Record permanent user information such as occupation, interests, preferences, etc.
-- Help you better understand users and enhance the relevance of conversations 
-        """),
+        "user_state_prompt": _format_user_state_prompt(
+            user_coins=user_coins,
+            user_permission=user_permission,
+            user_affection=user_affection,
+            impression=impression_display,
+        ),
     }
 
     assistant_message, tool_logs = await ai_chat.get_ai_response(chat_history_for_ai, user_id, tool_context=tool_context)
