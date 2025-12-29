@@ -60,6 +60,13 @@ def get_effective_message(update: Update):
     return update.message or update.edited_message
 
 
+def _split_ai_reply(text: str) -> list[str]:
+    if not text or "\n" not in text:
+        return [text]
+    segments = [segment for segment in text.splitlines() if segment.strip()]
+    return segments or [text]
+
+
 async def should_trigger_ai_response(message_text: str) -> bool:
     """
     使用 Z.ai glm-4.5-flash 模型判断群聊消息是否需要调用主 AI 回复。
@@ -448,15 +455,20 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         summary.schedule_summary_generation(conversation_id)
 
     # 发送AI回复
-    sent_messages = await safe_send_markdown(
-        effective_message.reply_text,
-        assistant_message,
-        logger=logger,
-        fallback_send=partial_send(
-            context.bot.send_message,
-            update.effective_chat.id,
-        ),
+    sent_messages = []
+    fallback_send = partial_send(
+        context.bot.send_message,
+        update.effective_chat.id,
     )
+    for index, segment in enumerate(_split_ai_reply(assistant_message)):
+        send_func = effective_message.reply_text if index == 0 else fallback_send
+        results = await safe_send_markdown(
+            send_func,
+            segment,
+            logger=logger,
+            fallback_send=fallback_send,
+        )
+        sent_messages.extend(results)
 
     if update.effective_chat.type in ("group", "supergroup"):
         for sent_message in sent_messages:
