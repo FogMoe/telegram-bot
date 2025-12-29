@@ -13,7 +13,6 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 # Copy application code
 COPY modules ./modules
-COPY prompts ./prompts
 COPY spam_words.txt ./spam_words.txt
 COPY .env.example ./.env.example
 
