@@ -1,5 +1,5 @@
-from bot_app import run
-from bot_logging import configure_logging
+from app.bot_app import run
+from core.bot_logging import configure_logging
 
 
 if __name__ == '__main__':
