@@ -127,7 +127,7 @@ def run_tool_loop(
     tool_context: Optional[Dict[str, object]] = None,
     *,
     provider_name: str = "AI",
-    tool_choice: str = "auto",
+    tool_choice: str | Dict[str, object] = "auto",
     temperature: float = 1.0,
     max_tokens: int = 4096,
     max_iterations: int = 10,
@@ -150,11 +150,24 @@ def run_tool_loop(
     skip_set = set(skip_tools or [])
 
     for iteration in range(max_iterations):
+        if (
+            iteration == 0
+            and tool_context
+            and tool_context.get("is_group")
+            and tool_choice == "auto"
+        ):
+            request_tool_choice: str | Dict[str, object] = {
+                "type": "function",
+                "function": {"name": "fetch_group_context"},
+            }
+        else:
+            request_tool_choice = tool_choice
+
         response = client.chat.completions.create(
             model=model,
             messages=filtered_messages,
             tools=tools,
-            tool_choice=tool_choice,
+            tool_choice=request_tool_choice,
             temperature=temperature,
             max_tokens=max_tokens,
         )
