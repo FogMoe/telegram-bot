@@ -12,7 +12,8 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from core import config, db, group_chat_history, mysql_connection, process_user
-from core.telegram_utils import safe_send_markdown, partial_send
+from core.archive_utils import build_jsonl_bytes
+from core.telegram_utils import partial_send, safe_send_markdown, send_document_bytes
 from features.ai import ai_chat, summary
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,31 @@ def _split_ai_reply(text: str) -> list[str]:
         segments.append("\n".join(code_buffer))
 
     return segments or [text]
+
+
+async def _send_permanent_records_archive(
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    archived_records: list[dict],
+) -> None:
+    if not archived_records:
+        return
+
+    payload = build_jsonl_bytes(archived_records)
+    if not payload:
+        return
+
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"permanent_records_archive_{user_id}_{timestamp}.jsonl"
+    caption = "你的永久记忆已超过上限，最旧的记录已打包成JSONL文件发给你。服务器存不下了，请自行保存处理。"
+    await send_document_bytes(
+        context.bot,
+        user_id,
+        payload,
+        filename,
+        caption=caption,
+        logger=logger,
+    )
 
 
 def _xml_escape(value: str) -> str:
@@ -466,12 +492,14 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_history = await mysql_connection.async_get_chat_history(conversation_id)
 
     # 异步插入用户消息
-    user_snapshot_created, user_storage_warning = await mysql_connection.async_insert_chat_record(
+    user_snapshot_created, user_storage_warning, user_archived_records = await mysql_connection.async_insert_chat_record(
         conversation_id,
         "user",
         formatted_message,
         system_prompt_extra=user_state_prompt,
     )
+    if user_archived_records:
+        await _send_permanent_records_archive(context, user_id, user_archived_records)
     if user_storage_warning:
         await notify_history_warning(user_storage_warning)
     if user_snapshot_created:
@@ -531,7 +559,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 ],
             }
 
-            tool_snapshot_created, tool_storage_warning = await mysql_connection.async_insert_chat_record(
+            tool_snapshot_created, tool_storage_warning, tool_archived_records = await mysql_connection.async_insert_chat_record(
                 conversation_id,
                 "assistant",
                 assistant_call_message,
@@ -552,19 +580,27 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 "content": tool_result_str,
             }
 
-            tool_snapshot_created, tool_storage_warning = await mysql_connection.async_insert_chat_record(
+            tool_snapshot_created, tool_storage_warning, tool_archived_records = await mysql_connection.async_insert_chat_record(
                 conversation_id,
                 "tool",
                 tool_message,
             )
 
+        if tool_archived_records:
+            await _send_permanent_records_archive(context, user_id, tool_archived_records)
         if tool_storage_warning:
             await notify_history_warning(tool_storage_warning)
         if tool_snapshot_created:
             summary.schedule_summary_generation(conversation_id)
 
     # 异步插入AI回复到聊天记录
-    assistant_snapshot_created, assistant_storage_warning = await mysql_connection.async_insert_chat_record(conversation_id, 'assistant', assistant_message)
+    (
+        assistant_snapshot_created,
+        assistant_storage_warning,
+        assistant_archived_records,
+    ) = await mysql_connection.async_insert_chat_record(conversation_id, "assistant", assistant_message)
+    if assistant_archived_records:
+        await _send_permanent_records_archive(context, user_id, assistant_archived_records)
     if assistant_storage_warning:
         await notify_history_warning(assistant_storage_warning)
     if assistant_snapshot_created:

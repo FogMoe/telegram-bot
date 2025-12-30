@@ -11,6 +11,8 @@ connect = db.connect
 transaction = db.transaction
 run_sync = db.run_sync
 
+PERMANENT_RECORDS_KEEP = 100
+
 
 async def fetch_one(
     sql: str,
@@ -52,6 +54,65 @@ async def execute(
     return result.rowcount
 
 
+async def prune_permanent_records(
+    user_id: int,
+    *,
+    connection,
+    keep: int = PERMANENT_RECORDS_KEEP,
+) -> list[dict]:
+    keep = max(1, int(keep))
+
+    rows = await fetch_all(
+        """
+        SELECT id, created_at, summary, conversation_snapshot
+        FROM permanent_chat_records
+        WHERE user_id = %s
+        ORDER BY created_at DESC, id DESC
+        LIMIT %s OFFSET %s
+        """,
+        (user_id, keep, keep),
+        connection=connection,
+    )
+    if not rows:
+        return []
+
+    record_ids: list[int] = []
+    records: list[dict] = []
+    for row in rows:
+        record_id, created_at, summary_text, snapshot_text = row
+        record_ids.append(record_id)
+
+        if isinstance(summary_text, bytes):
+            summary_text = summary_text.decode("utf-8")
+
+        snapshot_value = snapshot_text
+        if isinstance(snapshot_value, bytes):
+            snapshot_value = snapshot_value.decode("utf-8")
+        if isinstance(snapshot_value, str):
+            try:
+                snapshot_value = json.loads(snapshot_value)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+
+        records.append(
+            {
+                "record_id": record_id,
+                "created_at": created_at.isoformat(sep=" ") if created_at else None,
+                "summary": summary_text,
+                "conversation_snapshot": snapshot_value,
+            }
+        )
+
+    placeholders = ", ".join(["%s"] * len(record_ids))
+    await connection.exec_driver_sql(
+        f"DELETE FROM permanent_chat_records WHERE user_id = %s AND id IN ({placeholders})",
+        (user_id, *record_ids),
+    )
+
+    records.reverse()
+    return records
+
+
 async def insert_chat_record(
     conversation_id,
     role,
@@ -61,6 +122,7 @@ async def insert_chat_record(
 ):
     snapshot_created = False
     warning_level = None
+    archived_records: list[dict] = []
 
     def _trim_messages_with_tool_context(
         messages: list[dict],
@@ -156,20 +218,9 @@ async def insert_chat_record(
                     "INSERT INTO permanent_chat_records (user_id, conversation_snapshot) VALUES (%s, %s)",
                     (conversation_id, snapshot_value),
                 )
-                await connection.exec_driver_sql(
-                    """
-                    DELETE FROM permanent_chat_records
-                    WHERE user_id = %s
-                    AND id NOT IN (
-                        SELECT recent.id FROM (
-                            SELECT id FROM permanent_chat_records
-                            WHERE user_id = %s
-                            ORDER BY created_at DESC, id DESC
-                            LIMIT 100
-                        ) AS recent
-                    )
-                    """,
-                    (conversation_id, conversation_id),
+                archived_records = await prune_permanent_records(
+                    conversation_id,
+                    connection=connection,
                 )
                 snapshot_created = True
             warning_level = "overflow"
@@ -192,7 +243,7 @@ async def insert_chat_record(
                 (conversation_id, json.dumps(messages, ensure_ascii=False)),
             )
 
-    return snapshot_created, warning_level
+    return snapshot_created, warning_level, archived_records
 
 
 async def async_insert_chat_record(

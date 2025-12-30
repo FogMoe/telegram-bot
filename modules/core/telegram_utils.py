@@ -1,6 +1,7 @@
 """Utility helpers for Telegram message sending."""
 
 import logging
+from io import BytesIO
 from functools import partial
 from typing import Any, Awaitable, Callable, Optional
 
@@ -174,3 +175,32 @@ async def safe_send_markdown(
 def partial_send(bot_method: AsyncSendFunc, /, *args: Any, **kwargs: Any) -> AsyncSendFunc:
     """Utility to pre-bind positional/keyword args for bot send methods."""
     return partial(bot_method, *args, **kwargs)
+
+
+async def send_document_bytes(
+    bot: Any,
+    chat_id: int,
+    content: bytes,
+    filename: str,
+    *,
+    caption: str | None = None,
+    logger: logging.Logger | None = None,
+) -> bool:
+    if not content:
+        return False
+
+    file_obj = BytesIO(content)
+    file_obj.name = filename
+
+    try:
+        await bot.send_document(
+            chat_id=chat_id,
+            document=file_obj,
+            filename=filename,
+            caption=caption,
+        )
+        return True
+    except Exception as exc:  # pragma: no cover - defensive logging
+        if logger:
+            logger.warning("Failed to send document to %s: %s", chat_id, exc)
+        return False

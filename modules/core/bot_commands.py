@@ -11,8 +11,9 @@ import telegram
 from sqlalchemy.exc import SQLAlchemyError
 
 from core import config, mysql_connection, process_user
+from core.archive_utils import build_jsonl_bytes
 from core.command_cooldown import cooldown
-from core.telegram_utils import safe_send_markdown, partial_send
+from core.telegram_utils import partial_send, safe_send_markdown, send_document_bytes
 from features.ai import ai_chat, summary
 from features.economy import ref
 
@@ -20,6 +21,31 @@ logger = logging.getLogger(__name__)
 
 ADMIN_USER_ID = config.ADMIN_USER_ID
 last_rich_query_time = 0
+
+
+async def _send_permanent_records_archive(
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    archived_records: list[dict],
+) -> None:
+    if not archived_records:
+        return
+
+    payload = build_jsonl_bytes(archived_records)
+    if not payload:
+        return
+
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"permanent_records_archive_{user_id}_{timestamp}.jsonl"
+    caption = "你的永久记忆已超过上限，最旧的记录已打包成JSONL文件发给你。服务器存不下了，请自行保存处理。"
+    await send_document_bytes(
+        context.bot,
+        user_id,
+        payload,
+        filename,
+        caption=caption,
+        logger=logger,
+    )
 
 
 async def inline_translate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -312,6 +338,7 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     conversation_id = user_id  # Assuming conversation_id is the user_id for simplicity
 
     snapshot_created = False
+    archived_records: list[dict] = []
 
     async with mysql_connection.transaction() as connection:
         snapshot_row = await mysql_connection.fetch_one(
@@ -335,21 +362,9 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 (user_id, conversation_snapshot),
             )
             snapshot_created = True
-
-            await connection.exec_driver_sql(
-                """
-                DELETE FROM permanent_chat_records
-                WHERE user_id = %s
-                AND id NOT IN (
-                    SELECT recent.id FROM (
-                        SELECT id FROM permanent_chat_records
-                        WHERE user_id = %s
-                        ORDER BY created_at DESC, id DESC
-                        LIMIT 100
-                    ) AS recent
-                )
-                """,
-                (user_id, user_id),
+            archived_records = await mysql_connection.prune_permanent_records(
+                user_id,
+                connection=connection,
             )
 
         await connection.exec_driver_sql(
@@ -359,6 +374,8 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if snapshot_created:
         summary.schedule_summary_generation(user_id)
+    if archived_records:
+        await _send_permanent_records_archive(context, user_id, archived_records)
 
     await update.message.reply_text("雾萌娘已进行记忆清除处理。\nThe current conversation history has been cleared.")
 
