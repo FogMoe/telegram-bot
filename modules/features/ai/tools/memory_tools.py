@@ -297,13 +297,19 @@ def user_diary_tool(
         if isinstance(diary_content, bytes):
             diary_content = diary_content.decode("utf-8")
 
+    warnings: list[str] = []
+    if action_value == "read" and content is not None:
+        warnings.append("content ignored for read action")
+    if action_value in {"append", "overwrite"} and (start_line is not None or end_line is not None):
+        warnings.append("line range ignored for append/overwrite action")
+
     if action_value == "read":
         lines = diary_content.splitlines()
         total_lines = len(lines)
         content_length = len(diary_content)
 
         if start_line is None and end_line is None:
-            return {
+            response = {
                 "user_id": user_id,
                 "action": "read",
                 "total_lines": total_lines,
@@ -312,6 +318,9 @@ def user_diary_tool(
                 "created_at": created_at.isoformat(sep=" ") if created_at else None,
                 "updated_at": updated_at.isoformat(sep=" ") if updated_at else None,
             }
+            if warnings:
+                response["warning"] = "; ".join(warnings)
+            return response
 
         try:
             start_value = int(start_line) if start_line is not None else 1
@@ -320,7 +329,7 @@ def user_diary_tool(
             return {"user_id": user_id, "error": "Invalid line range"}
 
         if total_lines == 0:
-            return {
+            response = {
                 "user_id": user_id,
                 "action": "read",
                 "total_lines": 0,
@@ -330,6 +339,9 @@ def user_diary_tool(
                 "created_at": created_at.isoformat(sep=" ") if created_at else None,
                 "updated_at": updated_at.isoformat(sep=" ") if updated_at else None,
             }
+            if warnings:
+                response["warning"] = "; ".join(warnings)
+            return response
 
         if start_value < 1:
             start_value = 1
@@ -339,7 +351,7 @@ def user_diary_tool(
             end_value = total_lines
 
         selected_lines = lines[start_value - 1 : end_value] if total_lines else []
-        return {
+        response = {
             "user_id": user_id,
             "action": "read",
             "total_lines": total_lines,
@@ -349,6 +361,9 @@ def user_diary_tool(
             "created_at": created_at.isoformat(sep=" ") if created_at else None,
             "updated_at": updated_at.isoformat(sep=" ") if updated_at else None,
         }
+        if warnings:
+            response["warning"] = "; ".join(warnings)
+        return response
 
     if content is None:
         return {"user_id": user_id, "error": "Missing content for diary update"}
@@ -408,7 +423,11 @@ def user_diary_tool(
         "truncated": truncated,
     }
     if truncated:
-        response["warning"] = f"Diary exceeded {MAX_USER_DIARY_CHARS} chars, truncated oldest content"
+        warnings.append(
+            f"Diary exceeded {MAX_USER_DIARY_CHARS} chars, truncated oldest content"
+        )
+    if warnings:
+        response["warning"] = "; ".join(warnings)
     return response
 
 
