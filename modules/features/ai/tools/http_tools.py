@@ -9,13 +9,14 @@ from core import config
 SERPAPI_API_KEY = getattr(config, "SERPAPI_API_KEY", "")
 
 
-def google_search_tool(query: str) -> dict:
+def google_search_tool(query: str, detailed: bool = False, **kwargs) -> dict:
     """Perform a Google search via SerpApi."""
     if not SERPAPI_API_KEY:
         return {"error": "SerpApi key is not configured."}
 
+    engine = "google" if detailed else "google_light"
     params = {
-        "engine": "google",
+        "engine": engine,
         "q": query,
         "api_key": SERPAPI_API_KEY,
     }

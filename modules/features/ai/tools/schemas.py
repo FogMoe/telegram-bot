@@ -20,7 +20,12 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
                     "query": {
                         "type": "string",
                         "description": "Search query string. Can be keywords, phrases, or complete questions",
-                    }
+                    },
+                    "detailed": {
+                        "type": "boolean",
+                        "description": "When true, use the standard Google engine instead of the lightweight one",
+                        "default": False,
+                    },
                 },
                 "required": ["query"],
             },
