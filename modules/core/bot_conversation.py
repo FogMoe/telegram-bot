@@ -373,6 +373,14 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if len(personal_info_display) > 500:
             personal_info_display = personal_info_display[:500]
 
+    user_state_prompt = _format_user_state_prompt(
+        user_coins=user_coins,
+        user_permission=user_permission,
+        user_affection=user_affection,
+        impression=impression_display,
+        personal_info=personal_info_display,
+    )
+
     chat_type = update.effective_chat.type or "private"
     group_title = (update.effective_chat.title or "").strip() if update.effective_chat else ""
 
@@ -458,7 +466,12 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_history = await mysql_connection.async_get_chat_history(conversation_id)
 
     # 异步插入用户消息
-    user_snapshot_created, user_storage_warning = await mysql_connection.async_insert_chat_record(conversation_id, 'user', formatted_message)
+    user_snapshot_created, user_storage_warning = await mysql_connection.async_insert_chat_record(
+        conversation_id,
+        "user",
+        formatted_message,
+        system_prompt_extra=user_state_prompt,
+    )
     if user_storage_warning:
         await notify_history_warning(user_storage_warning)
     if user_snapshot_created:
@@ -478,13 +491,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "group_id": update.effective_chat.id if update.effective_chat.type in ("group", "supergroup") else None,
         "message_id": getattr(effective_message, "message_id", None),
         "user_id": user_id,
-        "user_state_prompt": _format_user_state_prompt(
-            user_coins=user_coins,
-            user_permission=user_permission,
-            user_affection=user_affection,
-            impression=impression_display,
-            personal_info=personal_info_display,
-        ),
+        "user_state_prompt": user_state_prompt,
     }
 
     assistant_message, tool_logs = await ai_chat.get_ai_response(chat_history_for_ai, user_id, tool_context=tool_context)

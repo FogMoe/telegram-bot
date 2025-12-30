@@ -3,7 +3,8 @@ from typing import Any, Iterable, Optional
 
 from sqlalchemy.engine import Result
 
-from . import db
+from . import config, db
+from .token_estimator import estimate_conversation_tokens
 
 
 connect = db.connect
@@ -51,7 +52,13 @@ async def execute(
     return result.rowcount
 
 
-async def insert_chat_record(conversation_id, role, content):
+async def insert_chat_record(
+    conversation_id,
+    role,
+    content,
+    *,
+    system_prompt_extra: str | None = None,
+):
     snapshot_created = False
     warning_level = None
 
@@ -125,15 +132,26 @@ async def insert_chat_record(conversation_id, role, content):
         else:
             messages = []
 
-        current_payload = json.dumps(messages, ensure_ascii=False)
-        overflow = len(current_payload) > 120000
+        if not isinstance(messages, list):
+            messages = []
+
+        if not isinstance(content, dict) or not content.get("role"):
+            message_entry = {"role": role, "content": content}
+        else:
+            message_entry = content
+
+        messages_with_new = list(messages)
+        messages_with_new.append(message_entry)
+
+        token_count = estimate_conversation_tokens(
+            messages_with_new,
+            system_prompt=config.SYSTEM_PROMPT,
+            system_prompt_extra=system_prompt_extra,
+        )
+        overflow = token_count > config.CHAT_TOKEN_LIMIT
         if overflow:
-            if row and raw_messages:
-                snapshot_value = (
-                    raw_messages
-                    if isinstance(raw_messages, str)
-                    else json.dumps(messages, ensure_ascii=False)
-                )
+            snapshot_value = json.dumps(messages_with_new, ensure_ascii=False)
+            if snapshot_value:
                 await connection.exec_driver_sql(
                     "INSERT INTO permanent_chat_records (user_id, conversation_snapshot) VALUES (%s, %s)",
                     (conversation_id, snapshot_value),
@@ -155,17 +173,13 @@ async def insert_chat_record(conversation_id, role, content):
                 )
                 snapshot_created = True
             warning_level = "overflow"
-        elif len(current_payload) > 110000:
+        elif token_count > config.CHAT_TOKEN_WARN_LIMIT:
             warning_level = "near_limit"
 
-        if isinstance(content, dict) and content.get("role"):
-            message_entry = content
-        else:
-            message_entry = {"role": role, "content": content}
-
-        messages.append(message_entry)
         if overflow:
-            messages = _trim_messages_with_tool_context(messages)
+            messages = _trim_messages_with_tool_context(messages_with_new)
+        else:
+            messages = messages_with_new
 
         if row:
             await connection.exec_driver_sql(
@@ -181,8 +195,19 @@ async def insert_chat_record(conversation_id, role, content):
     return snapshot_created, warning_level
 
 
-async def async_insert_chat_record(conversation_id, role, content):
-    return await insert_chat_record(conversation_id, role, content)
+async def async_insert_chat_record(
+    conversation_id,
+    role,
+    content,
+    *,
+    system_prompt_extra: str | None = None,
+):
+    return await insert_chat_record(
+        conversation_id,
+        role,
+        content,
+        system_prompt_extra=system_prompt_extra,
+    )
 
 
 async def get_chat_history(conversation_id):

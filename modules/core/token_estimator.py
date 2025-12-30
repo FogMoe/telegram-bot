@@ -28,8 +28,28 @@ def estimate_message_tokens(
     include_tool_calls: bool = True,
 ) -> int:
     """Estimate tokens for a list of chat messages."""
+    total = estimate_message_tokens_raw(
+        messages,
+        per_message_overhead=per_message_overhead,
+        include_tool_calls=include_tool_calls,
+    )
+
+    if guard_ratio:
+        total *= guard_ratio
+    return int(math.ceil(total)) if total > 0 else 0
+
+
+def estimate_message_tokens_raw(
+    messages: Iterable[Mapping[str, Any]],
+    *,
+    per_message_overhead: float = DEFAULT_MESSAGE_OVERHEAD,
+    include_tool_calls: bool = True,
+) -> float:
+    """Estimate tokens for a list of chat messages without guard or rounding."""
     total = 0.0
     for message in messages:
+        if not isinstance(message, Mapping):
+            continue
         total += per_message_overhead
         content = message.get("content")
         if content:
@@ -43,7 +63,28 @@ def estimate_message_tokens(
                 except TypeError:
                     tool_payload = str(tool_calls)
                 total += estimate_tokens_raw(tool_payload)
+    return total
 
+
+def estimate_conversation_tokens(
+    messages: Iterable[Mapping[str, Any]],
+    *,
+    system_prompt: str | None = None,
+    system_prompt_extra: str | None = None,
+    guard_ratio: float | None = DEFAULT_GUARD_RATIO,
+    per_message_overhead: float = DEFAULT_MESSAGE_OVERHEAD,
+    include_tool_calls: bool = True,
+) -> int:
+    """Estimate tokens for a conversation including system prompt contributions."""
+    total = estimate_message_tokens_raw(
+        messages,
+        per_message_overhead=per_message_overhead,
+        include_tool_calls=include_tool_calls,
+    )
+    if system_prompt:
+        total += estimate_tokens_raw(system_prompt)
+    if system_prompt_extra:
+        total += estimate_tokens_raw(system_prompt_extra)
     if guard_ratio:
         total *= guard_ratio
     return int(math.ceil(total)) if total > 0 else 0

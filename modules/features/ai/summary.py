@@ -6,11 +6,12 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple
 
 from core import config, mysql_connection
+from core.token_estimator import estimate_tokens
 from .clients import create_gemini_client
 
 SUMMARY_MODEL = config.SUMMARY_MODEL
 SUMMARY_FALLBACK_MODEL = config.SUMMARY_FALLBACK_MODEL
-SUMMARY_MAX_CHARS = 8000
+SUMMARY_MAX_TOKENS = 2500
 SUMMARY_RETRY_LIMIT = 3
 SUMMARY_SYSTEM_PROMPT = (
     "你是雾萌娘的对话归档整理员，负责撰写客观、中立的会话摘要。"
@@ -112,6 +113,25 @@ def _format_history_for_summary(snapshot_text: str) -> str:
     return "\n\n".join(lines)
 
 
+def _trim_summary_to_tokens(summary: str, max_tokens: int) -> str:
+    if not summary:
+        return summary
+
+    if estimate_tokens(summary, guard_ratio=1.0) <= max_tokens:
+        return summary
+
+    low, high = 0, len(summary)
+    while low < high:
+        mid = (low + high) // 2
+        candidate = summary[:mid]
+        if estimate_tokens(candidate, guard_ratio=1.0) <= max_tokens:
+            low = mid + 1
+        else:
+            high = mid
+
+    return summary[: max(low - 1, 0)].rstrip()
+
+
 def _generate_summary(user_id: int, snapshot_text: str) -> Optional[str]:
     client = create_gemini_client()
 
@@ -119,7 +139,7 @@ def _generate_summary(user_id: int, snapshot_text: str) -> Optional[str]:
     prompt = (
         "你是一名聊天记录整理助手。接下来是一段雾萌娘与用户的对话转录"
         "（包含 USER/ASSISTANT/TOOL 记录）。请提炼要点，提供一份概述，"
-        "控制在8000个字符以内，可以分段或列举重点。"
+        "控制在2500 tokens以内，可以分段或列举重点。"
         "请覆盖：对话背景、重要事件或需求、情绪氛围、需要跟进的事项。"
         "如果内容无有效对话，请返回\"暂无摘要\"。\n\n"
         f"对话内容：\n{transcript}"
@@ -137,12 +157,11 @@ def _generate_summary(user_id: int, snapshot_text: str) -> Optional[str]:
                 model=model_to_use,
                 messages=messages,
                 temperature=0.2,
-                max_tokens=7680,
+                max_tokens=SUMMARY_MAX_TOKENS,
             )
             summary = (response.choices[0].message.content or "").strip()
             if summary:
-                if len(summary) > SUMMARY_MAX_CHARS:
-                    summary = summary[:SUMMARY_MAX_CHARS]
+                summary = _trim_summary_to_tokens(summary, SUMMARY_MAX_TOKENS)
                 if attempt > 1:
                     logging.info(
                         "Summary generated successfully using fallback model %s for user %s (attempt %s)",
