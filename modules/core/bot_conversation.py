@@ -186,6 +186,7 @@ def _format_user_state_prompt(
     user_affection: int,
     impression: str,
     personal_info: str = "",
+    diary_exists: bool = False,
 ) -> str:
     permission_labels = {
         0: "Normal",
@@ -198,6 +199,7 @@ def _format_user_state_prompt(
         ("permission", str(user_permission)),
         ("permission_label", permission_label),
         ("affection", str(user_affection)),
+        ("diary_exists", "true" if diary_exists else "false"),
     ]
     attr_text = " ".join(
         f'{key}="{_xml_escape(value)}"' for key, value in attrs if value
@@ -399,12 +401,19 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if len(personal_info_display) > 500:
             personal_info_display = personal_info_display[:500]
 
+    diary_row = await mysql_connection.fetch_one(
+        "SELECT 1 FROM ai_user_diary WHERE user_id = %s AND content != '' LIMIT 1",
+        (user_id,),
+    )
+    diary_exists = bool(diary_row)
+
     user_state_prompt = _format_user_state_prompt(
         user_coins=user_coins,
         user_permission=user_permission,
         user_affection=user_affection,
         impression=impression_display,
         personal_info=personal_info_display,
+        diary_exists=diary_exists,
     )
 
     chat_type = update.effective_chat.type or "private"
