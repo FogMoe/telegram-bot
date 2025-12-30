@@ -166,7 +166,10 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 
 ### fetch_permanent_summaries
 - Call this tool when you need to retrieve the user's historical conversation summaries
-  
+
+### search_permanent_records
+- Call this tool when you need to search the user's historical conversation records
+
 ### fetch_url (open link)
 - Call this tool to fetch and read webpage content in real-time
 

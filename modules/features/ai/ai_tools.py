@@ -6,6 +6,7 @@ from .tools import (
     clear_tool_request_context,
     execute_python_code_tool,
     fetch_permanent_summaries_tool,
+    search_permanent_records_tool,
     fetch_url_tool,
     kindness_gift_tool,
     set_tool_request_context,
@@ -24,4 +25,5 @@ __all__ = [
     "update_affection_tool",
     "update_impression_tool",
     "fetch_permanent_summaries_tool",
+    "search_permanent_records_tool",
 ]

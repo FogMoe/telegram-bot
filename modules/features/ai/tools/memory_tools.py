@@ -1,3 +1,5 @@
+import json
+import re
 from typing import Dict, Optional
 
 from core import config, group_chat_history, mysql_connection
@@ -116,8 +118,138 @@ def fetch_permanent_summaries_tool(
     }
 
 
+def search_permanent_records_tool(
+    pattern: str,
+    limit: Optional[int] = None,
+    **kwargs,
+) -> dict:
+    """Search user's permanent conversation snapshots with a regex pattern."""
+    context = get_tool_request_context()
+    user_id = context.get("user_id")
+    if not user_id:
+        return {"user_id": None, "error": "Missing user information, cannot search records"}
+
+    if not isinstance(pattern, str) or not pattern.strip():
+        return {"user_id": user_id, "error": "Missing search pattern"}
+
+    try:
+        limit_value = int(limit) if limit is not None else 5
+    except (TypeError, ValueError):
+        limit_value = 5
+    limit_value = max(1, min(limit_value, 5))
+
+    warning = None
+    try:
+        matcher = re.compile(pattern, re.IGNORECASE | re.DOTALL)
+    except re.error:
+        warning = "Invalid regex pattern, treated as literal string"
+        matcher = re.compile(re.escape(pattern), re.IGNORECASE | re.DOTALL)
+
+    batch_size = 50
+
+    def _fetch_rows(offset: int) -> list[tuple]:
+        return mysql_connection.run_sync(
+            mysql_connection.fetch_all(
+                """
+                SELECT id, conversation_snapshot, created_at
+                FROM permanent_chat_records
+                WHERE user_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s OFFSET %s
+                """,
+                (user_id, batch_size, offset),
+            )
+        )
+
+    def _scan_rows(rows: list[tuple], results: list[dict], offset: int) -> list[dict]:
+        for row_index, row in enumerate(rows):
+            _record_id, snapshot_text, created_at = row
+            if isinstance(snapshot_text, bytes):
+                snapshot_text = snapshot_text.decode("utf-8")
+
+            try:
+                messages = json.loads(snapshot_text) if isinstance(snapshot_text, str) else snapshot_text
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+
+            if not isinstance(messages, list):
+                continue
+
+            filtered_messages = []
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                role = message.get("role")
+                if role not in ("user", "assistant"):
+                    continue
+                content = message.get("content")
+                if content is None:
+                    continue
+                if not isinstance(content, str):
+                    content = json.dumps(content, ensure_ascii=False)
+                filtered_messages.append(
+                    {
+                        "role": role,
+                        "content": content,
+                    }
+                )
+
+            if not filtered_messages:
+                continue
+
+            for idx in range(len(filtered_messages) - 1, -1, -1):
+                content = filtered_messages[idx]["content"]
+                if not matcher.search(content):
+                    continue
+
+                before_start = max(0, idx - 5)
+                after_end = min(len(filtered_messages), idx + 6)
+                before = [
+                    {"index": before_start + offset, **msg}
+                    for offset, msg in enumerate(filtered_messages[before_start:idx])
+                ]
+                after = [
+                    {"index": idx + 1 + offset, **msg}
+                    for offset, msg in enumerate(filtered_messages[idx + 1 : after_end])
+                ]
+                results.append(
+                    {
+                        "record_position": offset + row_index + 1,
+                        "created_at": created_at.isoformat(sep=" ") if created_at else None,
+                        "match": {"index": idx, **filtered_messages[idx]},
+                        "before": before,
+                        "after": after,
+                    }
+                )
+                if len(results) >= limit_value:
+                    return results
+        return results
+
+    results: list[dict] = []
+    first_batch_offset = 0
+    first_batch = _fetch_rows(first_batch_offset)
+    results = _scan_rows(first_batch, results, first_batch_offset)
+
+    if len(results) < limit_value and len(first_batch) == batch_size:
+        second_batch_offset = batch_size
+        second_batch = _fetch_rows(second_batch_offset)
+        results = _scan_rows(second_batch, results, second_batch_offset)
+
+    response = {
+        "user_id": user_id,
+        "pattern": pattern,
+        "limit": limit_value,
+        "results": results,
+    }
+    if warning:
+        response["warning"] = warning
+
+    return response
+
+
 __all__ = [
     "get_help_text_tool",
     "fetch_group_context_tool",
     "fetch_permanent_summaries_tool",
+    "search_permanent_records_tool",
 ]

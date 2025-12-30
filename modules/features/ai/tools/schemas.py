@@ -176,6 +176,30 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_permanent_records",
+            "description": "Search user's permanent chat snapshots with a regex pattern",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Regex pattern to search for in user/assistant messages",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of matches to return",
+                        "default": 5,
+                        "minimum": 1,
+                        "maximum": 5,
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
 ]
 
 __all__ = ["OPENAI_TOOLS"]
