@@ -6,6 +6,8 @@ from core import config, group_chat_history, mysql_connection
 
 from .context import get_tool_request_context
 
+MAX_USER_DIARY_CHARS = 10000
+
 
 def get_help_text_tool() -> dict:
     """Return the configured help command list for the bot."""
@@ -255,9 +257,165 @@ def search_permanent_records_tool(
     return response
 
 
+def user_diary_tool(
+    action: Optional[str] = None,
+    content: Optional[str] = None,
+    start_line: Optional[int] = None,
+    end_line: Optional[int] = None,
+    **kwargs,
+) -> dict:
+    """Read or update the internal diary for the current user."""
+    context = get_tool_request_context()
+    user_id = context.get("user_id")
+    if not user_id:
+        return {"user_id": None, "error": "Missing user information, cannot access diary"}
+
+    action_value = (action or "read").strip().lower()
+    if action_value in {"read", "view", "get"}:
+        action_value = "read"
+    elif action_value in {"append", "add", "increment"}:
+        action_value = "append"
+    elif action_value in {"patch", "edit", "update", "modify"}:
+        action_value = "patch"
+    elif action_value in {"overwrite", "replace", "set"}:
+        action_value = "overwrite"
+    else:
+        return {"user_id": user_id, "error": f"Unknown action: {action}"}
+
+    row = mysql_connection.run_sync(
+        mysql_connection.fetch_one(
+            "SELECT content, created_at, updated_at FROM ai_user_diary WHERE user_id = %s",
+            (user_id,),
+        )
+    )
+
+    diary_content = ""
+    created_at = None
+    updated_at = None
+    if row:
+        diary_content, created_at, updated_at = row
+        if isinstance(diary_content, bytes):
+            diary_content = diary_content.decode("utf-8")
+
+    if action_value == "read":
+        lines = diary_content.splitlines()
+        total_lines = len(lines)
+        content_length = len(diary_content)
+
+        if start_line is None and end_line is None:
+            return {
+                "user_id": user_id,
+                "action": "read",
+                "total_lines": total_lines,
+                "length": content_length,
+                "content": diary_content,
+                "created_at": created_at.isoformat(sep=" ") if created_at else None,
+                "updated_at": updated_at.isoformat(sep=" ") if updated_at else None,
+            }
+
+        try:
+            start_value = int(start_line) if start_line is not None else 1
+            end_value = int(end_line) if end_line is not None else total_lines
+        except (TypeError, ValueError):
+            return {"user_id": user_id, "error": "Invalid line range"}
+
+        if total_lines == 0:
+            return {
+                "user_id": user_id,
+                "action": "read",
+                "total_lines": 0,
+                "length": 0,
+                "range": {"start_line": 0, "end_line": 0},
+                "content": "",
+                "created_at": created_at.isoformat(sep=" ") if created_at else None,
+                "updated_at": updated_at.isoformat(sep=" ") if updated_at else None,
+            }
+
+        if start_value < 1:
+            start_value = 1
+        if end_value < start_value:
+            return {"user_id": user_id, "error": "Invalid line range"}
+        if total_lines and end_value > total_lines:
+            end_value = total_lines
+
+        selected_lines = lines[start_value - 1 : end_value] if total_lines else []
+        return {
+            "user_id": user_id,
+            "action": "read",
+            "total_lines": total_lines,
+            "length": content_length,
+            "range": {"start_line": start_value, "end_line": end_value},
+            "content": "\n".join(selected_lines),
+            "created_at": created_at.isoformat(sep=" ") if created_at else None,
+            "updated_at": updated_at.isoformat(sep=" ") if updated_at else None,
+        }
+
+    if content is None:
+        return {"user_id": user_id, "error": "Missing content for diary update"}
+
+    content_value = content if isinstance(content, str) else str(content)
+    if action_value == "patch":
+        lines = diary_content.splitlines()
+        total_lines = len(lines)
+        if start_line is None or end_line is None:
+            return {"user_id": user_id, "error": "Missing line range for patch"}
+        try:
+            start_value = int(start_line)
+            end_value = int(end_line)
+        except (TypeError, ValueError):
+            return {"user_id": user_id, "error": "Invalid line range"}
+
+        if start_value < 1 or end_value < start_value:
+            return {"user_id": user_id, "error": "Invalid line range"}
+        if start_value > total_lines + 1:
+            return {"user_id": user_id, "error": "Line range out of bounds"}
+
+        start_idx = start_value - 1
+        end_idx = min(end_value, total_lines)
+        replacement_lines = content_value.splitlines()
+        lines[start_idx:end_idx] = replacement_lines
+        merged_content = "\n".join(lines)
+    elif action_value == "append":
+        if diary_content and not diary_content.endswith("\n"):
+            merged_content = f"{diary_content}\n{content_value}"
+        else:
+            merged_content = f"{diary_content}{content_value}"
+    else:
+        merged_content = content_value
+
+    truncated = False
+    if len(merged_content) > MAX_USER_DIARY_CHARS:
+        merged_content = merged_content[-MAX_USER_DIARY_CHARS:]
+        truncated = True
+
+    mysql_connection.run_sync(
+        mysql_connection.execute(
+            """
+            INSERT INTO ai_user_diary (user_id, content)
+            VALUES (%s, %s)
+            ON DUPLICATE KEY UPDATE content = VALUES(content), updated_at = CURRENT_TIMESTAMP
+            """,
+            (user_id, merged_content),
+        )
+    )
+
+    total_lines = len(merged_content.splitlines())
+    response = {
+        "user_id": user_id,
+        "action": action_value,
+        "total_lines": total_lines,
+        "length": len(merged_content),
+        "truncated": truncated,
+    }
+    if truncated:
+        response["warning"] = f"Diary exceeded {MAX_USER_DIARY_CHARS} chars, truncated oldest content"
+    return response
+
+
 __all__ = [
     "get_help_text_tool",
     "fetch_group_context_tool",
     "fetch_permanent_summaries_tool",
     "search_permanent_records_tool",
+    "user_diary_tool",
 ]

@@ -12,6 +12,7 @@ from .tools import (
     set_tool_request_context,
     update_affection_tool,
     update_impression_tool,
+    user_diary_tool,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "update_impression_tool",
     "fetch_permanent_summaries_tool",
     "search_permanent_records_tool",
+    "user_diary_tool",
 ]

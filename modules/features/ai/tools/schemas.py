@@ -205,6 +205,43 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "user_diary",
+            "description": (
+                "Read or update the internal diary for the current user. "
+                "Actions: read (optionally by line range), append, overwrite, patch (replace line range). "
+                "Use patch with start_line/end_line to replace lines; append adds content at the end. "
+                "Diary is truncated to the most recent 10000 characters when exceeding the limit."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "read | append | overwrite | patch",
+                        "default": "read",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Diary content for append/overwrite/patch actions",
+                        "maxLength": 10000,
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "Start line number for read/patch (1-based)",
+                        "minimum": 1,
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "End line number for read/patch (1-based, inclusive)",
+                        "minimum": 1,
+                    },
+                },
+            },
+        },
+    },
 ]
 
 __all__ = ["OPENAI_TOOLS"]

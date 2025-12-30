@@ -7,6 +7,7 @@ from .memory_tools import (
     fetch_permanent_summaries_tool,
     get_help_text_tool,
     search_permanent_records_tool,
+    user_diary_tool,
 )
 from .schemas import OPENAI_TOOLS
 from .user_tools import kindness_gift_tool, update_affection_tool, update_impression_tool
@@ -22,6 +23,7 @@ AI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
     "update_impression": update_impression_tool,
     "fetch_permanent_summaries": fetch_permanent_summaries_tool,
     "search_permanent_records": search_permanent_records_tool,
+    "user_diary": user_diary_tool,
 }
 
 __all__ = ["OPENAI_TOOLS", "AI_TOOL_HANDLERS"]
