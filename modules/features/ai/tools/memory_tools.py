@@ -121,6 +121,7 @@ def fetch_permanent_summaries_tool(
 def search_permanent_records_tool(
     pattern: str,
     limit: Optional[int] = None,
+    oldest_first: Optional[bool] = None,
     **kwargs,
 ) -> dict:
     """Search user's permanent conversation snapshots with a regex pattern."""
@@ -137,6 +138,12 @@ def search_permanent_records_tool(
     except (TypeError, ValueError):
         limit_value = 5
     limit_value = max(1, min(limit_value, 50))
+
+    oldest_first_value = False
+    if isinstance(oldest_first, bool):
+        oldest_first_value = oldest_first
+    elif isinstance(oldest_first, str):
+        oldest_first_value = oldest_first.strip().lower() in {"1", "true", "yes", "y"}
 
     warning = None
     try:
@@ -239,7 +246,8 @@ def search_permanent_records_tool(
         "user_id": user_id,
         "pattern": pattern,
         "limit": limit_value,
-        "results": results,
+        "oldest_first": oldest_first_value,
+        "results": list(reversed(results)) if oldest_first_value else results,
     }
     if warning:
         response["warning"] = warning

@@ -195,6 +195,11 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
                         "minimum": 1,
                         "maximum": 50,
                     },
+                    "oldest_first": {
+                        "type": "boolean",
+                        "description": "Return results ordered from oldest to newest",
+                        "default": False,
+                    },
                 },
                 "required": ["pattern"],
             },
