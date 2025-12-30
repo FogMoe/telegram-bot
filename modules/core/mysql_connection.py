@@ -55,6 +55,60 @@ async def insert_chat_record(conversation_id, role, content):
     snapshot_created = False
     warning_level = None
 
+    def _trim_messages_with_tool_context(
+        messages: list[dict],
+        keep_non_tool: int = 10,
+    ) -> list[dict]:
+        if not messages:
+            return []
+
+        non_tool_indices: list[int] = []
+        for idx, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                non_tool_indices.append(idx)
+                continue
+            if msg.get("role") != "tool":
+                non_tool_indices.append(idx)
+        if len(non_tool_indices) <= keep_non_tool:
+            return list(messages)
+
+        start_idx = non_tool_indices[-keep_non_tool]
+        trimmed = messages[start_idx:]
+
+        tool_calls_in_trimmed: set[str] = set()
+        for msg in trimmed:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            for call in msg.get("tool_calls") or []:
+                call_id = call.get("id")
+                if call_id:
+                    tool_calls_in_trimmed.add(call_id)
+
+        tool_call_index: dict[str, int] = {}
+        for idx, msg in enumerate(messages):
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            for call in msg.get("tool_calls") or []:
+                call_id = call.get("id")
+                if call_id and call_id not in tool_call_index:
+                    tool_call_index[call_id] = idx
+
+        required_indices: set[int] = set()
+        for msg in trimmed:
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
+                continue
+            call_id = msg.get("tool_call_id")
+            if call_id and call_id not in tool_calls_in_trimmed:
+                call_idx = tool_call_index.get(call_id)
+                if call_idx is not None:
+                    required_indices.add(call_idx)
+
+        if not required_indices:
+            return trimmed
+
+        indices = sorted(set(range(start_idx, len(messages))) | required_indices)
+        return [messages[i] for i in indices]
+
     async with transaction() as connection:
         row = await fetch_one(
             "SELECT messages FROM chat_records WHERE conversation_id = %s",
@@ -72,7 +126,8 @@ async def insert_chat_record(conversation_id, role, content):
             messages = []
 
         current_payload = json.dumps(messages, ensure_ascii=False)
-        if len(current_payload) > 120000:
+        overflow = len(current_payload) > 120000
+        if overflow:
             if row and raw_messages:
                 snapshot_value = (
                     raw_messages
@@ -100,7 +155,6 @@ async def insert_chat_record(conversation_id, role, content):
                 )
                 snapshot_created = True
             warning_level = "overflow"
-            messages = []
         elif len(current_payload) > 110000:
             warning_level = "near_limit"
 
@@ -110,6 +164,8 @@ async def insert_chat_record(conversation_id, role, content):
             message_entry = {"role": role, "content": content}
 
         messages.append(message_entry)
+        if overflow:
+            messages = _trim_messages_with_tool_context(messages)
 
         if row:
             await connection.exec_driver_sql(

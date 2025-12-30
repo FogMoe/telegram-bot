@@ -67,15 +67,62 @@ def _fetch_pending_snapshot(user_id: int) -> Optional[Tuple[int, str]]:
     return row[0], snapshot
 
 
+def _format_history_for_summary(snapshot_text: str) -> str:
+    try:
+        messages = json.loads(snapshot_text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return snapshot_text
+
+    if not isinstance(messages, list):
+        return snapshot_text
+
+    lines: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        content = message.get("content") or ""
+
+        if role == "user":
+            if content:
+                lines.append(f"USER: {content}")
+            continue
+
+        if role == "assistant":
+            if content:
+                lines.append(f"ASSISTANT: {content}")
+            for call in message.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                function_payload = call.get("function") or {}
+                tool_name = function_payload.get("name") or "tool"
+                arguments = function_payload.get("arguments") or ""
+                lines.append(f"TOOL_CALL[{tool_name}]: {arguments}")
+            continue
+
+        if role == "tool":
+            tool_name = message.get("name") or "tool"
+            tool_content = message.get("content") or ""
+            lines.append(f"TOOL_RETURN[{tool_name}]: {tool_content}")
+            continue
+
+        if content:
+            lines.append(f"{role or 'MESSAGE'}: {content}")
+
+    return "\n\n".join(lines)
+
+
 def _generate_summary(user_id: int, snapshot_text: str) -> Optional[str]:
     client = create_gemini_client()
 
+    transcript = _format_history_for_summary(snapshot_text)
     prompt = (
-        "你是一名聊天记录整理助手。接下来是一段雾萌娘与用户的完整对话历史（JSON列表格式）。"
-        "请提炼要点，提供一份概述，控制在8000个字符以内，可以分段或列举重点。"
+        "你是一名聊天记录整理助手。接下来是一段雾萌娘与用户的对话转录"
+        "（包含 USER/ASSISTANT/TOOL 记录）。请提炼要点，提供一份概述，"
+        "控制在8000个字符以内，可以分段或列举重点。"
         "请覆盖：对话背景、重要事件或需求、情绪氛围、需要跟进的事项。"
         "如果内容无有效对话，请返回\"暂无摘要\"。\n\n"
-        f"对话内容：\n{snapshot_text}"
+        f"对话内容：\n{transcript}"
     )
 
     messages = [
