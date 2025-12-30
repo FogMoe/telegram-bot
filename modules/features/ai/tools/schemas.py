@@ -142,6 +142,7 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
                             "New impression text, complete and self-contained description "
                             "(max 500 characters)"
                         ),
+                        "minLength": 1,
                         "maxLength": 500,
                     }
                 },

@@ -54,14 +54,7 @@ def fetch_permanent_summaries_tool(
     context = get_tool_request_context()
     user_id = context.get("user_id")
     if not user_id:
-        return {
-            "user_id": None,
-            "total": 0,
-            "range_start": 0,
-            "range_end": -1,
-            "records": [],
-            "error": "Missing user information, cannot retrieve summaries",
-        }
+        return {"user_id": None, "error": "Missing user information, cannot retrieve summaries"}
 
     try:
         start_idx = int(start) if start is not None else 1

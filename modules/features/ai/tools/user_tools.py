@@ -155,9 +155,14 @@ def update_impression_tool(impression: str, **kwargs) -> dict:
     context = get_tool_request_context()
     user_id = context.get("user_id")
     if not user_id:
-        return {"error": "Missing user information, cannot update impression"}
+        return {
+            "user_id": None,
+            "error": "Missing user information, cannot update impression",
+        }
 
     text = (impression or "").strip()
+    if not text:
+        return {"user_id": user_id, "error": "Impression text must not be empty"}
     if len(text) > 500:
         text = text[:500]
 
@@ -165,7 +170,7 @@ def update_impression_tool(impression: str, **kwargs) -> dict:
         saved = process_user.update_user_impression_sync(user_id, text)
     except Exception as exc:
         logging.exception("Failed to update impression: %s", exc)
-        return {"error": "Error updating impression"}
+        return {"user_id": user_id, "error": "Error updating impression"}
 
     return {
         "user_id": user_id,
