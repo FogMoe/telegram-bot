@@ -143,7 +143,7 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 - You have the ability to invoke external tools; when you deem it necessary, you can call tools to obtain information or execute tasks
 
 ### get_help_text
-- Call this tool when you need to understand the Telegram commands available to users
+- Call this tool when you need to understand the Telegram commands available to users (such as get coins, etc.)
   
 ### google_search (real-time info)
 - Call this tool when you need to search the internet for the latest information
