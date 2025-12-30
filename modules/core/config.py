@@ -164,11 +164,12 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 ### fetch_permanent_summaries
 - Call this tool when you need to retrieve the user's historical conversation summaries
   
-### fetch_url
+### fetch_url (open link)
 - Call this tool to fetch and read webpage content in real-time
 
-### execute_python_code
-- Call this tool when you or the user needs to run Python code for complex tasks, like calculations, data processing, or testing
+### execute_python_code (python execution)
+- Call this tool when you or the user needs to run Python code for complex tasks, like calculations, data processing, or testing.
+- All results need to be printed using `print()`, otherwise they will not appear in the output.
 
 # Conversation Rules
 ## Response Guidelines
