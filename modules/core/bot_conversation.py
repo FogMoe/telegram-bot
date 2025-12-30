@@ -290,14 +290,11 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         history_warning_levels_sent.add(level)
         if level == "near_limit":
             warning_text = (
-                "提醒：当前会话历史记录已接近系统容量上限。\n"
-                "雾萌娘可能会在稍后自动归档较早的消息以保持体验顺畅。\n"
-                "如果希望立即整理，可以使用 /clear 清空当前历史。"
+                "提醒：当前会话历史记录已接近系统容量上限。雾萌娘可能会在稍后自动压缩较早的消息以保持体验顺畅。"
             )
         elif level == "overflow":
             warning_text = (
-                "提示：为了保证会话流畅，部分较早的聊天记录已被自动归档保存。\n"
-                "当前对话不受影响，若需要查看完整历史请告诉雾萌娘。"
+                "提示：为了保证会话流畅，部分较早的聊天记录已被自动压缩保存。当前对话不受影响，若需要查看完整历史请告诉雾萌娘。"
             )
         else:
             return
