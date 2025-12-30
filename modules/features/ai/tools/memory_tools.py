@@ -262,6 +262,7 @@ def user_diary_tool(
     content: Optional[str] = None,
     start_line: Optional[int] = None,
     end_line: Optional[int] = None,
+    line_numbers: Optional[bool] = None,
     **kwargs,
 ) -> dict:
     """Read or update the internal diary for the current user."""
@@ -304,6 +305,12 @@ def user_diary_tool(
         warnings.append("line range ignored for append/overwrite action")
 
     if action_value == "read":
+        line_numbers_value = False
+        if isinstance(line_numbers, bool):
+            line_numbers_value = line_numbers
+        elif isinstance(line_numbers, str):
+            line_numbers_value = line_numbers.strip().lower() in {"1", "true", "yes", "y"}
+
         lines = diary_content.splitlines()
         total_lines = len(lines)
         content_length = len(diary_content)
@@ -318,6 +325,11 @@ def user_diary_tool(
                 "created_at": created_at.isoformat(sep=" ") if created_at else None,
                 "updated_at": updated_at.isoformat(sep=" ") if updated_at else None,
             }
+            if line_numbers_value:
+                response["lines"] = [
+                    {"line": idx + 1, "content": line}
+                    for idx, line in enumerate(lines)
+                ]
             if warnings:
                 response["warning"] = "; ".join(warnings)
             return response
@@ -339,6 +351,8 @@ def user_diary_tool(
                 "created_at": created_at.isoformat(sep=" ") if created_at else None,
                 "updated_at": updated_at.isoformat(sep=" ") if updated_at else None,
             }
+            if line_numbers_value:
+                response["lines"] = []
             if warnings:
                 response["warning"] = "; ".join(warnings)
             return response
@@ -361,6 +375,11 @@ def user_diary_tool(
             "created_at": created_at.isoformat(sep=" ") if created_at else None,
             "updated_at": updated_at.isoformat(sep=" ") if updated_at else None,
         }
+        if line_numbers_value:
+            response["lines"] = [
+                {"line": start_value + idx, "content": line}
+                for idx, line in enumerate(selected_lines)
+            ]
         if warnings:
             response["warning"] = "; ".join(warnings)
         return response

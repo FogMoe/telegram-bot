@@ -238,6 +238,11 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
                         "description": "End line number for read/patch (1-based, inclusive)",
                         "minimum": 1,
                     },
+                    "line_numbers": {
+                        "type": "boolean",
+                        "description": "When true, include line-numbered entries in read responses",
+                        "default": False,
+                    },
                 },
             },
         },
