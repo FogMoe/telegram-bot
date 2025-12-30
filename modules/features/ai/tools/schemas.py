@@ -193,7 +193,7 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
                         "description": "Maximum number of matches to return",
                         "default": 5,
                         "minimum": 1,
-                        "maximum": 5,
+                        "maximum": 50,
                     },
                 },
                 "required": ["pattern"],

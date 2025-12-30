@@ -136,7 +136,7 @@ def search_permanent_records_tool(
         limit_value = int(limit) if limit is not None else 5
     except (TypeError, ValueError):
         limit_value = 5
-    limit_value = max(1, min(limit_value, 5))
+    limit_value = max(1, min(limit_value, 50))
 
     warning = None
     try:
