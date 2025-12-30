@@ -1,4 +1,5 @@
 import logging
+import threading
 from typing import Dict
 from urllib.parse import quote
 
@@ -7,6 +8,15 @@ import requests
 from core import config
 
 SERPAPI_API_KEY = getattr(config, "SERPAPI_API_KEY", "")
+_SESSION_LOCAL = threading.local()
+
+
+def _get_session() -> requests.Session:
+    session = getattr(_SESSION_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        _SESSION_LOCAL.session = session
+    return session
 
 
 def google_search_tool(query: str, detailed: bool = False, **kwargs) -> dict:
@@ -14,6 +24,7 @@ def google_search_tool(query: str, detailed: bool = False, **kwargs) -> dict:
     if not SERPAPI_API_KEY:
         return {"error": "SerpApi key is not configured."}
 
+    session = _get_session()
     engine = "google" if detailed else "google_light"
     params = {
         "engine": engine,
@@ -22,7 +33,7 @@ def google_search_tool(query: str, detailed: bool = False, **kwargs) -> dict:
     }
 
     try:
-        response = requests.get("https://serpapi.com/search", params=params, timeout=10)
+        response = session.get("https://serpapi.com/search", params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
     except requests.RequestException as exc:
@@ -49,10 +60,11 @@ def fetch_url_tool(
         normalized_url = f"https://{normalized_url}"
 
     headers: Dict[str, str] = {}
+    session = _get_session()
 
     try:
         if "#" in normalized_url:
-            response = requests.post(
+            response = session.post(
                 "https://r.jina.ai/",
                 data={"url": normalized_url},
                 headers=headers,
@@ -60,7 +72,7 @@ def fetch_url_tool(
             )
         else:
             encoded_url = quote(normalized_url, safe=":/?&=#[]@!$&'()*+,;")
-            response = requests.get(
+            response = session.get(
                 f"https://r.jina.ai/{encoded_url}",
                 headers=headers,
                 timeout=10,

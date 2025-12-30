@@ -1,5 +1,6 @@
 import base64
 import logging
+import threading
 from typing import Dict, Optional
 
 import requests
@@ -8,6 +9,15 @@ from core import config
 
 JUDGE0_API_URL = getattr(config, "JUDGE0_API_URL", "")
 JUDGE0_API_KEY = getattr(config, "JUDGE0_API_KEY", "")
+_SESSION_LOCAL = threading.local()
+
+
+def _get_session() -> requests.Session:
+    session = getattr(_SESSION_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        _SESSION_LOCAL.session = session
+    return session
 
 
 def execute_python_code_tool(
@@ -37,7 +47,8 @@ def execute_python_code_tool(
         if stdin:
             payload["stdin"] = base64.b64encode(stdin.encode("utf-8")).decode("ascii")
 
-        response = requests.post(request_url, json=payload, headers=headers, timeout=10)
+        session = _get_session()
+        response = session.post(request_url, json=payload, headers=headers, timeout=10)
         response.raise_for_status()
         result = response.json()
     except requests.HTTPError as exc:
