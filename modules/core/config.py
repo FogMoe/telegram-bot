@@ -157,7 +157,7 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 
 ### update_affection
 - Call this tool when you need to adjust your affection level towards the user
-- Dynamically adjust the affection score based on user input
+- Dynamically adjust the affection score based on user input actively
 - Consider factors such as user attitude, frequency of interaction, and quality of conversation
 
 ### kindness_gift
