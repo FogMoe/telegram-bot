@@ -375,7 +375,12 @@ async def setmyinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"您当前保存的个人自定义信息是Your current personal info is:\n{current_info}")
 
     if not context.args:
-        await update.message.reply_text("请在 /setmyinfo 命令后输入要您要保存的个人自定义信息，仅在新对话中有效。\nThe personal information you want to save should be entered after the command, only available in new conversations.\n\n在命令后输入CLEAR可以清空个人自定义信息（例如/setmyinfo CLEAR ）。\nEnter CLEAR after the command to clear the personal information.(e.g./setmyinfo CLEAR)")
+        await update.message.reply_text(
+            "请在 /setmyinfo 命令后输入要您要保存的个人自定义信息，会在后续对话中生效。\n"
+            "The personal information you want to save should be entered after the command and will be used in subsequent conversations.\n\n"
+            "在命令后输入CLEAR可以清空个人自定义信息（例如/setmyinfo CLEAR ）。\n"
+            "Enter CLEAR after the command to clear the personal information.(e.g./setmyinfo CLEAR)"
+        )
         return
 
     user_info = " ".join(context.args)

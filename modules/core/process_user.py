@@ -98,7 +98,7 @@ async def get_user_personal_info(user_id: int) -> str:
     )
     if not row or row[0] is None or row[0] == "":
         return ""
-    return f"User-defined personal information: {row[0]}"
+    return str(row[0])
 
 
 def get_user_personal_info_sync(user_id: int) -> str:

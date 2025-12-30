@@ -159,6 +159,7 @@ def _format_user_state_prompt(
     user_permission: int,
     user_affection: int,
     impression: str,
+    personal_info: str = "",
 ) -> str:
     permission_labels = {
         0: "Normal",
@@ -175,9 +176,14 @@ def _format_user_state_prompt(
     attr_text = " ".join(
         f'{key}="{_xml_escape(value)}"' for key, value in attrs if value
     )
-    lines = [f"<user_state {attr_text}>"]
-    lines.append(f"  <impression>{_xml_escape(impression)}</impression>")
-    lines.append("</user_state>")
+    lines = [f"<user_state {attr_text} />"]
+    if impression or personal_info:
+        lines.append("<user_profile>")
+        if impression:
+            lines.append(f"  <impression>{_xml_escape(impression)}</impression>")
+        if personal_info:
+            lines.append(f"  <personal_info>{_xml_escape(personal_info)}</personal_info>")
+        lines.append("</user_profile>")
     return "\n".join(lines)
 
 
@@ -328,7 +334,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     async with mysql_connection.transaction() as connection:
         row = await mysql_connection.fetch_one(
-            "SELECT permission, coins FROM user WHERE id = %s",
+            "SELECT permission, coins, info FROM user WHERE id = %s",
             (user_id,),
             connection=connection,
         )
@@ -340,6 +346,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
         user_permission = row[0]
         user_coins = row[1]
+        user_info_raw = row[2] if len(row) > 2 else ""
 
         if user_coins < coin_cost:
             await effective_message.reply_text(
@@ -363,6 +370,11 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             impression_display = impression_display[:497] + "..."
     else:
         impression_display = "未记录"
+
+    personal_info_display = (user_info_raw or "").strip()
+    if personal_info_display:
+        if len(personal_info_display) > 500:
+            personal_info_display = personal_info_display[:500]
 
     chat_type = update.effective_chat.type or "private"
     group_title = (update.effective_chat.title or "").strip() if update.effective_chat else ""
@@ -448,18 +460,6 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # 异步获取聊天历史
     chat_history = await mysql_connection.async_get_chat_history(conversation_id)
 
-    # 如果是新对话，添加个人信息
-    if not chat_history:
-        personal_info = await process_user.async_get_user_personal_info(user_id)
-        if personal_info:
-            personal_snapshot, personal_warning = await mysql_connection.async_insert_chat_record(conversation_id, 'user', personal_info)
-            if personal_warning:
-                await notify_history_warning(personal_warning)
-            if personal_snapshot:
-                summary.schedule_summary_generation(conversation_id)
-            # 重新获取更新后的聊天历史
-            chat_history = await mysql_connection.async_get_chat_history(conversation_id)
-
     # 异步插入用户消息
     user_snapshot_created, user_storage_warning = await mysql_connection.async_insert_chat_record(conversation_id, 'user', formatted_message)
     if user_storage_warning:
@@ -486,6 +486,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             user_permission=user_permission,
             user_affection=user_affection,
             impression=impression_display,
+            personal_info=personal_info_display,
         ),
     }
 
