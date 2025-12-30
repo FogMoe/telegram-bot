@@ -149,7 +149,7 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
         "function": {
             "name": "fetch_permanent_summaries",
             "description": (
-                "Fetch user's historical conversation summaries (newest on top, max 10 results per request)"
+                "Fetch user's historical conversation summaries (newest on top, max 5 results per request)"
             ),
             "parameters": {
                 "type": "object",
@@ -158,11 +158,13 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
                         "type": "integer",
                         "description": "Start position (inclusive)",
                         "default": 1,
+                        "minimum": 1,
                     },
                     "end": {
                         "type": "integer",
                         "description": "End position (inclusive)",
-                        "default": 2,
+                        "default": 1,
+                        "minimum": 1,
                     },
                 },
             },

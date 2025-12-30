@@ -54,7 +54,14 @@ def fetch_permanent_summaries_tool(
     context = get_tool_request_context()
     user_id = context.get("user_id")
     if not user_id:
-        return {"error": "Missing user information, cannot retrieve summaries"}
+        return {
+            "user_id": None,
+            "total": 0,
+            "range_start": 0,
+            "range_end": -1,
+            "records": [],
+            "error": "Missing user information, cannot retrieve summaries",
+        }
 
     try:
         start_idx = int(start) if start is not None else 1
@@ -62,9 +69,9 @@ def fetch_permanent_summaries_tool(
         start_idx = 1
 
     try:
-        end_idx = int(end) if end is not None else start_idx + 9
+        end_idx = int(end) if end is not None else start_idx
     except (TypeError, ValueError):
-        end_idx = start_idx + 9
+        end_idx = start_idx
 
     if start_idx < 1:
         start_idx = 1
@@ -72,7 +79,7 @@ def fetch_permanent_summaries_tool(
         end_idx = start_idx
 
     window_size = end_idx - start_idx + 1
-    window_size = max(1, min(window_size, 10))
+    window_size = max(1, min(window_size, 5))
     offset = start_idx - 1
 
     total_row = mysql_connection.run_sync(
