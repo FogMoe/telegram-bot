@@ -233,15 +233,29 @@ async def insert_chat_record(
             messages = messages_with_new
 
         if row:
-            await connection.exec_driver_sql(
-                "UPDATE chat_records SET messages = %s WHERE conversation_id = %s",
-                (json.dumps(messages, ensure_ascii=False), conversation_id),
-            )
+            if overflow:
+                await connection.exec_driver_sql(
+                    "UPDATE chat_records SET messages = %s, last_rotated_at = CURRENT_TIMESTAMP "
+                    "WHERE conversation_id = %s",
+                    (json.dumps(messages, ensure_ascii=False), conversation_id),
+                )
+            else:
+                await connection.exec_driver_sql(
+                    "UPDATE chat_records SET messages = %s WHERE conversation_id = %s",
+                    (json.dumps(messages, ensure_ascii=False), conversation_id),
+                )
         else:
-            await connection.exec_driver_sql(
-                "INSERT INTO chat_records (conversation_id, messages) VALUES (%s, %s)",
-                (conversation_id, json.dumps(messages, ensure_ascii=False)),
-            )
+            if overflow:
+                await connection.exec_driver_sql(
+                    "INSERT INTO chat_records (conversation_id, messages, last_rotated_at) "
+                    "VALUES (%s, %s, CURRENT_TIMESTAMP)",
+                    (conversation_id, json.dumps(messages, ensure_ascii=False)),
+                )
+            else:
+                await connection.exec_driver_sql(
+                    "INSERT INTO chat_records (conversation_id, messages) VALUES (%s, %s)",
+                    (conversation_id, json.dumps(messages, ensure_ascii=False)),
+                )
 
     return snapshot_created, warning_level, archived_records
 
