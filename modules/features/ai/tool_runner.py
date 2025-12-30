@@ -150,19 +150,7 @@ def run_tool_loop(
     skip_set = set(skip_tools or [])
 
     for iteration in range(max_iterations):
-        if (
-            iteration == 0
-            and tool_context
-            and tool_context.get("is_group")
-            and tool_choice == "auto"
-        ):
-            request_tool_choice: str | Dict[str, object] = {
-                "type": "function",
-                "function": {"name": "fetch_group_context"},
-            }
-        else:
-            request_tool_choice = tool_choice
-
+        request_tool_choice = tool_choice
         response = client.chat.completions.create(
             model=model,
             messages=filtered_messages,

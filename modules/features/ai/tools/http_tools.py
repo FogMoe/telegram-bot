@@ -15,7 +15,7 @@ def google_search_tool(query: str) -> dict:
         return {"error": "SerpApi key is not configured."}
 
     params = {
-        "engine": "google_light",
+        "engine": "google",
         "q": query,
         "api_key": SERPAPI_API_KEY,
     }
