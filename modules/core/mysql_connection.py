@@ -1,10 +1,11 @@
 import json
+from datetime import datetime
 from typing import Any, Iterable, Optional
 
 from sqlalchemy.engine import Result
 
 from . import config, db
-from .prompt_utils import xml_escape
+from .prompt_utils import format_metadata_attrs, xml_escape
 from .token_estimator import estimate_conversation_tokens
 
 
@@ -125,6 +126,16 @@ async def insert_chat_record(
     warning_level = None
     archived_records: list[dict] = []
 
+    def _is_history_state_event(message: object) -> bool:
+        if not isinstance(message, dict):
+            return False
+        if message.get("role") != "system":
+            return False
+        content = message.get("content")
+        if not isinstance(content, str):
+            return False
+        return 'origin="history_state"' in content
+
     def _trim_messages_with_tool_context(
         messages: list[dict],
         keep_non_tool: int = 10,
@@ -134,6 +145,8 @@ async def insert_chat_record(
 
         non_tool_indices: list[int] = []
         for idx, msg in enumerate(messages):
+            if _is_history_state_event(msg):
+                continue
             if not isinstance(msg, dict):
                 non_tool_indices.append(idx)
                 continue
@@ -179,30 +192,53 @@ async def insert_chat_record(
         indices = sorted(set(range(start_idx, len(messages))) | required_indices)
         return [messages[i] for i in indices]
 
-    def _inject_history_state(content: str, state: str) -> str:
-        if not content or not content.startswith("<metadata"):
-            return content
-        end_idx = content.find(">")
-        if end_idx == -1:
-            return content
-        header = content[:end_idx]
-        if "history_state=" in header:
-            return content
-        return f"{header} history_state=\"{state}\"{content[end_idx:]}"
+    def _build_history_state_event(
+        state: str,
+        *,
+        summary_text: str | None = None,
+    ) -> dict:
+        attrs = [
+            ("type", "system"),
+            ("timestamp", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")),
+            ("origin", "history_state"),
+            ("history_state", state),
+        ]
+        attr_text = format_metadata_attrs(attrs)
+        lines = [f"<metadata {attr_text}>"]
+        if summary_text:
+            lines.append(f"  <summary>{xml_escape(summary_text)}</summary>")
+        lines.append("</metadata>")
+        return {
+            "role": "system",
+            "content": "\n".join(lines),
+        }
 
-    def _inject_history_summary(content: str, summary_text: str) -> str:
-        if not content or not content.startswith("<metadata"):
-            return content
-        if not summary_text:
-            return content
-        if "<summary>" in content:
-            return content
-        end_tag = "</metadata>"
-        insert_idx = content.find(end_tag)
-        if insert_idx == -1:
-            return content
-        summary_line = f"  <summary>{xml_escape(summary_text)}</summary>\n"
-        return f"{content[:insert_idx]}{summary_line}{content[insert_idx:]}"
+    def _find_last_user_message_index(messages: list[dict]) -> int | None:
+        for idx in range(len(messages) - 1, -1, -1):
+            msg = messages[idx]
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") != "user":
+                continue
+            if isinstance(msg.get("content"), str):
+                return idx
+        return None
+
+    def _last_history_state_event(messages: list[dict]) -> str | None:
+        for msg in reversed(messages):
+            if not _is_history_state_event(msg):
+                continue
+            content = msg.get("content") or ""
+            marker = 'history_state="'
+            start_idx = content.find(marker)
+            if start_idx == -1:
+                return None
+            value_start = start_idx + len(marker)
+            value_end = content.find('"', value_start)
+            if value_end == -1:
+                return None
+            return content[value_start:value_end]
+        return None
 
     async with transaction() as connection:
         row = await fetch_one(
@@ -267,27 +303,28 @@ async def insert_chat_record(
         elif token_count > config.CHAT_TOKEN_WARN_LIMIT:
             warning_level = "near_limit"
 
-        if role == "user":
+        event_state = None
+        if warning_level == "overflow":
+            event_state = "compressed"
+        elif role == "user":
             if warning_level == "near_limit":
-                state_label = "near_limit"
-            elif warning_level == "overflow":
-                state_label = "compressed"
+                event_state = "near_limit"
             elif is_new_session:
-                state_label = "new_session"
-            else:
-                state_label = None
-        else:
-            state_label = None
+                event_state = "new_session"
 
-        if state_label and role == "user":
-            if isinstance(message_entry, dict) and isinstance(message_entry.get("content"), str):
-                updated_content = _inject_history_state(message_entry["content"], state_label)
-                if warning_level == "overflow" and latest_summary:
-                    updated_content = _inject_history_summary(updated_content, latest_summary)
-                if updated_content != message_entry["content"]:
-                    message_entry["content"] = updated_content
-                    if messages_with_new:
-                        messages_with_new[-1] = message_entry
+        if event_state:
+            last_event_state = _last_history_state_event(messages_with_new)
+            if last_event_state == event_state:
+                event_state = None
+
+        if event_state:
+            target_index = _find_last_user_message_index(messages_with_new)
+            if target_index is not None:
+                event_message = _build_history_state_event(
+                    event_state,
+                    summary_text=latest_summary if warning_level == "overflow" else None,
+                )
+                messages_with_new.insert(target_index + 1, event_message)
 
         if overflow:
             messages = _trim_messages_with_tool_context(messages_with_new)

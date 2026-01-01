@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Iterable, Optional
 
 
 def xml_escape(value: str) -> str:
@@ -11,6 +11,26 @@ def xml_escape(value: str) -> str:
         .replace(">", "&gt;")
         .replace('"', "&quot;")
         .replace("'", "&apos;")
+    )
+
+
+_METADATA_ATTR_ORDER = (
+    "type",
+    "title",
+    "timestamp",
+    "user",
+    "origin",
+    "history_state",
+    "scheduled_at",
+    "scheduled_for",
+)
+
+
+def format_metadata_attrs(attrs: Iterable[tuple[str, str]]) -> str:
+    order = {key: idx for idx, key in enumerate(_METADATA_ATTR_ORDER)}
+    ordered = sorted(attrs, key=lambda item: (order.get(item[0], len(order)), item[0]))
+    return " ".join(
+        f'{key}="{xml_escape(value)}"' for key, value in ordered if value
     )
 
 

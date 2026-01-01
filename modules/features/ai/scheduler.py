@@ -9,7 +9,7 @@ from telegram.ext import ContextTypes
 
 from core import mysql_connection, process_user
 from core.archive_utils import send_permanent_records_archive
-from core.prompt_utils import format_user_state_prompt, xml_escape
+from core.prompt_utils import format_metadata_attrs, format_user_state_prompt, xml_escape
 from core.telegram_utils import partial_send, safe_send_markdown, split_ai_reply
 from features.ai import ai_chat, summary
 
@@ -49,9 +49,7 @@ def _format_scheduled_message(
     if scheduled_for:
         attrs.append(("scheduled_for", _format_timestamp(scheduled_for)))
 
-    attr_text = " ".join(
-        f'{key}="{xml_escape(value)}"' for key, value in attrs if value
-    )
+    attr_text = format_metadata_attrs(attrs)
     lines = [f"<metadata {attr_text}>"]
     lines.append(f"  <trigger>{xml_escape(trigger_reason)}</trigger>")
     if context_text:

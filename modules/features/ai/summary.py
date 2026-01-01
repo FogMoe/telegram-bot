@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple
 
@@ -69,6 +70,45 @@ def _fetch_pending_snapshot(user_id: int) -> Optional[Tuple[int, str]]:
 
 
 def _format_history_for_summary(snapshot_text: str) -> str:
+    def _xml_unescape(value: str) -> str:
+        return (
+            value.replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", '"')
+            .replace("&apos;", "'")
+            .replace("&amp;", "&")
+        )
+
+    def _flatten_text(value: str) -> str:
+        return re.sub(r"\s+", " ", value).strip()
+
+    def _extract_metadata_attrs(content: str) -> dict[str, str]:
+        match = re.search(r"<metadata\s+([^>]*)>", content)
+        if not match:
+            return {}
+        attrs_text = match.group(1)
+        attrs = {}
+        for key, value in re.findall(r'(\w+)="(.*?)"', attrs_text):
+            attrs[key] = _flatten_text(_xml_unescape(value))
+        return attrs
+
+    def _extract_scheduled_task_fields(content: str) -> dict | None:
+        if 'origin="scheduled_task"' not in content:
+            return None
+
+        def _find(tag: str) -> str:
+            match = re.search(fr"<{tag}>(.*?)</{tag}>", content, re.DOTALL)
+            if not match:
+                return ""
+            return _flatten_text(_xml_unescape(match.group(1)))
+
+        return {
+            "attrs": _extract_metadata_attrs(content),
+            "trigger": _find("trigger"),
+            "context": _find("context"),
+            "instruction": _find("instruction"),
+        }
+
     try:
         messages = json.loads(snapshot_text)
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -86,6 +126,38 @@ def _format_history_for_summary(snapshot_text: str) -> str:
 
         if role == "user":
             if content:
+                if isinstance(content, str):
+                    scheduled_fields = _extract_scheduled_task_fields(content)
+                    if scheduled_fields is not None:
+                        attrs = scheduled_fields.get("attrs") or {}
+                        parts = []
+                        attr_order = (
+                            "type",
+                            "timestamp",
+                            "user",
+                            "origin",
+                            "scheduled_at",
+                            "scheduled_for",
+                        )
+                        for key in attr_order:
+                            value = attrs.get(key)
+                            if value:
+                                parts.append(f"{key}={value}")
+                        for key in sorted(k for k in attrs.keys() if k not in attr_order):
+                            value = attrs.get(key)
+                            if value:
+                                parts.append(f"{key}={value}")
+                        if scheduled_fields.get("trigger"):
+                            parts.append(f"trigger={scheduled_fields['trigger']}")
+                        if scheduled_fields.get("context"):
+                            parts.append(f"context={scheduled_fields['context']}")
+                        if scheduled_fields.get("instruction"):
+                            parts.append(f"instruction={scheduled_fields['instruction']}")
+                        line = "SCHEDULED_TRIGGER"
+                        if parts:
+                            line = f"{line}: " + " | ".join(parts)
+                        lines.append(line)
+                        continue
                 lines.append(f"USER: {content}")
             continue
 
@@ -106,6 +178,11 @@ def _format_history_for_summary(snapshot_text: str) -> str:
             tool_content = message.get("content") or ""
             lines.append(f"TOOL_RETURN[{tool_name}]: {tool_content}")
             continue
+
+        if role == "system":
+            content_str = content if isinstance(content, str) else ""
+            if 'origin="history_state"' in content_str:
+                continue
 
         if content:
             lines.append(f"{role or 'MESSAGE'}: {content}")
