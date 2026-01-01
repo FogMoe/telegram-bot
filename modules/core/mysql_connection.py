@@ -4,6 +4,7 @@ from typing import Any, Iterable, Optional
 from sqlalchemy.engine import Result
 
 from . import config, db
+from .prompt_utils import xml_escape
 from .token_estimator import estimate_conversation_tokens
 
 
@@ -178,6 +179,31 @@ async def insert_chat_record(
         indices = sorted(set(range(start_idx, len(messages))) | required_indices)
         return [messages[i] for i in indices]
 
+    def _inject_history_state(content: str, state: str) -> str:
+        if not content or not content.startswith("<metadata"):
+            return content
+        end_idx = content.find(">")
+        if end_idx == -1:
+            return content
+        header = content[:end_idx]
+        if "history_state=" in header:
+            return content
+        return f"{header} history_state=\"{state}\"{content[end_idx:]}"
+
+    def _inject_history_summary(content: str, summary_text: str) -> str:
+        if not content or not content.startswith("<metadata"):
+            return content
+        if not summary_text:
+            return content
+        if "<summary>" in content:
+            return content
+        end_tag = "</metadata>"
+        insert_idx = content.find(end_tag)
+        if insert_idx == -1:
+            return content
+        summary_line = f"  <summary>{xml_escape(summary_text)}</summary>\n"
+        return f"{content[:insert_idx]}{summary_line}{content[insert_idx:]}"
+
     async with transaction() as connection:
         row = await fetch_one(
             "SELECT messages FROM chat_records WHERE conversation_id = %s",
@@ -197,6 +223,8 @@ async def insert_chat_record(
         if not isinstance(messages, list):
             messages = []
 
+        is_new_session = not messages
+
         if not isinstance(content, dict) or not content.get("role"):
             message_entry = {"role": role, "content": content}
         else:
@@ -211,6 +239,7 @@ async def insert_chat_record(
             system_prompt_extra=system_prompt_extra,
         )
         overflow = token_count > config.CHAT_TOKEN_LIMIT
+        latest_summary = None
         if overflow:
             snapshot_value = json.dumps(messages_with_new, ensure_ascii=False)
             if snapshot_value:
@@ -224,8 +253,41 @@ async def insert_chat_record(
                 )
                 snapshot_created = True
             warning_level = "overflow"
+            summary_row = await fetch_one(
+                "SELECT summary FROM permanent_chat_records "
+                "WHERE user_id = %s AND summary IS NOT NULL AND summary != '' "
+                "ORDER BY created_at DESC, id DESC LIMIT 1",
+                (conversation_id,),
+                connection=connection,
+            )
+            if summary_row and summary_row[0]:
+                latest_summary = summary_row[0]
+                if isinstance(latest_summary, bytes):
+                    latest_summary = latest_summary.decode("utf-8")
         elif token_count > config.CHAT_TOKEN_WARN_LIMIT:
             warning_level = "near_limit"
+
+        if role == "user":
+            if warning_level == "near_limit":
+                state_label = "near_limit"
+            elif warning_level == "overflow":
+                state_label = "compressed"
+            elif is_new_session:
+                state_label = "new_session"
+            else:
+                state_label = None
+        else:
+            state_label = None
+
+        if state_label and role == "user":
+            if isinstance(message_entry, dict) and isinstance(message_entry.get("content"), str):
+                updated_content = _inject_history_state(message_entry["content"], state_label)
+                if warning_level == "overflow" and latest_summary:
+                    updated_content = _inject_history_summary(updated_content, latest_summary)
+                if updated_content != message_entry["content"]:
+                    message_entry["content"] = updated_content
+                    if messages_with_new:
+                        messages_with_new[-1] = message_entry
 
         if overflow:
             messages = _trim_messages_with_tool_context(messages_with_new)
