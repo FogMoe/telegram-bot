@@ -9,6 +9,7 @@ from .tools import (
     search_permanent_records_tool,
     fetch_url_tool,
     kindness_gift_tool,
+    schedule_ai_message_tool,
     set_tool_request_context,
     update_affection_tool,
     update_impression_tool,
@@ -27,5 +28,6 @@ __all__ = [
     "update_impression_tool",
     "fetch_permanent_summaries_tool",
     "search_permanent_records_tool",
+    "schedule_ai_message_tool",
     "user_diary_tool",
 ]

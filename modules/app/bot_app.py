@@ -28,6 +28,7 @@ from core.bot_commands import (
 from core.bot_conversation import post_init, reply
 from core.bot_monitoring import start_monitor, stop_monitor
 from features.admin import developer
+from features.ai import scheduler
 from features.crypto import chart, crypto_predict, swap_fogmoe_solana_token
 from features.economy import (
     bribe,
@@ -179,6 +180,12 @@ def register_handlers(application) -> None:
 
     # 注册Web密码模块处理器
     web_password.setup_webpassword_handlers(application)
+
+    application.job_queue.run_repeating(
+        scheduler.run_ai_schedule_job,
+        interval=scheduler.SCHEDULE_POLL_INTERVAL,
+        first=5,
+    )
 
 
 def run() -> None:

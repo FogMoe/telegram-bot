@@ -7,6 +7,7 @@ from .memory_tools import (
     search_permanent_records_tool,
     user_diary_tool,
 )
+from .schedule_tools import schedule_ai_message_tool
 from .user_tools import kindness_gift_tool, update_affection_tool, update_impression_tool
 
 __all__ = [
@@ -23,4 +24,5 @@ __all__ = [
     "fetch_permanent_summaries_tool",
     "search_permanent_records_tool",
     "user_diary_tool",
+    "schedule_ai_message_tool",
 ]

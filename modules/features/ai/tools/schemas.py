@@ -208,6 +208,50 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
     {
         "type": "function",
         "function": {
+            "name": "schedule_ai_message",
+            "description": (
+                "Schedule, list, or cancel one-time private messages for the user. "
+                "UTC timestamps only. Max 3 pending tasks, max 12 total (older tasks are overwritten)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "create | list | cancel",
+                        "default": "create",
+                    },
+                    "timestamp_utc": {
+                        "type": "string",
+                        "description": "UTC time in ISO8601, e.g. 2025-01-01T12:00:00Z",
+                    },
+                    "trigger_reason": {
+                        "type": "string",
+                        "description": "Why this task is triggered (short and explicit)",
+                        "maxLength": 200,
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Optional background/context for the scheduled message",
+                        "maxLength": 1000,
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Remind to yourself, what you should say/do to the user at runtime",
+                        "maxLength": 2000,
+                    },
+                    "schedule_id": {
+                        "type": "integer",
+                        "description": "Schedule id for cancel action",
+                        "minimum": 1,
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "user_diary",
             "description": (
                 "Read or update the internal diary for the current user. "

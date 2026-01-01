@@ -12,8 +12,9 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from core import config, db, group_chat_history, mysql_connection, process_user
-from core.archive_utils import build_jsonl_bytes
-from core.telegram_utils import partial_send, safe_send_markdown, send_document_bytes
+from core.archive_utils import send_permanent_records_archive
+from core.prompt_utils import format_user_state_prompt, xml_escape
+from core.telegram_utils import partial_send, safe_send_markdown, split_ai_reply
 from features.ai import ai_chat, summary
 
 logger = logging.getLogger(__name__)
@@ -62,78 +63,6 @@ def get_effective_message(update: Update):
     return update.message or update.edited_message
 
 
-def _split_ai_reply(text: str) -> list[str]:
-    if not text or "\n" not in text:
-        return [text]
-
-    segments: list[str] = []
-    in_code_block = False
-    code_buffer: list[str] = []
-
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("```"):
-            if in_code_block:
-                code_buffer.append(line)
-                segments.append("\n".join(code_buffer))
-                code_buffer = []
-                in_code_block = False
-            else:
-                in_code_block = True
-                code_buffer = [line]
-            continue
-
-        if in_code_block:
-            code_buffer.append(line)
-            continue
-
-        if stripped:
-            segments.append(line)
-
-    if code_buffer:
-        segments.append("\n".join(code_buffer))
-
-    return segments or [text]
-
-
-async def _send_permanent_records_archive(
-    context: ContextTypes.DEFAULT_TYPE,
-    user_id: int,
-    archived_records: list[dict],
-) -> None:
-    if not archived_records:
-        return
-
-    payload = build_jsonl_bytes(archived_records)
-    if not payload:
-        return
-
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"permanent_records_archive_{user_id}_{timestamp}.jsonl"
-    caption = "你的永久记忆已超过上限，最旧的记录已打包成JSONL文件发给你。服务器存不下了，请自行保存处理。"
-    await send_document_bytes(
-        context.bot,
-        user_id,
-        payload,
-        filename,
-        caption=caption,
-        logger=logger,
-    )
-
-
-def _xml_escape(value: str) -> str:
-    if value is None:
-        return ""
-    return (
-        str(value)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&apos;")
-    )
-
-
 def _format_xml_message(
     *,
     chat_type: str,
@@ -155,70 +84,34 @@ def _format_xml_message(
     if chat_type in ("group", "supergroup") and chat_title:
         attrs.insert(1, ("title", chat_title))
     attr_text = " ".join(
-        f'{key}="{_xml_escape(value)}"' for key, value in attrs if value
+        f'{key}="{xml_escape(value)}"' for key, value in attrs if value
     )
     lines = [f"<metadata {attr_text}>"]
     if reply_user or reply_text:
         reply_user_value = f"@{reply_user}" if reply_user else ""
         reply_attr = (
-            f' user="{_xml_escape(reply_user_value)}"'
+            f' user="{xml_escape(reply_user_value)}"'
             if reply_user_value
             else ""
         )
         lines.append(
-            f"  <reply{reply_attr}>{_xml_escape(reply_text or '')}</reply>"
+            f"  <reply{reply_attr}>{xml_escape(reply_text or '')}</reply>"
         )
     if media_type:
         media_attrs = [("type", media_type)]
         if media_emoji:
             media_attrs.append(("emoji", media_emoji))
         media_attr_text = " ".join(
-            f'{key}="{_xml_escape(value)}"' for key, value in media_attrs if value
+            f'{key}="{xml_escape(value)}"' for key, value in media_attrs if value
         )
         lines.append(f"  <media {media_attr_text}>")
         if media_description:
             lines.append(
-                f"    <description>{_xml_escape(media_description)}</description>"
+                f"    <description>{xml_escape(media_description)}</description>"
             )
         lines.append("  </media>")
     lines.append("</metadata>")
-    lines.append(f"<message>{_xml_escape(message_text)}</message>")
-    return "\n".join(lines)
-
-
-def _format_user_state_prompt(
-    *,
-    user_coins: int,
-    user_permission: int,
-    user_affection: int,
-    impression: str,
-    personal_info: str = "",
-    diary_exists: bool = False,
-) -> str:
-    permission_labels = {
-        0: "Normal",
-        1: "Advanced",
-        2: "Maximum",
-    }
-    permission_label = permission_labels.get(user_permission, "Unknown")
-    attrs = [
-        ("coins", str(user_coins)),
-        ("permission", str(user_permission)),
-        ("permission_label", permission_label),
-        ("affection", str(user_affection)),
-        ("diary_exists", "true" if diary_exists else "false"),
-    ]
-    attr_text = " ".join(
-        f'{key}="{_xml_escape(value)}"' for key, value in attrs if value
-    )
-    lines = [f"<user_state {attr_text} />"]
-    if impression or personal_info:
-        lines.append("<user_profile>")
-        if impression:
-            lines.append(f"  <impression>{_xml_escape(impression)}</impression>")
-        if personal_info:
-            lines.append(f"  <personal_info>{_xml_escape(personal_info)}</personal_info>")
-        lines.append("</user_profile>")
+    lines.append(f"<message>{xml_escape(message_text)}</message>")
     return "\n".join(lines)
 
 
@@ -414,7 +307,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     diary_exists = bool(diary_row)
 
-    user_state_prompt = _format_user_state_prompt(
+    user_state_prompt = format_user_state_prompt(
         user_coins=user_coins,
         user_permission=user_permission,
         user_affection=user_affection,
@@ -518,7 +411,12 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         system_prompt_extra=user_state_prompt,
     )
     if user_archived_records:
-        await _send_permanent_records_archive(context, user_id, user_archived_records)
+        await send_permanent_records_archive(
+            context.bot,
+            user_id,
+            user_archived_records,
+            logger=logger,
+        )
     if user_storage_warning:
         await notify_history_warning(user_storage_warning)
     if user_snapshot_created:
@@ -606,7 +504,12 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
 
         if tool_archived_records:
-            await _send_permanent_records_archive(context, user_id, tool_archived_records)
+            await send_permanent_records_archive(
+                context.bot,
+                user_id,
+                tool_archived_records,
+                logger=logger,
+            )
         if tool_storage_warning:
             await notify_history_warning(tool_storage_warning)
         if tool_snapshot_created:
@@ -619,7 +522,12 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         assistant_archived_records,
     ) = await mysql_connection.async_insert_chat_record(conversation_id, "assistant", assistant_message)
     if assistant_archived_records:
-        await _send_permanent_records_archive(context, user_id, assistant_archived_records)
+        await send_permanent_records_archive(
+            context.bot,
+            user_id,
+            assistant_archived_records,
+            logger=logger,
+        )
     if assistant_storage_warning:
         await notify_history_warning(assistant_storage_warning)
     if assistant_snapshot_created:
@@ -631,7 +539,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         context.bot.send_message,
         update.effective_chat.id,
     )
-    for index, segment in enumerate(_split_ai_reply(assistant_message)):
+    for index, segment in enumerate(split_ai_reply(assistant_message)):
         send_func = effective_message.reply_text if index == 0 else fallback_send
         results = await safe_send_markdown(
             send_func,
