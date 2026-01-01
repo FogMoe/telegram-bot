@@ -6,7 +6,8 @@ from core import config, group_chat_history, mysql_connection
 
 from .context import get_tool_request_context
 
-MAX_USER_DIARY_CHARS = 10000
+MAX_USER_DIARY_PAGE_CHARS = 10000
+MAX_USER_DIARY_PAGES = 100
 
 
 def get_help_text_tool() -> dict:
@@ -263,6 +264,7 @@ def user_diary_tool(
     start_line: Optional[int] = None,
     end_line: Optional[int] = None,
     line_numbers: Optional[bool] = None,
+    page: Optional[int] = None,
     **kwargs,
 ) -> dict:
     """Read or update the internal diary for the current user."""
@@ -283,17 +285,35 @@ def user_diary_tool(
     else:
         return {"user_id": user_id, "error": f"Unknown action: {action}"}
 
+    try:
+        page_value = int(page) if page is not None else 1
+    except (TypeError, ValueError):
+        return {"user_id": user_id, "error": "Invalid page number"}
+    if page_value < 1 or page_value > MAX_USER_DIARY_PAGES:
+        return {"user_id": user_id, "error": f"Page number out of range (max={MAX_USER_DIARY_PAGES})"}
+
+    max_page_row = mysql_connection.run_sync(
+        mysql_connection.fetch_one(
+            "SELECT MAX(page_no) FROM ai_user_diary_pages WHERE user_id = %s",
+            (user_id,),
+        )
+    )
+    max_page = max_page_row[0] if max_page_row and max_page_row[0] is not None else 0
+
     row = mysql_connection.run_sync(
         mysql_connection.fetch_one(
-            "SELECT content, created_at, updated_at FROM ai_user_diary WHERE user_id = %s",
-            (user_id,),
+            "SELECT content, created_at, updated_at FROM ai_user_diary_pages "
+            "WHERE user_id = %s AND page_no = %s",
+            (user_id, page_value),
         )
     )
 
     diary_content = ""
     created_at = None
     updated_at = None
+    page_exists = False
     if row:
+        page_exists = True
         diary_content, created_at, updated_at = row
         if isinstance(diary_content, bytes):
             diary_content = diary_content.decode("utf-8")
@@ -319,6 +339,8 @@ def user_diary_tool(
             response = {
                 "user_id": user_id,
                 "action": "read",
+                "page": page_value,
+                "total_pages": max_page,
                 "total_lines": total_lines,
                 "length": content_length,
                 "content": diary_content,
@@ -344,6 +366,8 @@ def user_diary_tool(
             response = {
                 "user_id": user_id,
                 "action": "read",
+                "page": page_value,
+                "total_pages": max_page,
                 "total_lines": 0,
                 "length": 0,
                 "range": {"start_line": 0, "end_line": 0},
@@ -368,6 +392,8 @@ def user_diary_tool(
         response = {
             "user_id": user_id,
             "action": "read",
+            "page": page_value,
+            "total_pages": max_page,
             "total_lines": total_lines,
             "length": content_length,
             "range": {"start_line": start_value, "end_line": end_value},
@@ -383,6 +409,15 @@ def user_diary_tool(
         if warnings:
             response["warning"] = "; ".join(warnings)
         return response
+
+    if not page_exists:
+        if max_page >= MAX_USER_DIARY_PAGES:
+            return {"user_id": user_id, "error": f"Diary page limit reached (max={MAX_USER_DIARY_PAGES})"}
+        if page_value > max_page + 1:
+            return {
+                "user_id": user_id,
+                "error": f"Page out of range; create next page first (max={MAX_USER_DIARY_PAGES})",
+            }
 
     if content is None:
         return {"user_id": user_id, "error": "Missing content for diary update"}
@@ -418,32 +453,35 @@ def user_diary_tool(
         merged_content = content_value
 
     truncated = False
-    if len(merged_content) > MAX_USER_DIARY_CHARS:
-        merged_content = merged_content[-MAX_USER_DIARY_CHARS:]
+    if len(merged_content) > MAX_USER_DIARY_PAGE_CHARS:
+        merged_content = merged_content[-MAX_USER_DIARY_PAGE_CHARS:]
         truncated = True
 
     mysql_connection.run_sync(
         mysql_connection.execute(
             """
-            INSERT INTO ai_user_diary (user_id, content)
-            VALUES (%s, %s)
+            INSERT INTO ai_user_diary_pages (user_id, page_no, content)
+            VALUES (%s, %s, %s)
             ON DUPLICATE KEY UPDATE content = VALUES(content), updated_at = CURRENT_TIMESTAMP
             """,
-            (user_id, merged_content),
+            (user_id, page_value, merged_content),
         )
     )
 
     total_lines = len(merged_content.splitlines())
+    updated_total_pages = max(max_page, page_value)
     response = {
         "user_id": user_id,
         "action": action_value,
+        "page": page_value,
+        "total_pages": updated_total_pages,
         "total_lines": total_lines,
         "length": len(merged_content),
         "truncated": truncated,
     }
     if truncated:
         warnings.append(
-            f"Diary exceeded {MAX_USER_DIARY_CHARS} chars, truncated oldest content"
+            f"Diary exceeded {MAX_USER_DIARY_PAGE_CHARS} chars, truncated oldest content"
         )
     if warnings:
         response["warning"] = "; ".join(warnings)

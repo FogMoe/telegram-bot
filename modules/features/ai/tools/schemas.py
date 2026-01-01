@@ -257,7 +257,7 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
                 "Read or update the internal diary for the current user. "
                 "Actions: read (optionally by line range), append, overwrite, patch (replace line range). "
                 "Use patch with start_line/end_line to replace lines; append adds content at the end. "
-                "Diary is truncated to the most recent 10000 characters when exceeding the limit."
+                "Up to 100 pages (1-based). Max 10,000 chars per page (older content truncated). Use the page parameter to select the page."
             ),
             "parameters": {
                 "type": "object",
@@ -266,6 +266,13 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
                         "type": "string",
                         "description": "read | append | overwrite | patch",
                         "default": "read",
+                    },
+                    "page": {
+                        "type": "integer",
+                        "description": "Diary page number (1-100)",
+                        "default": 1,
+                        "minimum": 1,
+                        "maximum": 100,
                     },
                     "content": {
                         "type": "string",

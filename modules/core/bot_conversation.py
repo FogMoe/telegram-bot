@@ -302,7 +302,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             personal_info_display = personal_info_display[:500]
 
     diary_row = await mysql_connection.fetch_one(
-        "SELECT 1 FROM ai_user_diary WHERE user_id = %s AND content != '' LIMIT 1",
+        "SELECT 1 FROM ai_user_diary_pages WHERE user_id = %s AND content != '' LIMIT 1",
         (user_id,),
     )
     diary_exists = bool(diary_row)
