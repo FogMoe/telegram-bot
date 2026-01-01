@@ -145,6 +145,7 @@ def _format_xml_message(
     reply_text: str | None = None,
     media_type: str | None = None,
     media_description: str | None = None,
+    media_emoji: str | None = None,
 ) -> str:
     attrs = [
         ("type", chat_type),
@@ -168,7 +169,13 @@ def _format_xml_message(
             f"  <reply{reply_attr}>{_xml_escape(reply_text or '')}</reply>"
         )
     if media_type:
-        lines.append(f'  <media type="{_xml_escape(media_type)}">')
+        media_attrs = [("type", media_type)]
+        if media_emoji:
+            media_attrs.append(("emoji", media_emoji))
+        media_attr_text = " ".join(
+            f'{key}="{_xml_escape(value)}"' for key, value in media_attrs if value
+        )
+        lines.append(f"  <media {media_attr_text}>")
         if media_description:
             lines.append(
                 f"    <description>{_xml_escape(media_description)}</description>"
@@ -425,9 +432,11 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if effective_message.photo:
                 media_type = "photo"
                 file = await effective_message.photo[-1].get_file()
+                media_emoji = None
             else:
                 media_type = "sticker"
                 file = await effective_message.sticker.get_file()
+                media_emoji = getattr(effective_message.sticker, "emoji", None)
 
             # 检查是否有文本说明
             caption = effective_message.caption if effective_message.caption else ""
@@ -458,6 +467,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 message_text=message_text,
                 media_type=media_type,
                 media_description=image_description,
+                media_emoji=media_emoji,
             )
 
         except Exception as e:
