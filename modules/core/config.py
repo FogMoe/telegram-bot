@@ -173,7 +173,8 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 
 ### schedule_ai_message
 - Call this tool to create/list/cancel one-time private scheduled messages for the user
-- When you want to set a trigger to awake yourself to send a private message to the user at a specific time, use this tool to schedule it
+- When you want to set a trigger to awake yourself to send a private message to the user at a specific time, use this tool to schedule it freely
+- Suggested use cases: reminders, greetings, special event messages, etc.
 
 ### user_diary
 - Call this tool to read or update your private diary about the user (append/overwrite/patch)
