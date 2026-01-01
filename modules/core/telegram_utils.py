@@ -47,37 +47,35 @@ def _split_text_segments(text: str, limit: int = TELEGRAM_MAX_MESSAGE_LENGTH) ->
 
 
 def split_ai_reply(text: str) -> list[str]:
-    if not text or "\n" not in text:
+    if not text or "\n\n" not in text:
         return [text]
 
     segments: list[str] = []
     in_code_block = False
-    code_buffer: list[str] = []
+    current: list[str] = []
 
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("```"):
-            if in_code_block:
-                code_buffer.append(line)
-                segments.append("\n".join(code_buffer))
-                code_buffer = []
-                in_code_block = False
-            else:
-                in_code_block = True
-                code_buffer = [line]
+            in_code_block = not in_code_block
+            current.append(line)
             continue
 
         if in_code_block:
-            code_buffer.append(line)
+            current.append(line)
             continue
 
-        if stripped:
-            segments.append(line)
+        if not stripped:
+            if current:
+                segments.append("\n".join(current).strip())
+                current = []
+            continue
+        current.append(line)
 
-    if code_buffer:
-        segments.append("\n".join(code_buffer))
+    if current:
+        segments.append("\n".join(current).strip())
 
-    return segments or [text]
+    return [segment for segment in segments if segment] or [text]
 
 
 async def safe_send_markdown(
