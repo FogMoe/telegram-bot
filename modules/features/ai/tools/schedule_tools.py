@@ -50,7 +50,7 @@ async def _create_or_replace_schedule(
     run_at: datetime,
     trigger_reason: str,
     context_text: Optional[str],
-    prompt_text: str,
+    instruction_text: str,
 ) -> tuple[Optional[int], Optional[datetime], bool, Optional[str]]:
     replaced = False
     blocked_reason: Optional[str] = None
@@ -87,7 +87,7 @@ async def _create_or_replace_schedule(
                     "status = 'pending', created_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP(), "
                     "executed_at = NULL, error = NULL "
                     "WHERE id = %s",
-                    (run_at, trigger_reason, context_text, prompt_text, schedule_id),
+                    (run_at, trigger_reason, context_text, instruction_text, schedule_id),
                 )
                 replaced = True
             else:
@@ -98,7 +98,7 @@ async def _create_or_replace_schedule(
             await connection.exec_driver_sql(
                 "INSERT INTO ai_schedules (user_id, run_at, trigger_reason, context, prompt) "
                 "VALUES (%s, %s, %s, %s, %s)",
-                (user_id, run_at, trigger_reason, context_text, prompt_text),
+                (user_id, run_at, trigger_reason, context_text, instruction_text),
             )
             row = await mysql_connection.fetch_one(
                 "SELECT LAST_INSERT_ID()",
@@ -124,7 +124,7 @@ def schedule_ai_message_tool(
     timestamp_utc: Optional[str] = None,
     trigger_reason: Optional[str] = None,
     context: Optional[str] = None,
-    prompt: Optional[str] = None,
+    instruction: Optional[str] = None,
     schedule_id: Optional[int] = None,
     **kwargs,
 ) -> dict:
@@ -146,7 +146,7 @@ def schedule_ai_message_tool(
     warnings: list[str] = []
 
     if action_value == "list":
-        if any([timestamp_utc, trigger_reason, context, prompt, schedule_id]):
+        if any([timestamp_utc, trigger_reason, context, instruction, schedule_id]):
             warnings.append("extra fields ignored for list action")
 
         rows = mysql_connection.run_sync(
@@ -168,7 +168,7 @@ def schedule_ai_message_tool(
                 status,
                 reason,
                 context_text,
-                prompt_text,
+                instruction_text,
                 error_text,
             ) = row
             if status == "pending":
@@ -180,7 +180,7 @@ def schedule_ai_message_tool(
                 "status": status,
                 "trigger_reason": reason,
                 "context": context_text,
-                "prompt": prompt_text,
+                "instruction": instruction_text,
             }
             if executed_at:
                 task["executed_at"] = _format_timestamp_utc(executed_at)
@@ -206,7 +206,7 @@ def schedule_ai_message_tool(
         except (TypeError, ValueError):
             return {"user_id": user_id, "error": "Invalid schedule_id"}
 
-        if any([timestamp_utc, trigger_reason, context, prompt]):
+        if any([timestamp_utc, trigger_reason, context, instruction]):
             warnings.append("extra fields ignored for cancel action")
 
         rowcount = mysql_connection.run_sync(
@@ -234,8 +234,9 @@ def schedule_ai_message_tool(
         return {"user_id": user_id, "error": "Missing timestamp_utc for create action"}
     if not trigger_reason:
         return {"user_id": user_id, "error": "Missing trigger_reason for create action"}
-    if not prompt:
-        return {"user_id": user_id, "error": "Missing prompt for create action"}
+    instruction_value = instruction
+    if not instruction_value:
+        return {"user_id": user_id, "error": "Missing instruction for create action"}
 
     run_at = _parse_timestamp_utc(timestamp_utc)
     if run_at is None:
@@ -247,11 +248,11 @@ def schedule_ai_message_tool(
     if len(trigger_reason_value) > 200:
         return {"user_id": user_id, "error": "trigger_reason exceeds 200 characters"}
 
-    prompt_value = str(prompt).strip()
-    if not prompt_value:
-        return {"user_id": user_id, "error": "Empty prompt is not allowed"}
-    if len(prompt_value) > 2000:
-        return {"user_id": user_id, "error": "prompt exceeds 2000 characters"}
+    instruction_value = str(instruction_value).strip()
+    if not instruction_value:
+        return {"user_id": user_id, "error": "Empty instruction is not allowed"}
+    if len(instruction_value) > 2000:
+        return {"user_id": user_id, "error": "instruction exceeds 2000 characters"}
 
     context_value = None
     if context is not None:
@@ -267,7 +268,7 @@ def schedule_ai_message_tool(
             run_at,
             trigger_reason_value,
             context_value,
-            prompt_value,
+            instruction_value,
         )
     )
     if schedule_id is None:
@@ -294,6 +295,7 @@ def schedule_ai_message_tool(
         "created_at": _format_timestamp_utc(created_at),
         "trigger_reason": trigger_reason_value,
         "replaced_oldest": replaced,
+        "instruction": instruction_value,
     }
     if context_value:
         response["context"] = context_value

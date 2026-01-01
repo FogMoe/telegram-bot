@@ -235,9 +235,9 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
                         "description": "Optional background/context for the scheduled message",
                         "maxLength": 1000,
                     },
-                    "prompt": {
+                    "instruction": {
                         "type": "string",
-                        "description": "Remind to yourself, what you should say/do to the user at runtime",
+                        "description": "Instruction for what you should say/do to the user at runtime",
                         "maxLength": 2000,
                     },
                     "schedule_id": {

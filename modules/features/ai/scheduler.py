@@ -36,7 +36,7 @@ def _format_scheduled_message(
     scheduled_for: Optional[datetime],
     trigger_reason: str,
     context_text: Optional[str],
-    prompt: str,
+    instruction: str,
 ) -> str:
     attrs = [
         ("type", "private"),
@@ -56,7 +56,7 @@ def _format_scheduled_message(
     lines.append(f"  <trigger>{xml_escape(trigger_reason)}</trigger>")
     if context_text:
         lines.append(f"  <context>{xml_escape(context_text)}</context>")
-    lines.append(f"  <prompt>{xml_escape(prompt)}</prompt>")
+    lines.append(f"  <instruction>{xml_escape(instruction)}</instruction>")
     lines.append("</metadata>")
     return "\n".join(lines)
 
@@ -238,13 +238,13 @@ async def _process_schedule_task(
     task_row: tuple,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    schedule_id, user_id, run_at, created_at, trigger_reason, context_text, prompt = task_row
+    schedule_id, user_id, run_at, created_at, trigger_reason, context_text, instruction = task_row
     if isinstance(trigger_reason, bytes):
         trigger_reason = trigger_reason.decode("utf-8", errors="ignore")
     if isinstance(context_text, bytes):
         context_text = context_text.decode("utf-8", errors="ignore")
-    if isinstance(prompt, bytes):
-        prompt = prompt.decode("utf-8", errors="ignore")
+    if isinstance(instruction, bytes):
+        instruction = instruction.decode("utf-8", errors="ignore")
 
     try:
         user_state_prompt = await _build_user_state_prompt(user_id)
@@ -263,7 +263,7 @@ async def _process_schedule_task(
             scheduled_for=run_at,
             trigger_reason=trigger_reason or "",
             context_text=context_text or "",
-            prompt=prompt or "",
+            instruction=instruction or "",
         )
 
         snapshot_created, _, archived_records = await mysql_connection.async_insert_chat_record(
