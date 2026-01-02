@@ -208,12 +208,23 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message_time = effective_message.date.strftime('%Y-%m-%d %H:%M:%S') if effective_message.date else time.strftime('%Y-%m-%d %H:%M:%S')
     conversation_id = user_id
 
-    history_warning_levels_sent = set()
+    pending_history_warning = None
+
+    def remember_history_warning(level):
+        nonlocal pending_history_warning
+        if not level:
+            return
+        if pending_history_warning == "overflow":
+            return
+        if level == "overflow":
+            pending_history_warning = "overflow"
+            return
+        if pending_history_warning is None:
+            pending_history_warning = level
 
     async def notify_history_warning(level):
-        if not level or level in history_warning_levels_sent:
+        if not level:
             return
-        history_warning_levels_sent.add(level)
         if level == "near_limit":
             warning_text = (
                 "提醒：当前会话历史记录已接近系统容量上限。雾萌娘可能会在稍后自动压缩较早的消息以保持体验顺畅。"
@@ -428,7 +439,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             logger=logger,
         )
     if user_storage_warning:
-        await notify_history_warning(user_storage_warning)
+        remember_history_warning(user_storage_warning)
     await handle_overflow_summary(user_storage_warning)
     if user_snapshot_created and user_storage_warning != "overflow":
         summary.schedule_summary_generation(conversation_id)
@@ -522,7 +533,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 logger=logger,
             )
         if tool_storage_warning:
-            await notify_history_warning(tool_storage_warning)
+            remember_history_warning(tool_storage_warning)
         await handle_overflow_summary(tool_storage_warning)
         if tool_snapshot_created and tool_storage_warning != "overflow":
             summary.schedule_summary_generation(conversation_id)
@@ -541,10 +552,13 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             logger=logger,
         )
     if assistant_storage_warning:
-        await notify_history_warning(assistant_storage_warning)
+        remember_history_warning(assistant_storage_warning)
     await handle_overflow_summary(assistant_storage_warning)
     if assistant_snapshot_created and assistant_storage_warning != "overflow":
         summary.schedule_summary_generation(conversation_id)
+
+    if pending_history_warning:
+        await notify_history_warning(pending_history_warning)
 
     # 发送AI回复
     sent_messages = []

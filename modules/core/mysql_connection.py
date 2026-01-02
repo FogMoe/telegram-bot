@@ -125,6 +125,7 @@ async def insert_chat_record(
     snapshot_created = False
     warning_level = None
     archived_records: list[dict] = []
+    near_limit_inserted = False
 
     def _is_history_state_event(message: object) -> bool:
         if not isinstance(message, dict):
@@ -279,7 +280,7 @@ async def insert_chat_record(
         kept_indices: list[int] | None = None
         if overflow:
             warning_level = "overflow"
-        elif token_count > config.CHAT_TOKEN_WARN_LIMIT:
+        elif role == "user" and token_count > config.CHAT_TOKEN_WARN_LIMIT:
             warning_level = "near_limit"
 
         event_state = None
@@ -307,6 +308,11 @@ async def insert_chat_record(
                 event_message = _build_history_state_event(event_state)
                 insert_at = target_index if event_state == "new_session" else target_index + 1
                 messages_with_new.insert(insert_at, event_message)
+                if event_state == "near_limit":
+                    near_limit_inserted = True
+
+        if warning_level == "near_limit" and not near_limit_inserted:
+            warning_level = None
 
         if overflow:
             trimmed_messages, kept_indices = _trim_messages_with_tool_context(messages_with_new)
