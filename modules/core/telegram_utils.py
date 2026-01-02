@@ -137,7 +137,7 @@ async def safe_send_markdown(
                 info = _bad_request_info(exc)
 
                 if info["empty_text"]:
-                    payload = "雾萌娘没看到这条消息，请再发一次吧。"
+                    payload = "雾萌娘不想回复你的这条消息。"
                     continue
 
                 if (
