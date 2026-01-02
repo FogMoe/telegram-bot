@@ -307,7 +307,6 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         user_coins = max(user_coins - coin_cost, 0)
 
-    user_affection = await process_user.async_get_user_affection(user_id)
     user_impression_raw = await process_user.async_get_user_impression(user_id)
     impression_display = (user_impression_raw or "").strip()
     if impression_display:
@@ -315,7 +314,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if len(impression_display) > 500:
             impression_display = impression_display[:497] + "..."
     else:
-        impression_display = "未记录"
+        impression_display = "Not recorded"
 
     personal_info_display = (user_info_raw or "").strip()
     if personal_info_display:
@@ -331,7 +330,6 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_state_prompt = format_user_state_prompt(
         user_coins=user_coins,
         user_permission=user_permission,
-        user_affection=user_affection,
         impression=impression_display,
         personal_info=personal_info_display,
         diary_exists=diary_exists,

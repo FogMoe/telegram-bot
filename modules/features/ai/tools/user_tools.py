@@ -7,6 +7,8 @@ from core import mysql_connection, process_user
 
 from .context import get_tool_request_context
 
+AFFECTION_TOOL_ENABLED = False
+
 
 def _get_user_by_id(user_id: int) -> Optional[Dict[str, object]]:
     row = mysql_connection.run_sync(
@@ -109,6 +111,9 @@ def kindness_gift_tool(
 
 def update_affection_tool(delta: int, **kwargs) -> dict:
     """Adjust the AI's affection towards the current user."""
+    if not AFFECTION_TOOL_ENABLED:
+        return {"error": "Affection tool is temporarily disabled"}
+
     context = get_tool_request_context()
     user_id = context.get("user_id")
     if not user_id:
@@ -181,6 +186,5 @@ def update_impression_tool(impression: str, **kwargs) -> dict:
 
 __all__ = [
     "kindness_gift_tool",
-    "update_affection_tool",
     "update_impression_tool",
 ]

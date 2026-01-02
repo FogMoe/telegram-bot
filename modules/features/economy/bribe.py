@@ -10,6 +10,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from core import mysql_connection, process_user
 from core.command_cooldown import cooldown
 
+BRIBE_COMMAND_ENABLED = False  # 暂时禁用 /bribe 命令
+
 
 async def _reply(update: Update, text: str) -> None:
     if update.message:
@@ -103,4 +105,6 @@ async def bribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 def setup_bribe_command(application: Application) -> None:
+    if not BRIBE_COMMAND_ENABLED:
+        return
     application.add_handler(CommandHandler("bribe", bribe_command))

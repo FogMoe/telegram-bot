@@ -11,7 +11,6 @@ from .tools import (
     kindness_gift_tool,
     schedule_ai_message_tool,
     set_tool_request_context,
-    update_affection_tool,
     update_impression_tool,
     user_diary_tool,
 )
@@ -24,7 +23,6 @@ __all__ = [
     "fetch_url_tool",
     "execute_python_code_tool",
     "kindness_gift_tool",
-    "update_affection_tool",
     "update_impression_tool",
     "fetch_permanent_summaries_tool",
     "search_permanent_records_tool",

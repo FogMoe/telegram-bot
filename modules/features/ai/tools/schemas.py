@@ -92,7 +92,7 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
         "type": "function",
         "function": {
             "name": "kindness_gift",
-            "description": "Gift a certain amount of coins to the user based on your affection level towards them",
+            "description": "Gift a certain amount of coins to the user",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -103,28 +103,6 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
                         "maximum": 10,
                     }
                 },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "update_affection",
-            "description": "Adjust your affection level towards the user (range: -100 to 100)",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "delta": {
-                        "type": "integer",
-                        "description": (
-                            "Affection level change value. Positive numbers indicate increase, "
-                            "negative numbers indicate decrease"
-                        ),
-                        "minimum": -10,
-                        "maximum": 10,
-                    }
-                },
-                "required": ["delta"],
             },
         },
     },

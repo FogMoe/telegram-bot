@@ -38,7 +38,6 @@ def format_user_state_prompt(
     *,
     user_coins: int,
     user_permission: int,
-    user_affection: int,
     impression: str,
     personal_info: str = "",
     diary_exists: bool = False,
@@ -53,7 +52,6 @@ def format_user_state_prompt(
         ("coins", str(user_coins)),
         ("permission", str(user_permission)),
         ("permission_label", permission_label),
-        ("affection", str(user_affection)),
         ("diary_exists", "true" if diary_exists else "false"),
     ]
     attr_text = " ".join(
