@@ -109,6 +109,37 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
     {
         "type": "function",
         "function": {
+            "name": "channel_tool",
+            "description": "操作用户绑定的频道（读取、发布、编辑、删除）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "操作类型：read/post/edit/delete",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "发布或编辑时的文本内容",
+                    },
+                    "message_id": {
+                        "type": "integer",
+                        "description": "编辑或删除时的频道消息 ID",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "读取时的条数，默认 10，最多 50",
+                        "minimum": 1,
+                        "maximum": 50,
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "update_impression",
             "description": "Update permanent impression of the user",
             "parameters": {

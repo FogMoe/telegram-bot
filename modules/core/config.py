@@ -109,6 +109,7 @@ HELP_TEXT = (
         "/stake - 质押经济系统\n"
         "/swap - 兑换$FOGMOE代币\n"
         "/charge - 使用卡密充值金币\n"
+        "/channel - 绑定或解绑频道\n"
         "/webpassword - 设置Web登录密码\n\n"
         "***娱乐相关：***\n"
         "/omikuji - 抽取御神签预测运势\n"
@@ -151,6 +152,10 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 
 ### fetch_group_context
 - MUST call this tool to obtain more context when the user's message is in a group chat
+
+### channel_tool
+- 读取、发布、编辑或删除用户绑定的频道消息
+- 仅对已通过 /channel bind 绑定的频道生效
 
 ### update_impression
 - Call this tool when you need to update your impression of the user

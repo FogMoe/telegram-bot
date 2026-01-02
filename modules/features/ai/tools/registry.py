@@ -11,6 +11,7 @@ from .memory_tools import (
 )
 from .schedule_tools import schedule_ai_message_tool
 from .schemas import OPENAI_TOOLS
+from .channel_tools import channel_tool
 from .user_tools import kindness_gift_tool, update_impression_tool
 
 AI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
@@ -18,6 +19,7 @@ AI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
     "google_search": google_search_tool,
     "fetch_group_context": fetch_group_context_tool,
     "kindness_gift": kindness_gift_tool,
+    "channel_tool": channel_tool,
     "fetch_url": fetch_url_tool,
     "execute_python_code": execute_python_code_tool,
     "update_impression": update_impression_tool,

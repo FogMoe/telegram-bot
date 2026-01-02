@@ -29,6 +29,7 @@ from core.bot_conversation import post_init, reply
 from core.bot_monitoring import start_monitor, stop_monitor
 from features.admin import developer
 from features.ai import scheduler
+from features.channel import channel_manager
 from features.crypto import chart, crypto_predict, swap_fogmoe_solana_token
 from features.economy import (
     bribe,
@@ -85,7 +86,14 @@ def register_handlers(application) -> None:
     application.add_handler(setmyinfo_handler)
     give_handler = CommandHandler("give", give_command)
     application.add_handler(give_handler)
+    channel_handler = CommandHandler("channel", channel_manager.channel_command)
+    application.add_handler(channel_handler)
     bribe.setup_bribe_command(application)
+    channel_post_handler = MessageHandler(
+        filters.UpdateType.CHANNEL_POST | filters.UpdateType.EDITED_CHANNEL_POST,
+        channel_manager.channel_post_handler,
+    )
+    application.add_handler(channel_post_handler)
 
     # 添加监控命令
     application.add_handler(CommandHandler("start_test_monitor", start_monitor))
