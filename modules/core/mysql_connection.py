@@ -139,9 +139,9 @@ async def insert_chat_record(
     def _trim_messages_with_tool_context(
         messages: list[dict],
         keep_non_tool: int = 10,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], list[int]]:
         if not messages:
-            return []
+            return [], []
 
         non_tool_indices: list[int] = []
         for idx, msg in enumerate(messages):
@@ -153,7 +153,8 @@ async def insert_chat_record(
             if msg.get("role") != "tool":
                 non_tool_indices.append(idx)
         if len(non_tool_indices) <= keep_non_tool:
-            return list(messages)
+            indices = list(range(len(messages)))
+            return list(messages), indices
 
         start_idx = non_tool_indices[-keep_non_tool]
         trimmed = messages[start_idx:]
@@ -187,10 +188,11 @@ async def insert_chat_record(
                     required_indices.add(call_idx)
 
         if not required_indices:
-            return trimmed
+            indices = list(range(start_idx, len(messages)))
+            return trimmed, indices
 
         indices = sorted(set(range(start_idx, len(messages))) | required_indices)
-        return [messages[i] for i in indices]
+        return [messages[i] for i in indices], indices
 
     def _build_history_state_event(
         state: str,
@@ -275,35 +277,15 @@ async def insert_chat_record(
             system_prompt_extra=system_prompt_extra,
         )
         overflow = token_count > config.CHAT_TOKEN_LIMIT
-        latest_summary = None
+        trimmed_messages: list[dict] | None = None
+        kept_indices: list[int] | None = None
         if overflow:
-            snapshot_value = json.dumps(messages_with_new, ensure_ascii=False)
-            if snapshot_value:
-                await connection.exec_driver_sql(
-                    "INSERT INTO permanent_chat_records (user_id, conversation_snapshot) VALUES (%s, %s)",
-                    (conversation_id, snapshot_value),
-                )
-                archived_records = await prune_permanent_records(
-                    conversation_id,
-                    connection=connection,
-                )
-                snapshot_created = True
             warning_level = "overflow"
-            summary_row = await fetch_one(
-                "SELECT summary FROM permanent_chat_records "
-                "WHERE user_id = %s AND summary IS NOT NULL AND summary != '' "
-                "ORDER BY created_at DESC, id DESC LIMIT 1",
-                (conversation_id,),
-                connection=connection,
-            )
-            if summary_row and summary_row[0]:
-                latest_summary = summary_row[0]
-                if isinstance(latest_summary, bytes):
-                    latest_summary = latest_summary.decode("utf-8")
         elif token_count > config.CHAT_TOKEN_WARN_LIMIT:
             warning_level = "near_limit"
 
         event_state = None
+        compressed_event: dict | None = None
         if warning_level == "overflow":
             event_state = "compressed"
         elif role == "user":
@@ -312,22 +294,49 @@ async def insert_chat_record(
             elif is_new_session:
                 event_state = "new_session"
 
-        if event_state:
+        if event_state in {"near_limit", "new_session"}:
             last_event_state = _last_history_state_event(messages_with_new)
             if last_event_state == event_state:
                 event_state = None
 
+        if event_state == "compressed":
+            compressed_event = _build_history_state_event(event_state)
+            event_state = None
+
         if event_state:
             target_index = _find_last_user_message_index(messages_with_new)
             if target_index is not None:
-                event_message = _build_history_state_event(
-                    event_state,
-                    summary_text=latest_summary if warning_level == "overflow" else None,
-                )
+                event_message = _build_history_state_event(event_state)
                 messages_with_new.insert(target_index + 1, event_message)
 
         if overflow:
-            messages = _trim_messages_with_tool_context(messages_with_new)
+            trimmed_messages, kept_indices = _trim_messages_with_tool_context(messages_with_new)
+            trimmed_messages = [
+                msg for msg in trimmed_messages if not _is_history_state_event(msg)
+            ]
+            if compressed_event:
+                trimmed_messages.insert(0, compressed_event)
+            kept_set = set(kept_indices)
+            archived_messages = [
+                messages_with_new[idx]
+                for idx in range(len(messages_with_new))
+                if idx not in kept_set
+            ]
+            snapshot_value = json.dumps(archived_messages, ensure_ascii=False)
+            await connection.exec_driver_sql(
+                "INSERT INTO permanent_chat_records (user_id, conversation_snapshot) VALUES (%s, %s)",
+                (conversation_id, snapshot_value),
+            )
+            archived_records = await prune_permanent_records(
+                conversation_id,
+                connection=connection,
+            )
+            snapshot_created = True
+
+        if overflow:
+            if trimmed_messages is None:
+                trimmed_messages, _ = _trim_messages_with_tool_context(messages_with_new)
+            messages = trimmed_messages
         else:
             messages = messages_with_new
 
@@ -386,6 +395,67 @@ async def get_chat_history(conversation_id):
 
 async def async_get_chat_history(conversation_id):
     return await get_chat_history(conversation_id)
+
+
+async def async_update_latest_history_state_summary(
+    conversation_id: int,
+    summary_text: str,
+) -> bool:
+    if not summary_text:
+        return False
+
+    row = await fetch_one(
+        "SELECT messages FROM chat_records WHERE conversation_id = %s",
+        (conversation_id,),
+    )
+    if not row or not row[0]:
+        return False
+
+    raw_messages = row[0]
+    if isinstance(raw_messages, bytes):
+        raw_messages = raw_messages.decode("utf-8")
+    try:
+        messages = json.loads(raw_messages)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+    if not isinstance(messages, list):
+        return False
+
+    updated = False
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "system":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        if 'origin="history_state"' not in content:
+            continue
+        if 'history_state="compressed"' not in content:
+            continue
+        if "<summary>" in content:
+            break
+        end_tag = "</metadata>"
+        insert_idx = content.find(end_tag)
+        if insert_idx == -1:
+            break
+        summary_line = f"  <summary>{xml_escape(summary_text)}</summary>\n"
+        msg["content"] = f"{content[:insert_idx]}{summary_line}{content[insert_idx:]}"
+        messages[idx] = msg
+        updated = True
+        break
+
+    if not updated:
+        return False
+
+    await execute(
+        "UPDATE chat_records SET messages = %s WHERE conversation_id = %s",
+        (json.dumps(messages, ensure_ascii=False), conversation_id),
+    )
+    return True
 
 
 async def check_user_exists(user_id: int) -> bool:

@@ -1,5 +1,6 @@
 """Background conversation summarization using OpenAI-compatible providers."""
 
+import asyncio
 import json
 import logging
 import re
@@ -31,19 +32,41 @@ def schedule_summary_generation(user_id: int) -> None:
     _SUMMARY_EXECUTOR.submit(_process_summary_for_user, user_id)
 
 
+def _generate_and_store_summary(user_id: int) -> Optional[str]:
+    record = _fetch_pending_snapshot(user_id)
+    if not record:
+        return None
+
+    record_id, snapshot_text = record
+    summary_text = _generate_summary(user_id, snapshot_text)
+    if summary_text is None:
+        logging.warning("Conversation summary generation failed for user %s after retries.", user_id)
+        return None
+
+    _store_summary(record_id, summary_text)
+    return summary_text
+
+
+async def generate_summary_immediately(user_id: int) -> Optional[str]:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _SUMMARY_EXECUTOR,
+        _generate_and_store_summary,
+        user_id,
+    )
+
+
 def _process_summary_for_user(user_id: int) -> None:
     try:
-        record = _fetch_pending_snapshot(user_id)
-        if not record:
-            return
-
-        record_id, snapshot_text = record
-        summary_text = _generate_summary(user_id, snapshot_text)
+        summary_text = _generate_and_store_summary(user_id)
         if summary_text is None:
-            logging.warning("Conversation summary generation failed for user %s after retries.", user_id)
             return
-
-        _store_summary(record_id, summary_text)
+        mysql_connection.run_sync(
+            mysql_connection.async_update_latest_history_state_summary(
+                user_id,
+                summary_text,
+            )
+        )
     except Exception as exc:  # pragma: no cover - defensive logging
         logging.exception("Unexpected error while processing summary for user %s: %s", user_id, exc)
 

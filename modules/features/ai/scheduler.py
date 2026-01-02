@@ -102,6 +102,19 @@ async def _build_user_state_prompt(user_id: int) -> Optional[str]:
     )
 
 
+async def _handle_overflow_summary(conversation_id: int, level: Optional[str]) -> None:
+    if level != "overflow":
+        return
+    summary_text = await summary.generate_summary_immediately(conversation_id)
+    if summary_text:
+        await mysql_connection.async_update_latest_history_state_summary(
+            conversation_id,
+            summary_text,
+        )
+    else:
+        summary.schedule_summary_generation(conversation_id)
+
+
 async def _mark_schedule_status(
     schedule_id: int,
     status: str,
@@ -170,7 +183,7 @@ async def _persist_tool_logs(
                 ],
             }
 
-            snapshot_created, _, archived_records = await mysql_connection.async_insert_chat_record(
+            snapshot_created, warning_level, archived_records = await mysql_connection.async_insert_chat_record(
                 conversation_id,
                 "assistant",
                 assistant_call_message,
@@ -191,7 +204,7 @@ async def _persist_tool_logs(
                 "content": tool_result_str,
             }
 
-            snapshot_created, _, archived_records = await mysql_connection.async_insert_chat_record(
+            snapshot_created, warning_level, archived_records = await mysql_connection.async_insert_chat_record(
                 conversation_id,
                 "tool",
                 tool_message,
@@ -204,7 +217,8 @@ async def _persist_tool_logs(
                 archived_records,
                 logger=logger,
             )
-        if snapshot_created:
+        await _handle_overflow_summary(conversation_id, warning_level)
+        if snapshot_created and warning_level != "overflow":
             summary.schedule_summary_generation(conversation_id)
 
 
@@ -264,7 +278,7 @@ async def _process_schedule_task(
             instruction=instruction or "",
         )
 
-        snapshot_created, _, archived_records = await mysql_connection.async_insert_chat_record(
+        snapshot_created, warning_level, archived_records = await mysql_connection.async_insert_chat_record(
             user_id,
             "user",
             scheduled_message,
@@ -277,7 +291,8 @@ async def _process_schedule_task(
                 archived_records,
                 logger=logger,
             )
-        if snapshot_created:
+        await _handle_overflow_summary(user_id, warning_level)
+        if snapshot_created and warning_level != "overflow":
             summary.schedule_summary_generation(user_id)
 
         chat_history = await mysql_connection.async_get_chat_history(user_id)
@@ -306,7 +321,7 @@ async def _process_schedule_task(
         if not assistant_message or not str(assistant_message).strip():
             raise RuntimeError("empty assistant response")
 
-        snapshot_created, _, archived_records = await mysql_connection.async_insert_chat_record(
+        snapshot_created, warning_level, archived_records = await mysql_connection.async_insert_chat_record(
             user_id,
             "assistant",
             assistant_message,
@@ -318,7 +333,8 @@ async def _process_schedule_task(
                 archived_records,
                 logger=logger,
             )
-        if snapshot_created:
+        await _handle_overflow_summary(user_id, warning_level)
+        if snapshot_created and warning_level != "overflow":
             summary.schedule_summary_generation(user_id)
 
         send_func = partial_send(context.bot.send_message, user_id)

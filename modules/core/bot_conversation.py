@@ -234,6 +234,18 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             logger=logger,
         )
 
+    async def handle_overflow_summary(level: str | None) -> None:
+        if level != "overflow":
+            return
+        summary_text = await summary.generate_summary_immediately(conversation_id)
+        if summary_text:
+            await mysql_connection.async_update_latest_history_state_summary(
+                conversation_id,
+                summary_text,
+            )
+        else:
+            summary.schedule_summary_generation(conversation_id)
+
     # 如果是媒体消息（图片或贴纸），固定硬币消耗3
     if effective_message.photo or effective_message.sticker:
         coin_cost = 3
@@ -417,7 +429,8 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
     if user_storage_warning:
         await notify_history_warning(user_storage_warning)
-    if user_snapshot_created:
+    await handle_overflow_summary(user_storage_warning)
+    if user_snapshot_created and user_storage_warning != "overflow":
         summary.schedule_summary_generation(conversation_id)
 
     # 立即获取最新历史记录，以便AI能看到刚刚插入的消息
@@ -510,7 +523,8 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
         if tool_storage_warning:
             await notify_history_warning(tool_storage_warning)
-        if tool_snapshot_created:
+        await handle_overflow_summary(tool_storage_warning)
+        if tool_snapshot_created and tool_storage_warning != "overflow":
             summary.schedule_summary_generation(conversation_id)
 
     # 异步插入AI回复到聊天记录
@@ -528,7 +542,8 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
     if assistant_storage_warning:
         await notify_history_warning(assistant_storage_warning)
-    if assistant_snapshot_created:
+    await handle_overflow_summary(assistant_storage_warning)
+    if assistant_snapshot_created and assistant_storage_warning != "overflow":
         summary.schedule_summary_generation(conversation_id)
 
     # 发送AI回复
