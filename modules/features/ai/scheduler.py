@@ -39,9 +39,8 @@ def _format_scheduled_message(
     instruction: str,
 ) -> str:
     attrs = [
-        ("type", "private"),
+        ("type", "scheduler"),
         ("timestamp", _format_timestamp(timestamp)),
-        ("user", "@scheduler"),
         ("origin", "scheduled_task"),
     ]
     if scheduled_at:

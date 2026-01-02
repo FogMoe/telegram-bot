@@ -146,6 +146,8 @@ def _format_history_for_summary(snapshot_text: str) -> str:
             continue
         role = message.get("role")
         content = message.get("content") or ""
+        if isinstance(content, str) and 'origin="history_state"' in content:
+            continue
 
         if role == "user":
             if content:
@@ -201,11 +203,6 @@ def _format_history_for_summary(snapshot_text: str) -> str:
             tool_content = message.get("content") or ""
             lines.append(f"TOOL_RETURN[{tool_name}]: {tool_content}")
             continue
-
-        if role == "system":
-            content_str = content if isinstance(content, str) else ""
-            if 'origin="history_state"' in content_str:
-                continue
 
         if content:
             lines.append(f"{role or 'MESSAGE'}: {content}")

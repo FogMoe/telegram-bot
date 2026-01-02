@@ -129,8 +129,6 @@ async def insert_chat_record(
     def _is_history_state_event(message: object) -> bool:
         if not isinstance(message, dict):
             return False
-        if message.get("role") != "system":
-            return False
         content = message.get("content")
         if not isinstance(content, str):
             return False
@@ -211,7 +209,7 @@ async def insert_chat_record(
             lines.append(f"  <summary>{xml_escape(summary_text)}</summary>")
         lines.append("</metadata>")
         return {
-            "role": "system",
+            "role": "user",
             "content": "\n".join(lines),
         }
 
@@ -307,7 +305,8 @@ async def insert_chat_record(
             target_index = _find_last_user_message_index(messages_with_new)
             if target_index is not None:
                 event_message = _build_history_state_event(event_state)
-                messages_with_new.insert(target_index + 1, event_message)
+                insert_at = target_index if event_state == "new_session" else target_index + 1
+                messages_with_new.insert(insert_at, event_message)
 
         if overflow:
             trimmed_messages, kept_indices = _trim_messages_with_tool_context(messages_with_new)
@@ -426,8 +425,6 @@ async def async_update_latest_history_state_summary(
     for idx in range(len(messages) - 1, -1, -1):
         msg = messages[idx]
         if not isinstance(msg, dict):
-            continue
-        if msg.get("role") != "system":
             continue
         content = msg.get("content")
         if not isinstance(content, str):
