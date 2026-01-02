@@ -30,7 +30,7 @@ async def send_permanent_records_archive(
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     filename = f"permanent_records_archive_{user_id}_{timestamp}.jsonl"
-    caption = "你的永久记忆已超过上限，最旧的记录已打包成JSONL文件发给你。服务器存不下了，请自行保存处理。"
+    caption = "你的永久记忆已超过上限，最旧的记录已打包成JSONL文件发给你。服务器存不下了，请自行保存处理。可以通过 /shop 购买更多永久记忆空间！"
     return await send_document_bytes(
         bot,
         user_id,

@@ -16,6 +16,25 @@ run_sync = db.run_sync
 PERMANENT_RECORDS_KEEP = 100
 
 
+async def _get_user_permanent_records_limit(
+    user_id: int,
+    *,
+    connection,
+) -> int:
+    row = await fetch_one(
+        "SELECT permanent_records_limit FROM user WHERE id = %s",
+        (user_id,),
+        connection=connection,
+    )
+    if not row or row[0] is None:
+        return PERMANENT_RECORDS_KEEP
+    try:
+        value = int(row[0])
+    except (TypeError, ValueError):
+        return PERMANENT_RECORDS_KEEP
+    return max(1, value)
+
+
 async def fetch_one(
     sql: str,
     params: Optional[Iterable[Any]] = None,
@@ -60,8 +79,10 @@ async def prune_permanent_records(
     user_id: int,
     *,
     connection,
-    keep: int = PERMANENT_RECORDS_KEEP,
+    keep: int | None = None,
 ) -> list[dict]:
+    if keep is None:
+        keep = await _get_user_permanent_records_limit(user_id, connection=connection)
     keep = max(1, int(keep))
 
     rows = await fetch_all(

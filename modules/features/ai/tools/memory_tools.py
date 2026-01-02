@@ -155,21 +155,68 @@ def search_permanent_records_tool(
         warning = "Invalid regex pattern, treated as literal string"
         matcher = re.compile(re.escape(pattern), re.IGNORECASE | re.DOTALL)
 
+    total_row = mysql_connection.run_sync(
+        mysql_connection.fetch_one(
+            "SELECT COUNT(*) FROM permanent_chat_records WHERE user_id = %s",
+            (user_id,),
+        )
+    )
+    total_rows = total_row[0] if total_row and total_row[0] is not None else 0
+    if total_rows <= 0:
+        response = {
+            "user_id": user_id,
+            "pattern": pattern,
+            "limit": limit_value,
+            "oldest_first": oldest_first_value,
+            "results": [],
+        }
+        if warning:
+            response["warning"] = warning
+        return response
+
+    max_records = mysql_connection.PERMANENT_RECORDS_KEEP
+    try:
+        limit_row = mysql_connection.run_sync(
+            mysql_connection.fetch_one(
+                "SELECT permanent_records_limit FROM user WHERE id = %s",
+                (user_id,),
+            )
+        )
+    except Exception:
+        limit_row = None
+    if limit_row and limit_row[0] is not None:
+        try:
+            max_records = int(limit_row[0])
+        except (TypeError, ValueError):
+            max_records = mysql_connection.PERMANENT_RECORDS_KEEP
+    max_records = max(1, max_records)
+
+    scan_limit = min(max_records, total_rows)
+
+    order_clause = "ORDER BY created_at ASC, id ASC"
+    if not oldest_first_value:
+        order_clause = "ORDER BY created_at DESC, id DESC"
+
     batch_size = 50
 
-    def _fetch_rows(offset: int) -> list[tuple]:
+    def _fetch_rows(offset: int, size: int) -> list[tuple]:
         return mysql_connection.run_sync(
             mysql_connection.fetch_all(
-                """
+                f"""
                 SELECT id, conversation_snapshot, created_at
                 FROM permanent_chat_records
                 WHERE user_id = %s
-                ORDER BY created_at DESC, id DESC
+                {order_clause}
                 LIMIT %s OFFSET %s
                 """,
-                (user_id, batch_size, offset),
+                (user_id, size, offset),
             )
         )
+
+    def _record_position(offset: int, row_index: int) -> int:
+        if oldest_first_value:
+            return total_rows - (offset + row_index)
+        return offset + row_index + 1
 
     def _scan_rows(rows: list[tuple], results: list[dict], offset: int) -> list[dict]:
         for row_index, row in enumerate(rows):
@@ -226,7 +273,7 @@ def search_permanent_records_tool(
                 ]
                 results.append(
                     {
-                        "record_position": offset + row_index + 1,
+                        "record_position": _record_position(offset, row_index),
                         "created_at": created_at.isoformat(sep=" ") if created_at else None,
                         "match": {"index": idx, **filtered_messages[idx]},
                         "before": before,
@@ -238,21 +285,25 @@ def search_permanent_records_tool(
         return results
 
     results: list[dict] = []
-    first_batch_offset = 0
-    first_batch = _fetch_rows(first_batch_offset)
-    results = _scan_rows(first_batch, results, first_batch_offset)
-
-    if len(results) < limit_value and len(first_batch) == batch_size:
-        second_batch_offset = batch_size
-        second_batch = _fetch_rows(second_batch_offset)
-        results = _scan_rows(second_batch, results, second_batch_offset)
+    offset = 0
+    remaining = scan_limit
+    while remaining > 0 and len(results) < limit_value:
+        fetch_size = min(batch_size, remaining)
+        rows = _fetch_rows(offset, fetch_size)
+        if not rows:
+            break
+        results = _scan_rows(rows, results, offset)
+        if len(rows) < fetch_size:
+            break
+        offset += fetch_size
+        remaining -= fetch_size
 
     response = {
         "user_id": user_id,
         "pattern": pattern,
         "limit": limit_value,
         "oldest_first": oldest_first_value,
-        "results": list(reversed(results)) if oldest_first_value else results,
+        "results": results,
     }
     if warning:
         response["warning"] = warning

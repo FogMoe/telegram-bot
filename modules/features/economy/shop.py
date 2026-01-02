@@ -32,6 +32,7 @@ async def shop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     keyboard = [
         [InlineKeyboardButton("购买权限", callback_data="shop_buy_permission")],
+        [InlineKeyboardButton("购买记忆上限 +1 - 100金币", callback_data="shop_buy_memory_limit")],
         [InlineKeyboardButton("购买彩票", callback_data="shop_buy_lottery")],
         [InlineKeyboardButton("关闭商店", callback_data="shop_close")]
     ]
@@ -41,7 +42,7 @@ async def shop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     处理商城按钮回调：
-    - 一级菜单：显示“购买权限”、“购买彩票”和“关闭商店”按钮。
+    - 一级菜单：显示“购买权限”、“购买记忆上限”、“购买彩票”和“关闭商店”按钮。
     - “购买权限”按钮：进入二级菜单，显示升级权限选项及返回按钮。
     - “购买彩票”按钮：进入二级菜单，显示“购买刮刮乐 - 10金币”、“购买欢乐彩 - 1金币”和“返回”按钮。
     - “购买刮刮乐 - 10金币”按钮：执行刮刮乐购买逻辑。
@@ -79,10 +80,53 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+    elif query.data == "shop_buy_memory_limit":
+        # 购买永久记忆上限 +1
+        async with lock:
+            try:
+                async with mysql_connection.transaction() as connection:
+                    result = await mysql_connection.fetch_one(
+                        "SELECT coins, permanent_records_limit FROM user WHERE id = %s",
+                        (user_id,),
+                        connection=connection,
+                    )
+                    if not result:
+                        await query.answer("请先使用 /me 命令获取个人信息。", show_alert=True)
+                        return
+
+                    user_coins, current_limit = result
+                    if user_coins < 100:
+                        await query.answer("硬币不足，无法购买此商品。", show_alert=True)
+                        return
+
+                    await connection.exec_driver_sql(
+                        "UPDATE user SET coins = coins - %s, "
+                        "permanent_records_limit = permanent_records_limit + 1 "
+                        "WHERE id = %s",
+                        (100, user_id),
+                    )
+                    new_row = await mysql_connection.fetch_one(
+                        "SELECT permanent_records_limit FROM user WHERE id = %s",
+                        (user_id,),
+                        connection=connection,
+                    )
+                    if new_row and new_row[0] is not None:
+                        new_limit = new_row[0]
+                    else:
+                        base_limit = current_limit if current_limit is not None else 100
+                        new_limit = base_limit + 1
+                    await query.answer(
+                        f"购买成功！永久记忆上限已提升至 {new_limit} 条。",
+                        show_alert=True,
+                    )
+            except Exception:
+                await query.answer("购买出现错误，请稍后再试。", show_alert=True)
+
     elif query.data == "shop_home":
         # 返回到一级菜单
         keyboard = [
             [InlineKeyboardButton("购买权限", callback_data="shop_buy_permission")],
+            [InlineKeyboardButton("购买记忆上限 +1 - 100金币", callback_data="shop_buy_memory_limit")],
             [InlineKeyboardButton("购买彩票", callback_data="shop_buy_lottery")],
             [InlineKeyboardButton("关闭商店", callback_data="shop_close")]
         ]
