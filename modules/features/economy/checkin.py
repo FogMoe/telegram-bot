@@ -11,9 +11,19 @@ from core.command_cooldown import cooldown
 
 
 def calculate_checkin_reward(consecutive_days):
-    if consecutive_days >= 30:
-        return 30
-    return min(consecutive_days, 30)
+    if consecutive_days <= 5:
+        return 1
+    if consecutive_days <= 10:
+        return 2
+    if consecutive_days <= 15:
+        return 3
+    if consecutive_days <= 20:
+        return 4
+    if consecutive_days <= 25:
+        return 5
+    if consecutive_days <= 30:
+        return 6
+    return 7
 
 
 async def get_user_checkin_info(user_id):
@@ -98,10 +108,11 @@ async def checkin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"今日奖励: <b>{result['reward']}</b> 金币\n\n"
         )
 
-        days_left = min(30 - result["consecutive_days"], 29)
+        max_reward_days = 31
+        days_left = max(max_reward_days - result["consecutive_days"], 0)
         if days_left > 0:
             message += f"距离最高奖励还有 {days_left} 天\n"
-            progress = min(result["consecutive_days"], 30) / 30
+            progress = min(result["consecutive_days"], max_reward_days) / max_reward_days
             progress_bar = "".join(["🟢" if i / 10 <= progress else "⚪" for i in range(1, 11)])
             message += f"{progress_bar} {int(progress * 100)}%\n\n"
         else:

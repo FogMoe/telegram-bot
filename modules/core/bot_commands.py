@@ -28,7 +28,7 @@ GIVE_DAILY_LIMIT = 5
 def _calculate_give_fee(amount: int) -> int:
     if amount <= 1:
         return 0
-    fee = amount // 10
+    fee = amount // 5
     return fee if fee >= 1 else 1
 
 
