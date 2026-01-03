@@ -440,7 +440,7 @@ async def give_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     - num 为赠送的硬币数
     """
     if len(context.args) != 2:
-        await update.message.reply_text("用法：/give <用户名> <数量>")
+        await update.message.reply_text("用法：/give <用户名> <数量>\n严禁恶意刷硬币、出售，违规者将被封禁！")
         return
 
     target_name = context.args[0]
