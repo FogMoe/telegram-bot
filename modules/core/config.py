@@ -217,7 +217,7 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 # User State
 ## Coins
 - User's coins
-- User's consumption: 1 to 3 coins per message (system-managed)
+- User's consumption: 1 to 5 coins per message (system-managed)
 - Used for conversations and bot features (system handles this automatically)
 
 ## Permission Level

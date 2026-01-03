@@ -257,12 +257,12 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         else:
             summary.schedule_summary_generation(conversation_id)
 
-    # 如果是媒体消息（图片或贴纸），固定硬币消耗3
+    # 如果是媒体消息（图片或贴纸），固定硬币消耗5
     if effective_message.photo or effective_message.sticker:
-        coin_cost = 3
+        coin_cost = 5
         is_media = True
     else:
-        # 保留原本文字消息长度判断逻辑
+        # 按文字消息长度阶梯计费
         user_message = effective_message.text
         if not user_message:
             logging.warning("收到没有文本内容的消息，忽略处理")
@@ -270,9 +270,13 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if len(user_message) > 4096:
             await effective_message.reply_text("消息过长，无法处理。请缩短消息长度！\nThe message is too long to process. Please shorten the message.")
             return
+        elif len(user_message) > 2000:
+            coin_cost = 5
         elif len(user_message) > 1000:
-            coin_cost = 3
+            coin_cost = 4
         elif len(user_message) > 500:
+            coin_cost = 3
+        elif len(user_message) > 100:
             coin_cost = 2
         else:
             coin_cost = 1
