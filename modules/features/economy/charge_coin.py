@@ -4,8 +4,9 @@ from datetime import datetime
 from threading import RLock
 import re
 import uuid  # 添加uuid模块导入
-from telegram import Update
-from telegram.ext import CommandHandler, ContextTypes
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 from core import config, mysql_connection, process_user
 from core.command_cooldown import cooldown
 
@@ -18,10 +19,40 @@ UUID_PATTERN = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 
 # 管理员ID，用于权限验证
 ADMIN_USER_ID = config.ADMIN_USER_ID  # 管理员的Telegram UserID
+TOPUP_PACKAGES = [
+    {"price": "1.99", "coins": 50},
+    {"price": "2.99", "coins": 100},
+]
+TOPUP_CURRENCY = "$"
+TOPUP_PRICE_QUANT = Decimal("0.01")
 
 def is_valid_uuid(code):
     """验证字符串是否为有效的UUID格式"""
     return bool(UUID_PATTERN.match(code))
+
+
+def _price_to_cents(price: str) -> int:
+    try:
+        value = Decimal(price).quantize(TOPUP_PRICE_QUANT, rounding=ROUND_DOWN)
+    except (InvalidOperation, TypeError):
+        return 0
+    return int(value * 100)
+
+
+def _format_price(cents: int) -> str:
+    price = (Decimal(cents) / Decimal(100)).quantize(TOPUP_PRICE_QUANT, rounding=ROUND_DOWN)
+    return f"{TOPUP_CURRENCY}{price}"
+
+
+def _build_topup_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    for pkg in TOPUP_PACKAGES:
+        price_cents = _price_to_cents(pkg["price"])
+        if price_cents <= 0:
+            continue
+        label = f"{TOPUP_CURRENCY}{pkg['price']} - {pkg['coins']}金币"
+        rows.append([InlineKeyboardButton(label, callback_data=f"topup_req_{price_cents}_{pkg['coins']}")])
+    return InlineKeyboardMarkup(rows)
 
 async def verify_and_use_code(user_id: int, code: str) -> tuple:
     """
@@ -169,6 +200,141 @@ async def charge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 @cooldown
+async def recharge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """联系管理员充值金币"""
+    user_id = update.effective_user.id
+
+    if not await process_user.async_user_exists(user_id):
+        await update.message.reply_text(
+            "❌ 请先使用 /me 命令注册个人信息后再使用充值功能。\n"
+            "Please register first using the /me command before charging."
+        )
+        return
+
+    keyboard = _build_topup_keyboard()
+    if not keyboard.inline_keyboard:
+        await update.message.reply_text("当前没有可用的充值套餐，请稍后再试。")
+        return
+
+    await update.message.reply_text(
+        "请选择充值套餐，系统会将请求转发给管理员：",
+        reply_markup=keyboard,
+    )
+
+
+async def topup_request_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    user_name = query.from_user.username or str(user_id)
+
+    parts = query.data.split("_")
+    if len(parts) != 4:
+        await query.edit_message_text("充值请求数据无效，请重新发起。")
+        return
+
+    try:
+        price_cents = int(parts[2])
+        coins = int(parts[3])
+    except ValueError:
+        await query.edit_message_text("充值请求数据无效，请重新发起。")
+        return
+
+    price_label = _format_price(price_cents)
+    admin_text = (
+        "收到充值请求：\n"
+        f"用户: @{user_name} (ID: {user_id})\n"
+        f"套餐: {price_label} -> {coins}金币\n"
+        "请核对付款后点击下方按钮处理。"
+    )
+    admin_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("确认发放", callback_data=f"topup_admin_approve_{user_id}_{coins}_{price_cents}")],
+        [InlineKeyboardButton("拒绝", callback_data=f"topup_admin_reject_{user_id}_{coins}_{price_cents}")],
+    ])
+
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text=admin_text,
+            reply_markup=admin_keyboard,
+        )
+    except Exception as send_error:
+        logging.error("发送充值请求给管理员失败: %s", send_error)
+        await query.edit_message_text("联系管理员失败，请稍后再试。")
+        return
+
+    await query.edit_message_text(
+        f"已通知管理员处理您的充值请求（{price_label} -> {coins}金币）。"
+    )
+
+
+async def topup_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query.from_user.id != ADMIN_USER_ID:
+        await query.answer("您没有权限处理该请求。", show_alert=True)
+        return
+    await query.answer()
+
+    parts = query.data.split("_")
+    if len(parts) != 6:
+        await query.edit_message_text("请求数据无效。")
+        return
+
+    action = parts[2]
+    try:
+        target_user_id = int(parts[3])
+        coins = int(parts[4])
+        price_cents = int(parts[5])
+    except ValueError:
+        await query.edit_message_text("请求数据无效。")
+        return
+
+    price_label = _format_price(price_cents)
+    user_row = await mysql_connection.fetch_one(
+        "SELECT name FROM user WHERE id = %s",
+        (target_user_id,),
+    )
+    if not user_row:
+        await query.edit_message_text(
+            f"用户不存在，无法处理充值请求（ID: {target_user_id}）。"
+        )
+        return
+    user_name = user_row[0]
+
+    if action == "approve":
+        if coins <= 0:
+            await query.edit_message_text("金币数量无效，无法发放。")
+            return
+        await process_user.async_update_user_coins(target_user_id, coins)
+        await query.edit_message_text(
+            f"已发放充值：{price_label} -> {coins}金币\n用户: {user_name} (ID: {target_user_id})"
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=f"充值成功！已到账 {coins} 金币（{price_label}）。",
+            )
+        except Exception as notify_error:
+            logging.error("通知用户充值成功失败: %s", notify_error)
+        return
+
+    if action == "reject":
+        await query.edit_message_text(
+            f"已拒绝充值请求：{price_label} -> {coins}金币\n用户: {user_name} (ID: {target_user_id})"
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=f"充值请求未通过（{price_label}）。如有疑问请联系管理员。",
+            )
+        except Exception as notify_error:
+            logging.error("通知用户充值失败: %s", notify_error)
+        return
+
+    await query.edit_message_text("未知操作。")
+
+
+@cooldown
 async def admin_create_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """管理员命令：创建充值卡密 /create_code <数量> <金币>"""
     user_id = update.effective_user.id
@@ -260,3 +426,6 @@ def setup_charge_handlers(application):
     """设置充值系统的处理器"""
     application.add_handler(CommandHandler("charge", charge_command))
     application.add_handler(CommandHandler("create_code", admin_create_code))
+    application.add_handler(CommandHandler("recharge", recharge_command))
+    application.add_handler(CallbackQueryHandler(topup_request_callback, pattern=r"^topup_req_"))
+    application.add_handler(CallbackQueryHandler(topup_admin_callback, pattern=r"^topup_admin_"))

@@ -109,6 +109,7 @@ HELP_TEXT = (
         "/stake - 质押经济系统\n"
         "/swap - 兑换$FOGMOE代币\n"
         "/charge - 使用卡密充值金币\n"
+        "/recharge - 联系管理员充值\n"
         "/webpassword - 设置Web登录密码\n\n"
         "***娱乐相关：***\n"
         "/omikuji - 抽取御神签预测运势\n"

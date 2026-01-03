@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CommandHandler, ContextTypes, CallbackQueryHandler
-from core import mysql_connection, process_user
+from core import mysql_connection, process_user, stake_reward_pool
 from core.command_cooldown import cooldown
 
 # 创建一个日志记录器
@@ -317,6 +317,12 @@ async def pic_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         
         # 记录日志
         logger.info(f"用户 {user_name}(ID:{user_id}) 消耗 {COIN_COST} 金币获取了一张{'NSFW' if is_nsfw else '普通'}图片")
+        try:
+            pool_add = stake_reward_pool.calculate_pool_add(COIN_COST)
+            if pool_add > 0:
+                await stake_reward_pool.add_to_pool(pool_add)
+        except Exception as pool_error:
+            logger.error("奖励池入账失败: %s", pool_error)
         
     except Exception as e:
         # 处理异常，退还金币
@@ -533,6 +539,12 @@ async def hd_pic_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # 记录处理结果
         if processing_completed:
             logger.info(f"图片 {image_id} 请求已成功处理完成")
+            try:
+                pool_add = stake_reward_pool.calculate_pool_add(HD_COIN_COST)
+                if pool_add > 0:
+                    await stake_reward_pool.add_to_pool(pool_add)
+            except Exception as pool_error:
+                logger.error("奖励池入账失败: %s", pool_error)
         else:
             # 只有当没有成功处理且没有明确返回（如金币不足）时才记录处理失败
             if image_id in PROCESSING_IMAGES and not any(text in str(e) for text in ["金币不足", "图片数据已过期", "高清图片不可用"]):

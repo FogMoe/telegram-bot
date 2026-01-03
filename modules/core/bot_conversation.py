@@ -11,7 +11,7 @@ import telegram
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from core import config, db, group_chat_history, mysql_connection, process_user
+from core import config, db, group_chat_history, mysql_connection, process_user, stake_reward_pool
 from core.archive_utils import send_permanent_records_archive
 from core.prompt_utils import format_metadata_attrs, format_user_state_prompt, xml_escape
 from core.telegram_utils import partial_send, safe_send_markdown, split_ai_reply
@@ -309,6 +309,9 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "UPDATE user SET coins = coins - %s WHERE id = %s",
             (coin_cost, user_id),
         )
+        pool_add = stake_reward_pool.calculate_pool_add(coin_cost)
+        if pool_add > 0:
+            await stake_reward_pool.add_to_pool(pool_add, connection=connection)
         user_coins = max(user_coins - coin_cost, 0)
 
     user_impression_raw = await process_user.async_get_user_impression(user_id)

@@ -1,14 +1,19 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
+from decimal import Decimal
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
-from core import mysql_connection, process_user
+from core import mysql_connection, process_user, stake_reward_pool
 from core.command_cooldown import cooldown
 
 # 全局锁，确保同一时间只有一个质押操作执行
 lock = asyncio.Lock()
+REWARD_INTERVAL_DAYS = 7
+WITHDRAW_FEE_RATE = 0.03
+MAX_DAILY_RATE = 0.3
+MIN_DAILY_RATE = 0.05
 
 
 async def get_total_coins():
@@ -26,14 +31,24 @@ async def calculate_reward_rate():
     total_staked = await get_total_staked()
 
     if total_staked == 0 or total_coins == 0:
-        return 3.0
+        return MAX_DAILY_RATE
 
     stake_ratio = min(1.0, float(total_staked) / (float(total_coins) + float(total_staked)))
-    max_rate = 3.0
-    min_rate = 0.5
+    max_rate = MAX_DAILY_RATE
+    min_rate = MIN_DAILY_RATE
     reward_rate = max_rate - stake_ratio * (max_rate - min_rate)
 
     return reward_rate
+
+
+def _calculate_reward_window(user_stake: dict, reward_rate: float) -> tuple[int, int, datetime]:
+    last_reward_time = user_stake["last_reward_time"] or user_stake["stake_time"]
+    now = datetime.now()
+    hours_passed = (now - last_reward_time).total_seconds() / 3600
+    days_passed = int(hours_passed / 24)
+    daily_reward = int(float(user_stake["stake_amount"]) * (reward_rate / 100))
+    intervals_passed = days_passed // REWARD_INTERVAL_DAYS
+    return daily_reward, intervals_passed, last_reward_time
 
 
 async def get_user_stake(user_id, *, connection=None):
@@ -57,14 +72,8 @@ async def calculate_available_reward(user_id):
         return 0
 
     reward_rate = await calculate_reward_rate()
-
-    last_reward_time = user_stake["last_reward_time"] or user_stake["stake_time"]
-    now = datetime.now()
-    hours_passed = (now - last_reward_time).total_seconds() / 3600
-    days_passed = int(hours_passed / 24)
-
-    daily_reward = int(float(user_stake["stake_amount"]) * (reward_rate / 100))
-    return daily_reward * days_passed
+    daily_reward, intervals_passed, _ = _calculate_reward_window(user_stake, reward_rate)
+    return daily_reward * intervals_passed * REWARD_INTERVAL_DAYS
 
 
 @cooldown
@@ -101,6 +110,8 @@ async def show_stake_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reward_rate = await calculate_reward_rate()
 
     status_message = f"当前质押回报率: {reward_rate:.2f}%/天\n"
+    status_message += f"回报按天累计，每{REWARD_INTERVAL_DAYS}天可领取一次。\n"
+    status_message += f"取出本金将收取 {int(WITHDRAW_FEE_RATE * 100)}% 手续费。\n"
 
     if user_stake:
         available_reward = await calculate_available_reward(user_id)
@@ -166,9 +177,9 @@ async def stake_coins(update: Update, context: ContextTypes.DEFAULT_TYPE, amount
             reward_rate = await calculate_reward_rate()
             await update.message.reply_text(
                 f"成功质押 {amount} 金币！当前回报率为 {reward_rate:.2f}%/天。\n"
-                f"每24小时可领取一次回报。\n"
+                f"每{REWARD_INTERVAL_DAYS}天可领取一次回报。\n"
                 f"Successfully staked {amount} coins! Current reward rate is {reward_rate:.2f}% everyday.\n"
-                f"You can collect rewards once every 24 hours."
+                f"You can collect rewards once every {REWARD_INTERVAL_DAYS} days."
             )
         except Exception as e:
             await update.message.reply_text(
@@ -203,20 +214,43 @@ async def collect_reward(query, user_id):
                     await query.answer("您没有质押任何金币。", show_alert=True)
                     return
 
-                reward = await calculate_available_reward(user_id)
-
-                if reward <= 0:
-                    await query.answer("没有可领取的回报。需要等待至少24小时。", show_alert=True)
+                reward_rate = await calculate_reward_rate()
+                daily_reward, intervals_passed, last_reward_time = _calculate_reward_window(
+                    user_stake,
+                    reward_rate,
+                )
+                if daily_reward <= 0 or intervals_passed <= 0:
+                    await query.answer(
+                        f"没有可领取的回报。需要等待至少{REWARD_INTERVAL_DAYS}天。",
+                        show_alert=True,
+                    )
                     return
+                interval_reward = daily_reward * REWARD_INTERVAL_DAYS
+                pool_balance = await stake_reward_pool.get_pool_balance(
+                    connection=connection,
+                    for_update=True,
+                )
+                max_intervals_by_pool = int(
+                    Decimal(pool_balance) // Decimal(interval_reward)
+                )
+                intervals_paid = min(intervals_passed, max_intervals_by_pool)
+                if intervals_paid <= 0:
+                    await query.answer("奖励池余额不足，暂时无法发放回报。", show_alert=True)
+                    return
+                reward = interval_reward * intervals_paid
 
                 await connection.exec_driver_sql(
                     "UPDATE user SET coins = coins + %s WHERE id = %s",
                     (reward, user_id),
                 )
+                await stake_reward_pool.subtract_from_pool(reward, connection=connection)
 
+                new_last_reward_time = last_reward_time + timedelta(
+                    days=intervals_paid * REWARD_INTERVAL_DAYS
+                )
                 await connection.exec_driver_sql(
                     "UPDATE user_stakes SET last_reward_time = %s WHERE user_id = %s",
-                    (datetime.now(), user_id),
+                    (new_last_reward_time, user_id),
                 )
 
             reward_rate = await calculate_reward_rate()
@@ -245,11 +279,29 @@ async def withdraw_stake(query, user_id):
                     return
 
                 stake_amount = user_stake["stake_amount"]
-                reward = await calculate_available_reward(user_id)
+                fee = int(stake_amount * WITHDRAW_FEE_RATE)
+                refunded_principal = max(stake_amount - fee, 0)
+                reward_rate = await calculate_reward_rate()
+                daily_reward, intervals_passed, _ = _calculate_reward_window(
+                    user_stake,
+                    reward_rate,
+                )
+                reward = 0
+                if daily_reward > 0 and intervals_passed > 0:
+                    interval_reward = daily_reward * REWARD_INTERVAL_DAYS
+                    pool_balance = await stake_reward_pool.get_pool_balance(
+                        connection=connection,
+                        for_update=True,
+                    )
+                    max_intervals_by_pool = int(
+                        Decimal(pool_balance) // Decimal(interval_reward)
+                    )
+                    intervals_paid = min(intervals_passed, max_intervals_by_pool)
+                    reward = interval_reward * intervals_paid
 
                 await connection.exec_driver_sql(
                     "UPDATE user SET coins = coins + %s WHERE id = %s",
-                    (stake_amount, user_id),
+                    (refunded_principal, user_id),
                 )
 
                 if reward > 0:
@@ -257,9 +309,20 @@ async def withdraw_stake(query, user_id):
                         "UPDATE user SET coins = coins + %s WHERE id = %s",
                         (reward, user_id),
                     )
-                    msg = f"您已取出质押本金 {stake_amount} 金币，并获得回报 {reward} 金币！"
+                    await stake_reward_pool.subtract_from_pool(reward, connection=connection)
+                    msg = (
+                        f"您已取出质押本金 {refunded_principal} 金币（手续费 {fee} 金币），并获得回报 {reward} 金币！"
+                    )
+                elif daily_reward > 0 and intervals_passed > 0:
+                    msg = (
+                        f"您已取出质押本金 {refunded_principal} 金币（手续费 {fee} 金币）。\n"
+                        "奖励池余额不足，本次未发放回报。"
+                    )
                 else:
-                    msg = f"您已取出质押本金 {stake_amount} 金币。\n未满24小时，无法获得回报。"
+                    msg = (
+                        f"您已取出质押本金 {refunded_principal} 金币（手续费 {fee} 金币）。\n"
+                        f"未满{REWARD_INTERVAL_DAYS}天，无法获得回报。"
+                    )
 
                 await connection.exec_driver_sql(
                     "DELETE FROM user_stakes WHERE user_id = %s",

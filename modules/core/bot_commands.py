@@ -10,7 +10,7 @@ from telegram.ext import ContextTypes
 import telegram
 from sqlalchemy.exc import SQLAlchemyError
 
-from core import config, mysql_connection, process_user
+from core import config, mysql_connection, process_user, stake_reward_pool
 from core.archive_utils import send_permanent_records_archive
 from core.command_cooldown import cooldown
 from core.telegram_utils import partial_send, safe_send_markdown
@@ -606,6 +606,12 @@ async def tl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(
             f"{translation}"
         )
+        try:
+            pool_add = stake_reward_pool.calculate_pool_add(coin_cost)
+            if pool_add > 0:
+                await stake_reward_pool.add_to_pool(pool_add)
+        except Exception as pool_error:
+            logger.error("更新奖励池失败: %s", pool_error)
     except Exception as e:
         logging.error(f"翻译出错: {str(e)}")
         await update.message.reply_text(
