@@ -22,6 +22,7 @@ ADMIN_USER_ID = config.ADMIN_USER_ID  # 管理员的Telegram UserID
 TOPUP_PACKAGES = [
     {"price": "1.99", "coins": 50},
     {"price": "2.99", "coins": 100},
+    {"price": "4.99", "coins": 200},
 ]
 TOPUP_CURRENCY = "$"
 TOPUP_PRICE_QUANT = Decimal("0.01")
