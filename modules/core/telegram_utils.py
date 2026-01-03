@@ -100,6 +100,14 @@ async def safe_send_markdown(
         A list of Telegram API responses, one per sent chunk.
     """
 
+    def _is_empty_text_error(message: str) -> bool:
+        lower = message.lower()
+        return (
+            "message text is empty" in lower
+            or "text must be non-empty" in lower
+            or "text must be non empty" in lower
+        )
+
     def _bad_request_info(error: telegram.error.BadRequest) -> dict:
         message = str(error)
         lower = message.lower()
@@ -107,7 +115,7 @@ async def safe_send_markdown(
             "text": message,
             "lower": lower,
             "missing_reply": "message to be replied not found" in lower,
-            "empty_text": "message text is empty" in lower,
+            "empty_text": _is_empty_text_error(message),
         }
 
     async def _attempt_send(
@@ -147,6 +155,11 @@ async def safe_send_markdown(
                 ):
                     current_func = fallback_send
                     attempted_fallback = True
+                    continue
+                raise
+            except ValueError as exc:
+                if _is_empty_text_error(str(exc)):
+                    payload = "雾萌娘不想回复你的这条消息。"
                     continue
                 raise
 
