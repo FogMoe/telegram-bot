@@ -107,7 +107,7 @@ HELP_TEXT = (
         "/give - 赠送某人金币\n"
         "/rich - 查看富豪榜前五\n"
         "/stake - 质押经济系统\n"
-        "/swap - 兑换$FOGMOE代币\n"
+        # "/swap - 兑换$FOGMOE代币\n"（暂时关闭）
         "/charge - 使用卡密充值金币\n"
         "/recharge - 联系管理员充值\n"
         "/webpassword - 设置Web登录密码\n\n"
