@@ -1,7 +1,17 @@
 import random
 from datetime import datetime, timedelta
 
-from . import mysql_connection
+from . import config, mysql_connection
+
+USER_PLAN_FREE = "free"
+USER_PLAN_PAID = "paid"
+USER_PLAN_ADMIN = "admin"
+
+
+def resolve_user_plan(user_id: int, coins_paid: int) -> str:
+    if user_id == config.ADMIN_USER_ID:
+        return USER_PLAN_ADMIN
+    return USER_PLAN_PAID if coins_paid > 0 else USER_PLAN_FREE
 
 # 添加用户抽奖锁字典，防止同一用户并发抽奖
 lottery_locks = {}
@@ -60,9 +70,10 @@ async def add_paid_coins(user_id, coins, *, connection=None) -> int:
     coins = int(coins)
     if coins <= 0:
         return 0
+    plan = resolve_user_plan(user_id, coins_paid=1)
     await mysql_connection.execute(
-        "UPDATE user SET coins_paid = coins_paid + %s WHERE id = %s",
-        (coins, user_id),
+        "UPDATE user SET coins_paid = coins_paid + %s, user_plan = %s WHERE id = %s",
+        (coins, plan, user_id),
         connection=connection,
     )
     return coins
@@ -96,10 +107,10 @@ async def spend_user_coins(user_id, amount, *, connection=None) -> bool:
         remaining = amount - coins_free
         new_free = 0
         new_paid = coins_paid - remaining
-
+    plan = resolve_user_plan(user_id, new_paid)
     await connection.exec_driver_sql(
-        "UPDATE user SET coins = %s, coins_paid = %s WHERE id = %s",
-        (new_free, new_paid, user_id),
+        "UPDATE user SET coins = %s, coins_paid = %s, user_plan = %s WHERE id = %s",
+        (new_free, new_paid, plan, user_id),
     )
     return True
 

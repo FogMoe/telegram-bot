@@ -37,6 +37,7 @@ def format_metadata_attrs(attrs: Iterable[tuple[str, str]]) -> str:
 def format_user_state_prompt(
     *,
     user_coins: int,
+    user_plan: str,
     user_permission: int,
     impression: str,
     personal_info: str = "",
@@ -51,6 +52,7 @@ def format_user_state_prompt(
     permission_label = permission_labels.get(user_permission, "Unknown")
     attrs = [
         ("coins", str(user_coins)),
+        ("user_plan", user_plan),
         ("permission", str(user_permission)),
         ("permission_label", permission_label),
         ("diary_exists", "true" if diary_exists else "false"),

@@ -227,6 +227,9 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 - User's permission
 - Higher permission levels indicate premium (level 0 to 3) users who can access advanced @fogmoebot Telegram command features.
 
+## Plan
+- User's subscription (free or paid)
+
 # User Profile
 ## Impression
 - Your impression of them

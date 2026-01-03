@@ -284,7 +284,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     async with mysql_connection.transaction() as connection:
         row = await mysql_connection.fetch_one(
-            "SELECT permission, coins + coins_paid AS coins_total, info FROM user WHERE id = %s",
+            "SELECT permission, coins, coins_paid, info FROM user WHERE id = %s",
             (user_id,),
             connection=connection,
         )
@@ -295,8 +295,10 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             return
         user_permission = row[0]
-        user_coins = row[1]
-        user_info_raw = row[2] if len(row) > 2 else ""
+        user_coins_free = row[1] or 0
+        user_coins_paid = row[2] or 0
+        user_info_raw = row[3] if len(row) > 3 else ""
+        user_coins = user_coins_free + user_coins_paid
 
         if user_coins < coin_cost:
             await effective_message.reply_text(
@@ -313,7 +315,15 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         pool_add = stake_reward_pool.calculate_pool_add(coin_cost)
         if pool_add > 0:
             await stake_reward_pool.add_to_pool(pool_add, connection=connection)
-        user_coins = max(user_coins - coin_cost, 0)
+        if user_coins_free >= coin_cost:
+            new_free = user_coins_free - coin_cost
+            new_paid = user_coins_paid
+        else:
+            remaining = coin_cost - user_coins_free
+            new_free = 0
+            new_paid = max(user_coins_paid - remaining, 0)
+        user_coins = new_free + new_paid
+        user_plan = process_user.resolve_user_plan(user_id, new_paid)
 
     user_impression_raw = await process_user.async_get_user_impression(user_id)
     impression_display = (user_impression_raw or "").strip()
@@ -337,6 +347,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     user_state_prompt = format_user_state_prompt(
         user_coins=user_coins,
+        user_plan=user_plan,
         user_permission=user_permission,
         impression=impression_display,
         personal_info=personal_info_display,

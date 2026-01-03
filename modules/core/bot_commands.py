@@ -253,7 +253,7 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "INSERT INTO user (id, name, coins) VALUES (%s, %s, %s) "
             "ON DUPLICATE KEY UPDATE name = VALUES(name)"
         )
-        select_query = "SELECT coins, coins_paid, permission FROM user WHERE id = %s"
+        select_query = "SELECT coins, coins_paid, permission, user_plan FROM user WHERE id = %s"
 
         async with mysql_connection.transaction() as connection:
             await connection.exec_driver_sql(
@@ -265,7 +265,14 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_coins_free = row[0] if row else 0
             user_coins_paid = row[1] if row else 0
             user_permission = row[2] if row else 0
+            user_plan_db = row[3] if row and len(row) > 3 else ""
             user_coins_total = user_coins_free + user_coins_paid
+            user_plan = process_user.resolve_user_plan(user_id, user_coins_paid)
+            if user_plan_db != user_plan:
+                await connection.exec_driver_sql(
+                    "UPDATE user SET user_plan = %s WHERE id = %s",
+                    (user_plan, user_id),
+                )
     except SQLAlchemyError as err:
         logging.error(f"数据库错误: {err}")
         await context.bot.send_message(
@@ -280,7 +287,8 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 *用户信息 User Info*\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"用户名 Name: @{user_name}\n"
-            f"权限 Permission: {user_permission}\n\n"
+            f"权限 Permission: {user_permission}\n"
+            f"方案 Plan: {user_plan}\n\n"
             f"💰 *金币资产 Coins Balance*\n"
             f"• 总额 Total: {user_coins_total}\n"
             f"• 免费 Free: {user_coins_free}\n"
