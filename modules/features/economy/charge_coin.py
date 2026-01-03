@@ -1,6 +1,6 @@
 import logging
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from threading import RLock
 import re
 import uuid  # 添加uuid模块导入
@@ -53,6 +53,22 @@ def _build_topup_keyboard() -> InlineKeyboardMarkup:
         label = f"{TOPUP_CURRENCY}{pkg['price']} - {pkg['coins']}金币"
         rows.append([InlineKeyboardButton(label, callback_data=f"topup_req_{price_cents}_{pkg['coins']}")])
     return InlineKeyboardMarkup(rows)
+
+
+async def _get_recharge_block_until(user_id: int) -> datetime | None:
+    row = await mysql_connection.fetch_one(
+        "SELECT recharge_blocked_until FROM user WHERE id = %s",
+        (user_id,),
+    )
+    if not row:
+        return None
+    blocked_until = row[0]
+    return blocked_until if blocked_until else None
+
+
+def _format_recharge_block_message(blocked_until: datetime) -> str:
+    deadline = blocked_until.strftime("%Y-%m-%d %H:%M:%S")
+    return f"您暂时无法使用 /recharge，请在 {deadline} 后再试。"
 
 async def verify_and_use_code(user_id: int, code: str) -> tuple:
     """
@@ -211,6 +227,11 @@ async def recharge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
 
+    blocked_until = await _get_recharge_block_until(user_id)
+    if blocked_until and blocked_until > datetime.now():
+        await update.message.reply_text(_format_recharge_block_message(blocked_until))
+        return
+
     keyboard = _build_topup_keyboard()
     if not keyboard.inline_keyboard:
         await update.message.reply_text("当前没有可用的充值套餐，请稍后再试。")
@@ -227,6 +248,11 @@ async def topup_request_callback(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
     user_id = query.from_user.id
     user_name = query.from_user.username or str(user_id)
+
+    blocked_until = await _get_recharge_block_until(user_id)
+    if blocked_until and blocked_until > datetime.now():
+        await query.edit_message_text(_format_recharge_block_message(blocked_until))
+        return
 
     parts = query.data.split("_")
     if len(parts) != 4:
@@ -250,6 +276,7 @@ async def topup_request_callback(update: Update, context: ContextTypes.DEFAULT_T
     admin_keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("确认发放", callback_data=f"topup_admin_approve_{user_id}_{coins}_{price_cents}")],
         [InlineKeyboardButton("拒绝", callback_data=f"topup_admin_reject_{user_id}_{coins}_{price_cents}")],
+        [InlineKeyboardButton("禁用1天", callback_data=f"topup_admin_block_{user_id}_{coins}_{price_cents}")],
     ])
 
     try:
@@ -329,6 +356,26 @@ async def topup_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             )
         except Exception as notify_error:
             logging.error("通知用户充值失败: %s", notify_error)
+        return
+
+    if action == "block":
+        blocked_until = datetime.now() + timedelta(days=1)
+        await mysql_connection.execute(
+            "UPDATE user SET recharge_blocked_until = %s WHERE id = %s",
+            (blocked_until, target_user_id),
+        )
+        await query.edit_message_text(
+            f"已禁止用户 1 天内使用 /recharge。\n"
+            f"用户: {user_name} (ID: {target_user_id})\n"
+            f"截止时间: {blocked_until.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=_format_recharge_block_message(blocked_until),
+            )
+        except Exception as notify_error:
+            logging.error("通知用户禁用失败: %s", notify_error)
         return
 
     await query.edit_message_text("未知操作。")
