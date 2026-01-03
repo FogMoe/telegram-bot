@@ -45,7 +45,8 @@ def format_user_state_prompt(
     permission_labels = {
         0: "Normal",
         1: "Advanced",
-        2: "Maximum",
+        2: "Premium",
+        3: "Ultimate",
     }
     permission_label = permission_labels.get(user_permission, "Unknown")
     attrs = [

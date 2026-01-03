@@ -59,6 +59,7 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("升级权限等级到1级 - 50金币", callback_data="shop_upgrade_1")],
             [InlineKeyboardButton("升级权限等级到2级 - 100金币", callback_data="shop_upgrade_2")],
+            [InlineKeyboardButton("升级权限等级到3级 - 10000金币", callback_data="shop_upgrade_3")],
             [InlineKeyboardButton("返回", callback_data="shop_home")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -198,6 +199,36 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             (100, 2, user_id),
                         )
                         await query.answer("购买成功！您的权限已升级到2级。", show_alert=True)
+            except Exception:
+                await query.answer("购买出现错误，请稍后再试。", show_alert=True)
+
+    elif query.data == "shop_upgrade_3":
+        # 执行购买升级权限到3级的操作
+        async with lock:
+            try:
+                async with mysql_connection.transaction() as connection:
+                    result = await mysql_connection.fetch_one(
+                        "SELECT permission, coins FROM user WHERE id = %s",
+                        (user_id,),
+                        connection=connection,
+                    )
+                    if not result:
+                        await query.answer("请先使用 /me 命令获取个人信息。", show_alert=True)
+                        return
+
+                    user_permission, user_coins = result
+                    if user_permission < 2:
+                        await query.answer("您需要先升级到2级权限。", show_alert=True)
+                    elif user_permission >= 3:
+                        await query.answer("您已经拥有3级或更高权限。", show_alert=True)
+                    elif user_coins < 10000:
+                        await query.answer("硬币不足，无法购买此商品。", show_alert=True)
+                    else:
+                        await connection.exec_driver_sql(
+                            "UPDATE user SET coins = coins - %s, permission = %s WHERE id = %s",
+                            (10000, 3, user_id),
+                        )
+                        await query.answer("购买成功！您的权限已升级到3级。", show_alert=True)
             except Exception:
                 await query.answer("购买出现错误，请稍后再试。", show_alert=True)
 
