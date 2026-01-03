@@ -217,7 +217,7 @@ async def recharge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     await update.message.reply_text(
-        "请选择充值套餐，系统会将请求转发给管理员：",
+        "请选择充值套餐，系统会将请求转发给管理员 @ScarletKc ：",
         reply_markup=keyboard,
     )
 
@@ -264,7 +264,7 @@ async def topup_request_callback(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     await query.edit_message_text(
-        f"已通知管理员处理您的充值请求（{price_label} -> {coins}金币）。"
+        f"已通知管理员 @ScarletKc 处理您的充值请求（{price_label} -> {coins}金币）。"
     )
 
 
@@ -325,7 +325,7 @@ async def topup_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         try:
             await context.bot.send_message(
                 chat_id=target_user_id,
-                text=f"充值请求未通过（{price_label}）。如有疑问请联系管理员。",
+                text=f"充值请求未通过（{price_label}）。如有疑问请联系管理员 @ScarletKc 。",
             )
         except Exception as notify_error:
             logging.error("通知用户充值失败: %s", notify_error)
