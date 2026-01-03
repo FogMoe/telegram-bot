@@ -239,6 +239,8 @@ async def recharge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     await update.message.reply_text(
+        "【充值须知】\n"
+        "目前仅支持用户主动私聊管理员充值。请务必核对管理员账号，谨防假冒！官方绝不会主动私信索要财物，请谨慎甄别，拒绝第三方渠道。\n\n"
         "请选择充值套餐，系统会将请求转发给管理员 @ScarletKc ：",
         reply_markup=keyboard,
     )
