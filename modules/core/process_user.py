@@ -60,11 +60,11 @@ async def lottery(user_id):
             "You can only participate in the lottery once every 24 hours. Meow! Come back later!"
         )
 
-    probabilities = [0.2, 0.1, 0.7]
+    probabilities = [0.4, 0.1, 0.5]
     coins_distribution = [
-        random.choices(range(0, 5), k=1)[0],
-        random.choices(range(15, 25), k=1)[0],
-        random.choices(range(5, 15), k=1)[0],
+        random.choices(range(1, 5), k=1)[0],
+        random.choices(range(11, 21), k=1)[0],
+        random.choices(range(5, 11), k=1)[0],
     ]
     coins = random.choices(coins_distribution, probabilities)[0]
 
