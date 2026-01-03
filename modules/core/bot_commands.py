@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime
 from uuid import uuid4
 
 from telegram import InlineQueryResultArticle, InputTextMessageContent, Update
@@ -21,6 +22,14 @@ logger = logging.getLogger(__name__)
 
 ADMIN_USER_ID = config.ADMIN_USER_ID
 last_rich_query_time = 0
+GIVE_DAILY_LIMIT = 5
+
+
+def _calculate_give_fee(amount: int) -> int:
+    if amount <= 1:
+        return 0
+    fee = amount // 10
+    return fee if fee >= 1 else 1
 
 
 async def inline_translate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -446,6 +455,8 @@ async def give_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender_id = update.effective_user.id
 
     try:
+        fee = _calculate_give_fee(amount)
+        total_cost = amount + fee
         async with mysql_connection.transaction() as connection:
             sender_row = await mysql_connection.fetch_one(
                 "SELECT coins FROM user WHERE id = %s",
@@ -456,9 +467,22 @@ async def give_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("请先使用 /me 命令注册个人信息。")
                 return
             sender_coins = sender_row[0]
-            if sender_coins < amount:
+            if sender_coins < total_cost:
                 await update.message.reply_text(
-                    f"您的硬币不足，当前硬币：{sender_coins}，需要：{amount}"
+                    f"您的硬币不足，当前硬币：{sender_coins}，需要：{total_cost}"
+                )
+                return
+
+            today = datetime.now().date()
+            give_row = await mysql_connection.fetch_one(
+                "SELECT give_count FROM user_give_daily WHERE user_id = %s AND give_date = %s FOR UPDATE",
+                (sender_id, today),
+                connection=connection,
+            )
+            current_count = give_row[0] if give_row else 0
+            if current_count >= GIVE_DAILY_LIMIT:
+                await update.message.reply_text(
+                    f"您今天的赠送次数已达上限（{GIVE_DAILY_LIMIT}次），请明天再试。"
                 )
                 return
 
@@ -480,14 +504,29 @@ async def give_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await connection.exec_driver_sql(
                 "UPDATE user SET coins = coins - %s WHERE id = %s",
-                (amount, sender_id),
+                (total_cost, sender_id),
             )
             await connection.exec_driver_sql(
                 "UPDATE user SET coins = coins + %s WHERE id = %s",
                 (amount, recipient_id),
             )
+            if give_row:
+                await connection.exec_driver_sql(
+                    "UPDATE user_give_daily SET give_count = give_count + 1 WHERE user_id = %s AND give_date = %s",
+                    (sender_id, today),
+                )
+            else:
+                await connection.exec_driver_sql(
+                    "INSERT INTO user_give_daily (user_id, give_date, give_count) VALUES (%s, %s, 1)",
+                    (sender_id, today),
+                )
 
-        await update.message.reply_text(f"成功赠送 {amount} 枚硬币给用户 {target_name}。")
+        if fee > 0:
+            await update.message.reply_text(
+                f"成功赠送 {amount} 枚硬币给用户 {target_name}，手续费 {fee} 枚硬币。"
+            )
+        else:
+            await update.message.reply_text(f"成功赠送 {amount} 枚硬币给用户 {target_name}。")
     except Exception as e:
         await update.message.reply_text("转账过程中出现错误，请稍后再试。")
 
