@@ -58,10 +58,20 @@ async def update_user_coins_safely(user_id: int, amount: int) -> bool:
             if not row:
                 logger.error(f"更新用户金币失败: 用户ID {user_id} 不存在")
                 return False
-            await connection.exec_driver_sql(
-                "UPDATE user SET coins = coins + %s WHERE id = %s",
-                (amount, user_id),
-            )
+            if amount < 0:
+                spent = await process_user.spend_user_coins(
+                    user_id,
+                    -amount,
+                    connection=connection,
+                )
+                if not spent:
+                    return False
+            elif amount > 0:
+                await process_user.add_free_coins(
+                    user_id,
+                    amount,
+                    connection=connection,
+                )
         return True
     except Exception as e:
         logger.error(f"更新用户{user_id}金币时出错: {str(e)}")

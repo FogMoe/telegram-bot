@@ -180,11 +180,12 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             async with mysql_connection.transaction() as connection:
                 result = await mysql_connection.fetch_one(
-                    "SELECT coins FROM user WHERE id = %s",
+                    "SELECT coins, coins_paid FROM user WHERE id = %s",
                     (user_id,),
                     connection=connection,
                 )
-                if not result or result[0] < amount:
+                current_coins = (result[0] or 0) + (result[1] or 0) if result else 0
+                if not result or current_coins < amount:
                     await update.message.reply_text(
                         "***您的金币不足，无法完成兑换。***\n"
                         "***You don't have enough coins to complete this exchange.***",
@@ -192,10 +193,18 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return
 
-                await connection.exec_driver_sql(
-                    "UPDATE user SET coins = coins - %s WHERE id = %s",
-                    (amount, user_id),
+                spent = await process_user.spend_user_coins(
+                    user_id,
+                    amount,
+                    connection=connection,
                 )
+                if not spent:
+                    await update.message.reply_text(
+                        "***您的金币不足，无法完成兑换。***\n"
+                        "***You don't have enough coins to complete this exchange.***",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                    return
 
                 await connection.exec_driver_sql(
                     """

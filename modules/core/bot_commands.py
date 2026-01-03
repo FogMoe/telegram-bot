@@ -253,7 +253,7 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "INSERT INTO user (id, name, coins) VALUES (%s, %s, %s) "
             "ON DUPLICATE KEY UPDATE name = VALUES(name)"
         )
-        select_query = "SELECT coins, permission FROM user WHERE id = %s"
+        select_query = "SELECT coins, coins_paid, permission FROM user WHERE id = %s"
 
         async with mysql_connection.transaction() as connection:
             await connection.exec_driver_sql(
@@ -262,8 +262,10 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             result = await connection.exec_driver_sql(select_query, (user_id,))
             row = result.fetchone()
-            user_coins = row[0] if row else 0
-            user_permission = row[1] if row else 0
+            user_coins_free = row[0] if row else 0
+            user_coins_paid = row[1] if row else 0
+            user_permission = row[2] if row else 0
+            user_coins_total = user_coins_free + user_coins_paid
     except SQLAlchemyError as err:
         logging.error(f"数据库错误: {err}")
         await context.bot.send_message(
@@ -272,11 +274,24 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"您的信息如下Your info: \n"
-                                                                          f"名字Name: @{user_name}\n"
-                                                                          f"金币Coins: {user_coins}\n"
-                                                                          f"权限Permission: {user_permission}"
-                                   )
+    await safe_send_markdown(
+        update.message.reply_text,
+        (
+            f"👤 *用户信息 User Info*\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"用户名 Name: @{user_name}\n"
+            f"权限 Permission: {user_permission}\n\n"
+            f"💰 *金币资产 Coins Balance*\n"
+            f"• 总额 Total: {user_coins_total}\n"
+            f"• 免费 Free: {user_coins_free}\n"
+            f"• 付费 Paid: {user_coins_paid}"
+        ),
+        logger=logger,
+        fallback_send=partial_send(
+            context.bot.send_message,
+            update.effective_chat.id,
+        ),
+    )
 
 
 @cooldown
@@ -415,7 +430,7 @@ async def rich_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     last_rich_query_time = current_time
     try:
-        query = "SELECT name, coins FROM user ORDER BY coins DESC LIMIT 5"
+        query = "SELECT name, (coins + coins_paid) AS coins_total FROM user ORDER BY coins_total DESC LIMIT 5"
         results = await mysql_connection.fetch_all(query)
     except Exception as e:
         await update.message.reply_text(f"查询富豪榜时出错：{str(e)}")
@@ -459,14 +474,14 @@ async def give_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_cost = amount + fee
         async with mysql_connection.transaction() as connection:
             sender_row = await mysql_connection.fetch_one(
-                "SELECT coins FROM user WHERE id = %s",
+                "SELECT coins, coins_paid FROM user WHERE id = %s",
                 (sender_id,),
                 connection=connection,
             )
             if not sender_row:
                 await update.message.reply_text("请先使用 /me 命令注册个人信息。")
                 return
-            sender_coins = sender_row[0]
+            sender_coins = (sender_row[0] or 0) + (sender_row[1] or 0)
             if sender_coins < total_cost:
                 await update.message.reply_text(
                     f"您的硬币不足，当前硬币：{sender_coins}，需要：{total_cost}"
@@ -502,13 +517,20 @@ async def give_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("不能给自己赠送硬币哦~")
                 return
 
-            await connection.exec_driver_sql(
-                "UPDATE user SET coins = coins - %s WHERE id = %s",
-                (total_cost, sender_id),
+            spent = await process_user.spend_user_coins(
+                sender_id,
+                total_cost,
+                connection=connection,
             )
-            await connection.exec_driver_sql(
-                "UPDATE user SET coins = coins + %s WHERE id = %s",
-                (amount, recipient_id),
+            if not spent:
+                await update.message.reply_text(
+                    f"您的硬币不足，当前硬币：{sender_coins}，需要：{total_cost}"
+                )
+                return
+            await process_user.add_free_coins(
+                recipient_id,
+                amount,
+                connection=connection,
             )
             if give_row:
                 await connection.exec_driver_sql(
@@ -631,10 +653,13 @@ async def tl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
 
-    await mysql_connection.execute(
-        "UPDATE user SET coins = coins - %s WHERE id = %s",
-        (coin_cost, user_id),
-    )
+    spent = await process_user.spend_user_coins(user_id, coin_cost)
+    if not spent:
+        await update.message.reply_text(
+            f"您的硬币不足，需要 {coin_cost} 枚硬币进行翻译。试试通过 /lottery 抽奖获取硬币吧！\n"
+            f"You don't have enough coins (need {coin_cost}). Try using /lottery to get some coins!"
+        )
+        return
 
     # 不发送正在翻译状态
     # await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
@@ -657,7 +682,4 @@ async def tl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             "翻译服务暂时不可用，请稍后重试。\n"
             "Translation service is temporarily unavailable, please try again later. Your coins have been refunded."
         )
-        await mysql_connection.execute(
-            "UPDATE user SET coins = coins + %s WHERE id = %s",
-            (coin_cost, user_id),
-        )
+        await process_user.add_free_coins(user_id, coin_cost)

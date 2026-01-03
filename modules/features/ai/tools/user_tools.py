@@ -13,7 +13,7 @@ AFFECTION_TOOL_ENABLED = False
 def _get_user_by_id(user_id: int) -> Optional[Dict[str, object]]:
     row = mysql_connection.run_sync(
         mysql_connection.fetch_one(
-            "SELECT id, name, coins FROM user WHERE id = %s",
+            "SELECT id, name, coins + coins_paid AS coins_total FROM user WHERE id = %s",
             (user_id,),
         )
     )
@@ -71,9 +71,10 @@ def kindness_gift_tool(
     try:
         async def _record_gift():
             async with mysql_connection.transaction() as connection:
-                await connection.exec_driver_sql(
-                    "UPDATE user SET coins = coins + %s WHERE id = %s",
-                    (amt, recipient["id"]),
+                await process_user.add_free_coins(
+                    recipient["id"],
+                    amt,
+                    connection=connection,
                 )
                 await connection.exec_driver_sql(
                     "INSERT INTO kindness_gifts (recipient_id, amount, created_at) "

@@ -54,7 +54,7 @@ async def bribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         async with mysql_connection.transaction() as connection:
             row = await mysql_connection.fetch_one(
-                "SELECT coins FROM user WHERE id = %s",
+                "SELECT coins, coins_paid FROM user WHERE id = %s",
                 (user_id,),
                 connection=connection,
             )
@@ -62,15 +62,18 @@ async def bribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 await _reply(update, "请先使用 /me 命令注册个人信息。")
                 return
 
-            current_coins = row[0]
+            current_coins = (row[0] or 0) + (row[1] or 0)
             if current_coins < coins_to_spend:
                 await _reply(update, f"您的金币不足，当前拥有 {current_coins} 枚，无法支付 {coins_to_spend} 枚。")
                 return
-
-            await connection.exec_driver_sql(
-                "UPDATE user SET coins = coins - %s WHERE id = %s",
-                (coins_to_spend, user_id),
+            spent = await process_user.spend_user_coins(
+                user_id,
+                coins_to_spend,
+                connection=connection,
             )
+            if not spent:
+                await _reply(update, f"您的金币不足，当前拥有 {current_coins} 枚，无法支付 {coins_to_spend} 枚。")
+                return
     except Exception as exc:
         logging.error("/bribe 扣除金币失败: %s", exc)
         await _reply(update, "贿赂过程中出现问题，请稍后再试。")

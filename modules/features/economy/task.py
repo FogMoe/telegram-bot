@@ -1,5 +1,5 @@
 import asyncio
-from core import mysql_connection
+from core import mysql_connection, process_user
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from core.command_cooldown import cooldown
@@ -95,9 +95,10 @@ async def task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 发放奖励并记录任务完成
     try:
         async with mysql_connection.transaction() as connection:
-            await connection.exec_driver_sql(
-                "UPDATE user SET coins = coins + %s WHERE id = %s",
-                (reward_coins, user_id),
+            await process_user.add_free_coins(
+                user_id,
+                reward_coins,
+                connection=connection,
             )
             await connection.exec_driver_sql(
                 "INSERT INTO user_task (user_id, task_id) VALUES (%s, %s)",

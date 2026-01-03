@@ -284,7 +284,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     async with mysql_connection.transaction() as connection:
         row = await mysql_connection.fetch_one(
-            "SELECT permission, coins, info FROM user WHERE id = %s",
+            "SELECT permission, coins + coins_paid AS coins_total, info FROM user WHERE id = %s",
             (user_id,),
             connection=connection,
         )
@@ -305,9 +305,10 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"Try using /lottery to get some coins!")
             return
 
-        await connection.exec_driver_sql(
-            "UPDATE user SET coins = coins - %s WHERE id = %s",
-            (coin_cost, user_id),
+        await process_user.spend_user_coins(
+            user_id,
+            coin_cost,
+            connection=connection,
         )
         pool_add = stake_reward_pool.calculate_pool_add(coin_cost)
         if pool_add > 0:

@@ -77,17 +77,22 @@ async def gamble_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         async with mysql_connection.transaction() as connection:
             result = await mysql_connection.fetch_one(
-                "SELECT coins FROM user WHERE id = %s",
+                "SELECT coins, coins_paid FROM user WHERE id = %s",
                 (user_id,),
                 connection=connection,
             )
-            if not result or result[0] < bet_value:
+            current_coins = (result[0] or 0) + (result[1] or 0) if result else 0
+            if not result or current_coins < bet_value:
                 await query.answer("您的硬币不足", show_alert=True)
                 return
-            await connection.exec_driver_sql(
-                "UPDATE user SET coins = coins - %s WHERE id = %s",
-                (bet_value, user_id),
+            spent = await process_user.spend_user_coins(
+                user_id,
+                bet_value,
+                connection=connection,
             )
+            if not spent:
+                await query.answer("您的硬币不足", show_alert=True)
+                return
     except Exception:
         await query.answer("扣除硬币时出错，请稍后再试。", show_alert=True)
         return

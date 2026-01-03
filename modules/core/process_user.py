@@ -23,11 +23,92 @@ async def update_user_lottery_date(user_id):
     )
 
 
-async def update_user_coins(user_id, coins):
+async def get_user_coin_balances(user_id, *, connection=None) -> tuple[int, int]:
+    row = await mysql_connection.fetch_one(
+        "SELECT coins, coins_paid FROM user WHERE id = %s",
+        (user_id,),
+        connection=connection,
+    )
+    if not row:
+        return 0, 0
+    coins_free = row[0] or 0
+    coins_paid = row[1] or 0
+    return coins_free, coins_paid
+
+
+async def get_user_total_coins(user_id, *, connection=None) -> int:
+    coins_free, coins_paid = await get_user_coin_balances(
+        user_id,
+        connection=connection,
+    )
+    return coins_free + coins_paid
+
+
+async def add_free_coins(user_id, coins, *, connection=None) -> int:
+    coins = int(coins)
+    if coins <= 0:
+        return 0
     await mysql_connection.execute(
         "UPDATE user SET coins = coins + %s WHERE id = %s",
         (coins, user_id),
+        connection=connection,
     )
+    return coins
+
+
+async def add_paid_coins(user_id, coins, *, connection=None) -> int:
+    coins = int(coins)
+    if coins <= 0:
+        return 0
+    await mysql_connection.execute(
+        "UPDATE user SET coins_paid = coins_paid + %s WHERE id = %s",
+        (coins, user_id),
+        connection=connection,
+    )
+    return coins
+
+
+async def spend_user_coins(user_id, amount, *, connection=None) -> bool:
+    amount = int(amount)
+    if amount <= 0:
+        return True
+    if connection is None:
+        async with mysql_connection.transaction() as connection:
+            return await spend_user_coins(user_id, amount, connection=connection)
+
+    row = await mysql_connection.fetch_one(
+        "SELECT coins, coins_paid FROM user WHERE id = %s FOR UPDATE",
+        (user_id,),
+        connection=connection,
+    )
+    if not row:
+        return False
+    coins_free = row[0] or 0
+    coins_paid = row[1] or 0
+    total = coins_free + coins_paid
+    if total < amount:
+        return False
+
+    if coins_free >= amount:
+        new_free = coins_free - amount
+        new_paid = coins_paid
+    else:
+        remaining = amount - coins_free
+        new_free = 0
+        new_paid = coins_paid - remaining
+
+    await connection.exec_driver_sql(
+        "UPDATE user SET coins = %s, coins_paid = %s WHERE id = %s",
+        (new_free, new_paid, user_id),
+    )
+    return True
+
+
+async def update_user_coins(user_id, coins, *, connection=None):
+    coins = int(coins)
+    if coins >= 0:
+        return await add_free_coins(user_id, coins, connection=connection)
+    return await spend_user_coins(user_id, -coins, connection=connection)
 
 
 async def user_exists(user_id):
@@ -110,11 +191,7 @@ async def async_get_user_personal_info(user_id: int) -> str:
 
 
 async def get_user_coins(user_id: int) -> int:
-    row = await mysql_connection.fetch_one(
-        "SELECT coins FROM user WHERE id = %s",
-        (user_id,),
-    )
-    return row[0] if row else 0
+    return await get_user_total_coins(user_id)
 
 
 def get_user_coins_sync(user_id: int) -> int:

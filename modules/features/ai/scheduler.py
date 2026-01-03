@@ -60,7 +60,7 @@ def _format_scheduled_message(
 
 async def _build_user_state_prompt(user_id: int) -> Optional[str]:
     row = await mysql_connection.fetch_one(
-        "SELECT permission, coins, info FROM user WHERE id = %s",
+        "SELECT permission, coins + coins_paid AS coins_total, info FROM user WHERE id = %s",
         (user_id,),
     )
     if not row:

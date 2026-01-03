@@ -6,7 +6,7 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 import telegram
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
-from core import mysql_connection
+from core import mysql_connection, process_user
 from core.command_cooldown import cooldown
 
 # 防止用户快速多次点击的锁
@@ -291,7 +291,7 @@ async def check_and_deduct_coins(user_id: int) -> bool:
     try:
         async with mysql_connection.transaction() as connection:
             user = await mysql_connection.fetch_one(
-                "SELECT id, coins FROM user WHERE id = %s",
+                "SELECT id, coins, coins_paid FROM user WHERE id = %s",
                 (user_id,),
                 connection=connection,
             )
@@ -300,15 +300,19 @@ async def check_and_deduct_coins(user_id: int) -> bool:
                 logger.warning(f"用户 {user_id} 不存在")
                 return False
 
-            if user[1] < 1:
-                logger.info(f"用户 {user_id} 金币不足，当前金币: {user[1]}")
+            current_coins = (user[1] or 0) + (user[2] or 0)
+            if current_coins < 1:
+                logger.info(f"用户 {user_id} 金币不足，当前金币: {current_coins}")
                 return False
-
-            await connection.exec_driver_sql(
-                "UPDATE user SET coins = coins - 1 WHERE id = %s",
-                (user_id,),
+            spent = await process_user.spend_user_coins(
+                user_id,
+                1,
+                connection=connection,
             )
-            logger.info(f"用户 {user_id} 扣除1金币成功，剩余金币: {user[1] - 1}")
+            if not spent:
+                logger.info(f"用户 {user_id} 金币不足，当前金币: {current_coins}")
+                return False
+            logger.info(f"用户 {user_id} 扣除1金币成功，剩余金币: {current_coins - 1}")
             return True
     except Exception as e:
         logger.error(f"扣除金币时出错: {str(e)}")

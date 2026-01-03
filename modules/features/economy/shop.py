@@ -1,6 +1,6 @@
 import asyncio
 import random
-from core import mysql_connection
+from core import mysql_connection, process_user
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from datetime import datetime, date, timedelta
@@ -87,7 +87,7 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 async with mysql_connection.transaction() as connection:
                     result = await mysql_connection.fetch_one(
-                        "SELECT coins, permanent_records_limit FROM user WHERE id = %s",
+                        "SELECT coins, coins_paid, permanent_records_limit FROM user WHERE id = %s",
                         (user_id,),
                         connection=connection,
                     )
@@ -95,16 +95,23 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await query.answer("请先使用 /me 命令获取个人信息。", show_alert=True)
                         return
 
-                    user_coins, current_limit = result
+                    user_coins = (result[0] or 0) + (result[1] or 0)
+                    current_limit = result[2]
                     if user_coins < 100:
                         await query.answer("硬币不足，无法购买此商品。", show_alert=True)
                         return
-
+                    spent = await process_user.spend_user_coins(
+                        user_id,
+                        100,
+                        connection=connection,
+                    )
+                    if not spent:
+                        await query.answer("硬币不足，无法购买此商品。", show_alert=True)
+                        return
                     await connection.exec_driver_sql(
-                        "UPDATE user SET coins = coins - %s, "
-                        "permanent_records_limit = permanent_records_limit + 1 "
+                        "UPDATE user SET permanent_records_limit = permanent_records_limit + 1 "
                         "WHERE id = %s",
-                        (100, user_id),
+                        (user_id,),
                     )
                     new_row = await mysql_connection.fetch_one(
                         "SELECT permanent_records_limit FROM user WHERE id = %s",
@@ -150,7 +157,7 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 async with mysql_connection.transaction() as connection:
                     result = await mysql_connection.fetch_one(
-                        "SELECT permission, coins FROM user WHERE id = %s",
+                        "SELECT permission, coins, coins_paid FROM user WHERE id = %s",
                         (user_id,),
                         connection=connection,
                     )
@@ -158,15 +165,24 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await query.answer("请先使用 /me 命令获取个人信息。", show_alert=True)
                         return
 
-                    user_permission, user_coins = result
+                    user_permission = result[0]
+                    user_coins = (result[1] or 0) + (result[2] or 0)
                     if user_permission != 0:
                         await query.answer("您已经拥有权限或已升级。", show_alert=True)
                     elif user_coins < 50:
                         await query.answer("硬币不足，无法购买此商品。", show_alert=True)
                     else:
+                        spent = await process_user.spend_user_coins(
+                            user_id,
+                            50,
+                            connection=connection,
+                        )
+                        if not spent:
+                            await query.answer("硬币不足，无法购买此商品。", show_alert=True)
+                            return
                         await connection.exec_driver_sql(
-                            "UPDATE user SET coins = coins - %s, permission = %s WHERE id = %s",
-                            (50, 1, user_id),
+                            "UPDATE user SET permission = %s WHERE id = %s",
+                            (1, user_id),
                         )
                         await query.answer("购买成功！您的权限已升级到1级。", show_alert=True)
             except Exception:
@@ -178,7 +194,7 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 async with mysql_connection.transaction() as connection:
                     result = await mysql_connection.fetch_one(
-                        "SELECT permission, coins FROM user WHERE id = %s",
+                        "SELECT permission, coins, coins_paid FROM user WHERE id = %s",
                         (user_id,),
                         connection=connection,
                     )
@@ -186,7 +202,8 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await query.answer("请先使用 /me 命令获取个人信息。", show_alert=True)
                         return
 
-                    user_permission, user_coins = result
+                    user_permission = result[0]
+                    user_coins = (result[1] or 0) + (result[2] or 0)
                     if user_permission == 0:
                         await query.answer("您需要先升级到1级权限。", show_alert=True)
                     elif user_permission >= 2:
@@ -194,9 +211,17 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     elif user_coins < 100:
                         await query.answer("硬币不足，无法购买此商品。", show_alert=True)
                     else:
+                        spent = await process_user.spend_user_coins(
+                            user_id,
+                            100,
+                            connection=connection,
+                        )
+                        if not spent:
+                            await query.answer("硬币不足，无法购买此商品。", show_alert=True)
+                            return
                         await connection.exec_driver_sql(
-                            "UPDATE user SET coins = coins - %s, permission = %s WHERE id = %s",
-                            (100, 2, user_id),
+                            "UPDATE user SET permission = %s WHERE id = %s",
+                            (2, user_id),
                         )
                         await query.answer("购买成功！您的权限已升级到2级。", show_alert=True)
             except Exception:
@@ -208,7 +233,7 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 async with mysql_connection.transaction() as connection:
                     result = await mysql_connection.fetch_one(
-                        "SELECT permission, coins FROM user WHERE id = %s",
+                        "SELECT permission, coins, coins_paid FROM user WHERE id = %s",
                         (user_id,),
                         connection=connection,
                     )
@@ -216,7 +241,8 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await query.answer("请先使用 /me 命令获取个人信息。", show_alert=True)
                         return
 
-                    user_permission, user_coins = result
+                    user_permission = result[0]
+                    user_coins = (result[1] or 0) + (result[2] or 0)
                     if user_permission < 2:
                         await query.answer("您需要先升级到2级权限。", show_alert=True)
                     elif user_permission >= 3:
@@ -224,9 +250,17 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     elif user_coins < 10000:
                         await query.answer("硬币不足，无法购买此商品。", show_alert=True)
                     else:
+                        spent = await process_user.spend_user_coins(
+                            user_id,
+                            10000,
+                            connection=connection,
+                        )
+                        if not spent:
+                            await query.answer("硬币不足，无法购买此商品。", show_alert=True)
+                            return
                         await connection.exec_driver_sql(
-                            "UPDATE user SET coins = coins - %s, permission = %s WHERE id = %s",
-                            (10000, 3, user_id),
+                            "UPDATE user SET permission = %s WHERE id = %s",
+                            (3, user_id),
                         )
                         await query.answer("购买成功！您的权限已升级到3级。", show_alert=True)
             except Exception:
@@ -238,7 +272,7 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 async with mysql_connection.transaction() as connection:
                     result = await mysql_connection.fetch_one(
-                        "SELECT coins FROM user WHERE id = %s",
+                        "SELECT coins, coins_paid FROM user WHERE id = %s",
                         (user_id,),
                         connection=connection,
                     )
@@ -246,17 +280,26 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await query.answer("请先使用 /me 命令获取个人信息。", show_alert=True)
                         return
 
-                    user_coins = result[0]
+                    user_coins = (result[0] or 0) + (result[1] or 0)
                     if user_coins < 10:
                         await query.answer(f"硬币不足，您当前只有 {user_coins} 个硬币。", show_alert=True)
                         return
 
                     reward = random.randint(0, 20)
-                    new_coins = user_coins - 10 + reward
-                    await connection.exec_driver_sql(
-                        "UPDATE user SET coins = %s WHERE id = %s",
-                        (new_coins, user_id),
+                    spent = await process_user.spend_user_coins(
+                        user_id,
+                        10,
+                        connection=connection,
                     )
+                    if not spent:
+                        await query.answer(f"硬币不足，您当前只有 {user_coins} 个硬币。", show_alert=True)
+                        return
+                    if reward > 0:
+                        await process_user.add_free_coins(
+                            user_id,
+                            reward,
+                            connection=connection,
+                        )
 
                     today = date.today()
                     if user_id in scratch_records:
@@ -272,9 +315,10 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                     bonus_message = ""
                     if scratch_records[user_id]['count'] >= 5:
-                        await connection.exec_driver_sql(
-                            "UPDATE user SET coins = coins + %s WHERE id = %s",
-                            (10, user_id),
+                        await process_user.add_free_coins(
+                            user_id,
+                            10,
+                            connection=connection,
                         )
                         scratch_records[user_id]['count'] = 0
                         bonus_message = "由于您连续5次都没抽到10个以上的金币，系统赠送您10个金币作为安慰！"
@@ -366,7 +410,7 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 async with mysql_connection.transaction() as connection:
                     result = await mysql_connection.fetch_one(
-                        "SELECT coins FROM user WHERE id = %s",
+                        "SELECT coins, coins_paid FROM user WHERE id = %s",
                         (user_id,),
                         connection=connection,
                     )
@@ -374,7 +418,7 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await query.answer("请先使用 /me 命令获取个人信息。", show_alert=True)
                         return
 
-                    user_coins = result[0]
+                    user_coins = (result[0] or 0) + (result[1] or 0)
                     if user_coins < 1:
                         await query.answer(f"硬币不足，您当前只有 {user_coins} 个硬币。", show_alert=True)
                         return
@@ -391,11 +435,20 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     else:
                         reward = 100
 
-                    new_coins = user_coins - 1 + reward
-                    await connection.exec_driver_sql(
-                        "UPDATE user SET coins = %s WHERE id = %s",
-                        (new_coins, user_id),
+                    spent = await process_user.spend_user_coins(
+                        user_id,
+                        1,
+                        connection=connection,
                     )
+                    if not spent:
+                        await query.answer(f"硬币不足，您当前只有 {user_coins} 个硬币。", show_alert=True)
+                        return
+                    if reward > 0:
+                        await process_user.add_free_coins(
+                            user_id,
+                            reward,
+                            connection=connection,
+                        )
 
                     today = date.today()
                     if user_id in huanle_records:
@@ -411,9 +464,10 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                     bonus_message = ""
                     if huanle_records[user_id]['count'] >= 5:
-                        await connection.exec_driver_sql(
-                            "UPDATE user SET coins = coins + %s WHERE id = %s",
-                            (2, user_id),
+                        await process_user.add_free_coins(
+                            user_id,
+                            2,
+                            connection=connection,
                         )
                         huanle_records[user_id]['count'] = 0
                         bonus_message = "由于您连续5次都没有获得奖励，系统赠送您2个金币作为安慰！"

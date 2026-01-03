@@ -408,9 +408,10 @@ async def create_prediction(user_id, predict_type, amount, start_price):
                 _, _, existing_amount, _, end_time = existing_prediction
                 if end_time < datetime.now():
                     logging.warning(f"用户 {user_id} 有过期未结算的预测, 正在进行结算处理")
-                    await connection.exec_driver_sql(
-                        "UPDATE user SET coins = coins + %s WHERE id = %s",
-                        (existing_amount, user_id),
+                    await process_user.add_free_coins(
+                        user_id,
+                        existing_amount,
+                        connection=connection,
                     )
                     await connection.exec_driver_sql(
                         "UPDATE user_btc_predictions SET is_completed = TRUE WHERE user_id = %s",
@@ -424,11 +425,12 @@ async def create_prediction(user_id, predict_type, amount, start_price):
             end_time = start_time + timedelta(minutes=10)
 
             result = await mysql_connection.fetch_one(
-                "SELECT coins FROM user WHERE id = %s",
+                "SELECT coins, coins_paid FROM user WHERE id = %s",
                 (user_id,),
                 connection=connection,
             )
-            if not result or result[0] < amount:
+            current_coins = (result[0] or 0) + (result[1] or 0) if result else 0
+            if not result or current_coins < amount:
                 return False, "金币不足"
 
             await connection.exec_driver_sql(
@@ -442,10 +444,13 @@ async def create_prediction(user_id, predict_type, amount, start_price):
                 (user_id, predict_type, amount, start_price, start_time, end_time),
             )
 
-            await connection.exec_driver_sql(
-                "UPDATE user SET coins = coins - %s WHERE id = %s",
-                (amount, user_id),
+            spent = await process_user.spend_user_coins(
+                user_id,
+                amount,
+                connection=connection,
             )
+            if not spent:
+                return False, "金币不足"
 
         return True, None
     except Exception as e:
@@ -486,9 +491,10 @@ async def check_prediction_result(user_id):
             reward = 0
             if is_correct:
                 reward = int(amount * 1.8)
-                await connection.exec_driver_sql(
-                    "UPDATE user SET coins = coins + %s WHERE id = %s",
-                    (reward, user_id),
+                await process_user.add_free_coins(
+                    user_id,
+                    reward,
+                    connection=connection,
                 )
 
         return {

@@ -3,7 +3,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
 
-from core import config, mysql_connection
+from core import config, mysql_connection, process_user
 import asyncio
 from core.command_cooldown import cooldown 
 
@@ -325,9 +325,10 @@ async def add_invitation_record(invited_user_id, referrer_id, invited_user_name)
                 )
                 is_new_user = True
             else:
-                await connection.exec_driver_sql(
-                    "UPDATE user SET coins = coins + %s WHERE id = %s",
-                    (INVITATION_REWARD, invited_user_id),
+                await process_user.add_free_coins(
+                    invited_user_id,
+                    INVITATION_REWARD,
+                    connection=connection,
                 )
 
             await connection.exec_driver_sql(
@@ -335,9 +336,10 @@ async def add_invitation_record(invited_user_id, referrer_id, invited_user_name)
                 (invited_user_id, referrer_id),
             )
 
-            await connection.exec_driver_sql(
-                "UPDATE user SET coins = coins + %s WHERE id = %s",
-                (INVITATION_REWARD, referrer_id),
+            await process_user.add_free_coins(
+                referrer_id,
+                INVITATION_REWARD,
+                connection=connection,
             )
 
         return True, is_new_user

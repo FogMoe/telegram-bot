@@ -17,7 +17,7 @@ MIN_DAILY_RATE = 0.05
 
 
 async def get_total_coins():
-    row = await mysql_connection.fetch_one("SELECT SUM(coins) FROM user")
+    row = await mysql_connection.fetch_one("SELECT SUM(coins + coins_paid) FROM user")
     return row[0] if row and row[0] else 0
 
 
@@ -163,10 +163,17 @@ async def stake_coins(update: Update, context: ContextTypes.DEFAULT_TYPE, amount
                     )
                     return
 
-                await connection.exec_driver_sql(
-                    "UPDATE user SET coins = coins - %s WHERE id = %s",
-                    (amount, user_id),
+                spent = await process_user.spend_user_coins(
+                    user_id,
+                    amount,
+                    connection=connection,
                 )
+                if not spent:
+                    await update.message.reply_text(
+                        f"您没有足够的金币。当前余额: {user_coins} 金币。\n"
+                        f"You don't have enough coins. Current balance: {user_coins} coins."
+                    )
+                    return
 
                 now = datetime.now()
                 await connection.exec_driver_sql(
@@ -239,9 +246,10 @@ async def collect_reward(query, user_id):
                     return
                 reward = interval_reward * intervals_paid
 
-                await connection.exec_driver_sql(
-                    "UPDATE user SET coins = coins + %s WHERE id = %s",
-                    (reward, user_id),
+                await process_user.add_free_coins(
+                    user_id,
+                    reward,
+                    connection=connection,
                 )
                 await stake_reward_pool.subtract_from_pool(reward, connection=connection)
 
@@ -299,15 +307,17 @@ async def withdraw_stake(query, user_id):
                     intervals_paid = min(intervals_passed, max_intervals_by_pool)
                     reward = interval_reward * intervals_paid
 
-                await connection.exec_driver_sql(
-                    "UPDATE user SET coins = coins + %s WHERE id = %s",
-                    (refunded_principal, user_id),
+                await process_user.add_free_coins(
+                    user_id,
+                    refunded_principal,
+                    connection=connection,
                 )
 
                 if reward > 0:
-                    await connection.exec_driver_sql(
-                        "UPDATE user SET coins = coins + %s WHERE id = %s",
-                        (reward, user_id),
+                    await process_user.add_free_coins(
+                        user_id,
+                        reward,
+                        connection=connection,
                     )
                     await stake_reward_pool.subtract_from_pool(reward, connection=connection)
                     msg = (

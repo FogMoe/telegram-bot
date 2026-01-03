@@ -113,9 +113,10 @@ async def verify_and_use_code(user_id: int, code: str) -> tuple:
                 (user_id, current_time, code_id),
             )
 
-            await connection.exec_driver_sql(
-                "UPDATE user SET coins = coins + %s WHERE id = %s",
-                (amount, user_id),
+            await process_user.add_paid_coins(
+                user_id,
+                amount,
+                connection=connection,
             )
 
         return True, amount
@@ -335,7 +336,7 @@ async def topup_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         if coins <= 0:
             await query.edit_message_text("金币数量无效，无法发放。")
             return
-        await process_user.async_update_user_coins(target_user_id, coins)
+        await process_user.add_paid_coins(target_user_id, coins)
         await query.edit_message_text(
             f"已发放充值：{price_label} -> {coins}金币\n用户: {user_name} (ID: {target_user_id})"
         )
