@@ -14,6 +14,7 @@ from core.archive_utils import send_permanent_records_archive
 from core.prompt_utils import format_metadata_attrs, format_user_state_prompt, xml_escape
 from core.telegram_utils import describe_message_for_context, partial_send, safe_send_markdown
 from features.ai import ai_chat, summary
+from features.ai.generated_image_sender import send_generated_images_from_tool_logs
 from features.ai.sticker_sender import send_ai_reply_with_stickers
 from features.ai.task_runner import run_ai_task
 
@@ -714,6 +715,14 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             fallback_send=fallback_send,
             logger=logger,
             reply_to_message_id=getattr(effective_message, "message_id", None),
+        )
+    )
+    sent_messages.extend(
+        await send_generated_images_from_tool_logs(
+            bot=context.bot,
+            chat_id=update.effective_chat.id,
+            tool_logs=tool_logs,
+            logger=logger,
         )
     )
 

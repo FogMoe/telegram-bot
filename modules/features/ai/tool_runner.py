@@ -121,6 +121,26 @@ def _format_tool_fallback(payload: Tuple[str, Dict[str, Any]]) -> str:
     return ""
 
 
+def _public_tool_result(tool_name: str, tool_result: Dict[str, Any]) -> Dict[str, Any]:
+    if tool_name != "generate_image" or not isinstance(tool_result, dict):
+        return tool_result
+
+    if tool_result.get("error"):
+        public_result = {"error": tool_result.get("error")}
+        for key in ("status_code", "details", "response_preview", "warnings"):
+            if key in tool_result:
+                public_result[key] = tool_result[key]
+        return public_result
+
+    if tool_result.get("status") == "generated":
+        return {
+            "status": "generated",
+            "message": "Generated image is ready and will be sent to Telegram.",
+        }
+
+    return {"status": tool_result.get("status") or "unknown"}
+
+
 def run_tool_loop(
     provider: str,
     model: str,
@@ -215,7 +235,7 @@ def run_tool_loop(
             handler = AI_TOOL_HANDLERS.get(function_name)
             if handler:
                 try:
-                    tool_result = handler(**function_args)
+                    internal_tool_result = handler(**function_args)
                     logging.info(
                         "%s 工具执行成功: %s, args=%s",
                         provider_name,
@@ -224,13 +244,15 @@ def run_tool_loop(
                     )
                 except TypeError as exc:
                     logging.error("%s 工具参数错误: %s, %s", provider_name, function_name, exc)
-                    tool_result = {"error": f"参数错误: {str(exc)}"}
+                    internal_tool_result = {"error": f"参数错误: {str(exc)}"}
                 except Exception as exc:
                     logging.exception("%s 工具执行失败: %s, %s", provider_name, function_name, exc)
-                    tool_result = {"error": f"执行失败: {str(exc)}"}
+                    internal_tool_result = {"error": f"执行失败: {str(exc)}"}
             else:
                 logging.warning("%s 未知工具: %s", provider_name, function_name)
-                tool_result = {"error": f"未知工具: {function_name}"}
+                internal_tool_result = {"error": f"未知工具: {function_name}"}
+
+            tool_result = _public_tool_result(function_name, internal_tool_result)
 
             filtered_messages.append({
                 "role": "tool",
@@ -239,13 +261,16 @@ def run_tool_loop(
                 "content": json.dumps(tool_result, ensure_ascii=False),
             })
             last_tool_payload = (function_name, tool_result)
-            tool_logs.append({
+            tool_log_entry = {
                 "type": "tool_result",
                 "tool_name": function_name,
                 "arguments": function_args,
                 "result": tool_result,
                 "tool_call_id": tool_call_id,
-            })
+            }
+            if function_name == "generate_image":
+                tool_log_entry["internal_result"] = internal_tool_result
+            tool_logs.append(tool_log_entry)
 
     logging.warning("%s 工具调用次数超限（%s轮）", provider_name, max_iterations)
     return "抱歉，处理您的请求时遇到了问题，请稍后再试。", tool_logs

@@ -2,6 +2,7 @@ from typing import Callable, Dict
 
 from .code_tools import execute_python_code_tool
 from .http_tools import fetch_url_tool, google_search_tool
+from .image_tools import generate_image_tool
 from .memory_tools import (
     fetch_group_context_tool,
     fetch_permanent_summaries_tool,
@@ -21,6 +22,7 @@ AI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
     "kindness_gift": kindness_gift_tool,
     "fetch_url": fetch_url_tool,
     "execute_python_code": execute_python_code_tool,
+    "generate_image": generate_image_tool,
     "update_impression": update_impression_tool,
     "fetch_permanent_summaries": fetch_permanent_summaries_tool,
     "search_permanent_records": search_permanent_records_tool,

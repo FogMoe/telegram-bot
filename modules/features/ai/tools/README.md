@@ -8,6 +8,7 @@
 - `schemas.py`：工具 schema 定义（OpenAI JSON Schema）
 - `registry.py`：工具注册中心（名称 -> 处理函数）
 - `http_tools.py`：外部 HTTP 工具（SerpApi、Jina Reader）
+- `image_tools.py`：图片生成工具（可配置接口，保存生成图片供发送层使用）
 - `code_tools.py`：Judge0 执行工具
 - `user_tools.py`：用户/金币/好感/印象相关工具
 - `memory_tools.py`：群聊上下文与永久摘要工具

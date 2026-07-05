@@ -110,6 +110,51 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
     {
         "type": "function",
         "function": {
+            "name": "generate_image",
+            "description": (
+                "Generate exactly one image from a text prompt."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Prompt for the image to generate.",
+                        "maxLength": 2000,
+                    },
+                    "width": {
+                        "type": "integer",
+                        "description": "Image width",
+                        "default": 1024,
+                        "minimum": 64,
+                        "maximum": 4096,
+                    },
+                    "height": {
+                        "type": "integer",
+                        "description": "Image height",
+                        "default": 1024,
+                        "minimum": 64,
+                        "maximum": 4096,
+                    },
+                    "steps": {
+                        "type": "integer",
+                        "description": "Generation steps",
+                        "default": 9,
+                        "minimum": 1,
+                        "maximum": 150,
+                    },
+                    "seed": {
+                        "type": "integer",
+                        "description": "Optional seed for deterministic generation",
+                    },
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "kindness_gift",
             "description": "Gift a certain amount of coins to the user",
             "parameters": {

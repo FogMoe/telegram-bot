@@ -2,6 +2,7 @@ from .context import clear_tool_request_context, get_tool_request_context, set_t
 from .registry import AI_TOOL_HANDLERS, OPENAI_TOOLS
 from .code_tools import execute_python_code_tool
 from .http_tools import fetch_url_tool
+from .image_tools import generate_image_tool
 from .memory_tools import (
     fetch_permanent_summaries_tool,
     search_permanent_records_tool,
@@ -18,6 +19,7 @@ __all__ = [
     "clear_tool_request_context",
     "get_tool_request_context",
     "fetch_url_tool",
+    "generate_image_tool",
     "execute_python_code_tool",
     "kindness_gift_tool",
     "update_impression_tool",

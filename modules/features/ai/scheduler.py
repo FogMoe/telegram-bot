@@ -12,6 +12,7 @@ from core.archive_utils import send_permanent_records_archive
 from core.prompt_utils import format_metadata_attrs, format_user_state_prompt, xml_escape
 from core.telegram_utils import partial_send
 from features.ai import ai_chat, summary
+from features.ai.generated_image_sender import send_generated_images_from_tool_logs
 from features.ai.sticker_sender import send_ai_reply_with_stickers
 
 logger = logging.getLogger(__name__)
@@ -409,6 +410,12 @@ async def _process_schedule_task(
             text=str(assistant_message),
             first_text_send=send_func,
             fallback_send=send_func,
+            logger=logger,
+        )
+        await send_generated_images_from_tool_logs(
+            bot=context.bot,
+            chat_id=user_id,
+            tool_logs=tool_logs,
             logger=logger,
         )
 

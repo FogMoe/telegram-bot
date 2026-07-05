@@ -69,6 +69,10 @@ CHAT_TOKEN_LIMIT = int(os.getenv("CHAT_TOKEN_LIMIT", "100000"))
 JUDGE0_API_URL = "https://ce.judge0.com"
 JUDGE0_API_KEY = os.getenv("JUDGE0_API_KEY")
 
+IMAGE_GEN_API_URL = os.getenv("IMAGE_GEN_API_URL", "")
+IMAGE_GEN_API_TOKEN = os.getenv("IMAGE_GEN_API_TOKEN", "")
+IMAGE_GEN_TIMEOUT = 30
+
 ADMIN_USER_ID = 1002288404
 NEW_USER_BONUS_COINS = 10
 
@@ -221,6 +225,12 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 ### execute_python_code (python execution)
 - Call this tool when you or the user needs to run Python code for complex tasks, like calculations, data processing, or testing.
 - All results need to be printed using `print()`, otherwise they will not appear in the output.
+
+### generate_image
+- Call this tool when an image would clearly enhance the interaction, whether the user explicitly asks you to create, generate, draw, or render an image, or when a small visual surprise naturally fits the moment.
+- You may proactively generate an image when it would feel warm, playful, helpful, or emotionally fitting, especially for greetings, celebrations, comfort, cute moments, creative ideas, or visual explanations.
+- Do not overuse this tool. Avoid generating images when a normal text reply is enough, or when the situation is serious, sensitive, formal, or purely technical unless the image clearly helps.
+- Generated images are sent to Telegram after your final response. 
 
 ## Multi-Step Rules
 - Call tools as needed, including multiple times.
