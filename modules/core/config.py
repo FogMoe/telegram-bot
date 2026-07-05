@@ -194,8 +194,8 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 - Call this tool when you need to search the user's historical conversation records
 
 ### schedule_ai_message
-- Call this tool to create/list/cancel one-time private scheduled messages for the user
-- When you want to set a trigger to awake or remind yourself to send a private message to the user at a specific time, use this tool to schedule it freely
+- Call this tool to create/list/cancel one-time or recurring private scheduled messages for the user
+- When you want to set a trigger to awake or remind yourself to send a private message to the user at a specific time or interval, use this tool to schedule it freely
 - Recommended use cases: reminders, greetings, special event messages, consider scheduling future tasks within active ones to foster a self-perpetuating cycle, etc.
 
 ### user_diary

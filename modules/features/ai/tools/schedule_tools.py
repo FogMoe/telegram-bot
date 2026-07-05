@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from core import mysql_connection
@@ -7,6 +7,43 @@ from .context import get_tool_request_context
 
 MAX_PENDING_SCHEDULES = 3
 MAX_TOTAL_SCHEDULES = 12
+RECURRENCE_UNITS = {"none", "minute", "hour", "day"}
+
+
+def _normalise_recurrence_unit(value: Optional[str]) -> str:
+    raw = (value or "none").strip().lower()
+    aliases = {
+        "": "none",
+        "no": "none",
+        "once": "none",
+        "one_time": "none",
+        "one-time": "none",
+        "minutes": "minute",
+        "mins": "minute",
+        "min": "minute",
+        "hours": "hour",
+        "hourly": "hour",
+        "days": "day",
+        "daily": "day",
+    }
+    return aliases.get(raw, raw)
+
+
+def _recurrence_delta(unit: str, interval: int) -> Optional[timedelta]:
+    if unit == "minute":
+        return timedelta(minutes=interval)
+    if unit == "hour":
+        return timedelta(hours=interval)
+    if unit == "day":
+        return timedelta(days=interval)
+    return None
+
+
+def _default_first_run_at(unit: str, interval: int) -> Optional[datetime]:
+    delta = _recurrence_delta(unit, interval)
+    if delta is None:
+        return None
+    return datetime.utcnow() + delta
 
 
 def _parse_timestamp_utc(value: str | None) -> Optional[datetime]:
@@ -51,6 +88,8 @@ async def _create_or_replace_schedule(
     trigger_reason: str,
     context_text: Optional[str],
     instruction_text: str,
+    recurrence_unit: str,
+    recurrence_interval: int,
 ) -> tuple[Optional[int], Optional[datetime], bool, Optional[str]]:
     replaced = False
     blocked_reason: Optional[str] = None
@@ -83,11 +122,20 @@ async def _create_or_replace_schedule(
             if schedule_id is not None:
                 await connection.exec_driver_sql(
                     "UPDATE ai_schedules "
-                    "SET run_at = %s, trigger_reason = %s, context = %s, prompt = %s, "
+                    "SET run_at = %s, recurrence_unit = %s, recurrence_interval = %s, "
+                    "trigger_reason = %s, context = %s, prompt = %s, "
                     "status = 'pending', created_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP(), "
-                    "executed_at = NULL, error = NULL "
+                    "executed_at = NULL, last_run_at = NULL, error = NULL "
                     "WHERE id = %s",
-                    (run_at, trigger_reason, context_text, instruction_text, schedule_id),
+                    (
+                        run_at,
+                        recurrence_unit,
+                        recurrence_interval,
+                        trigger_reason,
+                        context_text,
+                        instruction_text,
+                        schedule_id,
+                    ),
                 )
                 replaced = True
             else:
@@ -96,9 +144,18 @@ async def _create_or_replace_schedule(
             return None, None, False, blocked_reason
         if schedule_id is None:
             await connection.exec_driver_sql(
-                "INSERT INTO ai_schedules (user_id, run_at, trigger_reason, context, prompt) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (user_id, run_at, trigger_reason, context_text, instruction_text),
+                "INSERT INTO ai_schedules "
+                "(user_id, run_at, recurrence_unit, recurrence_interval, trigger_reason, context, prompt) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (
+                    user_id,
+                    run_at,
+                    recurrence_unit,
+                    recurrence_interval,
+                    trigger_reason,
+                    context_text,
+                    instruction_text,
+                ),
             )
             row = await mysql_connection.fetch_one(
                 "SELECT LAST_INSERT_ID()",
@@ -122,6 +179,8 @@ async def _create_or_replace_schedule(
 def schedule_ai_message_tool(
     action: Optional[str] = None,
     timestamp_utc: Optional[str] = None,
+    recurrence_unit: Optional[str] = None,
+    recurrence_interval: Optional[int] = None,
     trigger_reason: Optional[str] = None,
     context: Optional[str] = None,
     instruction: Optional[str] = None,
@@ -146,12 +205,23 @@ def schedule_ai_message_tool(
     warnings: list[str] = []
 
     if action_value == "list":
-        if any([timestamp_utc, trigger_reason, context, instruction, schedule_id]):
+        if any(
+            [
+                timestamp_utc,
+                recurrence_unit,
+                recurrence_interval,
+                trigger_reason,
+                context,
+                instruction,
+                schedule_id,
+            ]
+        ):
             warnings.append("extra fields ignored for list action")
 
         rows = mysql_connection.run_sync(
             mysql_connection.fetch_all(
-                "SELECT id, run_at, created_at, executed_at, status, trigger_reason, context, prompt, error "
+                "SELECT id, run_at, recurrence_unit, recurrence_interval, created_at, "
+                "executed_at, last_run_at, status, trigger_reason, context, prompt, error "
                 "FROM ai_schedules WHERE user_id = %s "
                 "ORDER BY created_at DESC, id DESC LIMIT %s",
                 (user_id, MAX_TOTAL_SCHEDULES),
@@ -163,8 +233,11 @@ def schedule_ai_message_tool(
             (
                 task_id,
                 run_at,
+                task_recurrence_unit,
+                task_recurrence_interval,
                 created_at,
                 executed_at,
+                last_run_at,
                 status,
                 reason,
                 context_text,
@@ -176,6 +249,8 @@ def schedule_ai_message_tool(
             task = {
                 "schedule_id": task_id,
                 "timestamp_utc": _format_timestamp_utc(run_at),
+                "recurrence_unit": task_recurrence_unit or "none",
+                "recurrence_interval": task_recurrence_interval or 1,
                 "created_at": _format_timestamp_utc(created_at),
                 "status": status,
                 "trigger_reason": reason,
@@ -184,6 +259,8 @@ def schedule_ai_message_tool(
             }
             if executed_at:
                 task["executed_at"] = _format_timestamp_utc(executed_at)
+            if last_run_at:
+                task["last_run_at"] = _format_timestamp_utc(last_run_at)
             if error_text:
                 task["error"] = error_text
             tasks.append(task)
@@ -206,7 +283,7 @@ def schedule_ai_message_tool(
         except (TypeError, ValueError):
             return {"user_id": user_id, "error": "Invalid schedule_id"}
 
-        if any([timestamp_utc, trigger_reason, context, instruction]):
+        if any([timestamp_utc, recurrence_unit, recurrence_interval, trigger_reason, context, instruction]):
             warnings.append("extra fields ignored for cancel action")
 
         rowcount = mysql_connection.run_sync(
@@ -230,7 +307,25 @@ def schedule_ai_message_tool(
             response["warning"] = "; ".join(warnings)
         return response
 
-    if not timestamp_utc:
+    recurrence_unit_value = _normalise_recurrence_unit(recurrence_unit)
+    if recurrence_unit_value not in RECURRENCE_UNITS:
+        return {
+            "user_id": user_id,
+            "error": "Invalid recurrence_unit; expected none, minute, hour, or day",
+        }
+
+    try:
+        recurrence_interval_value = (
+            int(recurrence_interval) if recurrence_interval is not None else 1
+        )
+    except (TypeError, ValueError):
+        return {"user_id": user_id, "error": "Invalid recurrence_interval"}
+    if recurrence_interval_value < 1:
+        return {"user_id": user_id, "error": "recurrence_interval must be at least 1"}
+    if recurrence_unit_value == "none":
+        recurrence_interval_value = 1
+
+    if not timestamp_utc and recurrence_unit_value == "none":
         return {"user_id": user_id, "error": "Missing timestamp_utc for create action"}
     if not trigger_reason:
         return {"user_id": user_id, "error": "Missing trigger_reason for create action"}
@@ -238,9 +333,14 @@ def schedule_ai_message_tool(
     if not instruction_value:
         return {"user_id": user_id, "error": "Missing instruction for create action"}
 
-    run_at = _parse_timestamp_utc(timestamp_utc)
-    if run_at is None:
-        return {"user_id": user_id, "error": "Invalid timestamp_utc format"}
+    if timestamp_utc:
+        run_at = _parse_timestamp_utc(timestamp_utc)
+        if run_at is None:
+            return {"user_id": user_id, "error": "Invalid timestamp_utc format"}
+    elif recurrence_unit_value != "none":
+        run_at = _default_first_run_at(recurrence_unit_value, recurrence_interval_value)
+    else:
+        return {"user_id": user_id, "error": "Missing timestamp_utc for create action"}
 
     trigger_reason_value = str(trigger_reason).strip()
     if not trigger_reason_value:
@@ -269,6 +369,8 @@ def schedule_ai_message_tool(
             trigger_reason_value,
             context_value,
             instruction_value,
+            recurrence_unit_value,
+            recurrence_interval_value,
         )
     )
     if schedule_id is None:
@@ -292,6 +394,8 @@ def schedule_ai_message_tool(
         "status": "scheduled",
         "schedule_id": schedule_id,
         "timestamp_utc": _format_timestamp_utc(run_at),
+        "recurrence_unit": recurrence_unit_value,
+        "recurrence_interval": recurrence_interval_value,
         "created_at": _format_timestamp_utc(created_at),
         "trigger_reason": trigger_reason_value,
         "replaced_oldest": replaced,

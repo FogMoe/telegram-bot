@@ -188,7 +188,8 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
         "function": {
             "name": "schedule_ai_message",
             "description": (
-                "Schedule, list, or cancel one-time private messages for the user. "
+                "Schedule, list, or cancel one-time or recurring private messages for the user. "
+                "Use recurrence parameters when creating recurring schedules. "
                 "UTC timestamps only. Max 3 pending tasks, max 12 total (older tasks are overwritten)."
             ),
             "parameters": {
@@ -201,7 +202,23 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
                     },
                     "timestamp_utc": {
                         "type": "string",
-                        "description": "UTC time in ISO8601, e.g. 2025-01-01T12:00:00Z",
+                        "description": (
+                            "UTC time in ISO8601, e.g. 2025-01-01T12:00:00Z. "
+                            "Required for one-time schedules. For recurring schedules, this is "
+                            "the first run time; if omitted, first run is now + recurrence interval."
+                        ),
+                    },
+                    "recurrence_unit": {
+                        "type": "string",
+                        "enum": ["none", "minute", "hour", "day"],
+                        "description": "none | minute | hour | day. Use none for one-time schedules.",
+                        "default": "none",
+                    },
+                    "recurrence_interval": {
+                        "type": "integer",
+                        "description": "Repeat every N recurrence units. Ignored when recurrence_unit is none.",
+                        "default": 1,
+                        "minimum": 1,
                     },
                     "trigger_reason": {
                         "type": "string",

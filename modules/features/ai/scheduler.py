@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from telegram.ext import ContextTypes
@@ -19,6 +19,35 @@ SCHEDULE_POLL_INTERVAL = 60
 SCHEDULE_BATCH_SIZE = 5
 
 _schedule_lock = asyncio.Lock()
+
+
+def _recurrence_delta(unit: str, interval: int) -> Optional[timedelta]:
+    if unit == "minute":
+        return timedelta(minutes=interval)
+    if unit == "hour":
+        return timedelta(hours=interval)
+    if unit == "day":
+        return timedelta(days=interval)
+    return None
+
+
+def _calculate_next_run_at(
+    previous_run_at: datetime,
+    recurrence_unit: str,
+    recurrence_interval: int,
+) -> Optional[datetime]:
+    delta = _recurrence_delta(recurrence_unit, recurrence_interval)
+    if delta is None:
+        return None
+
+    if previous_run_at.tzinfo is not None:
+        previous_run_at = previous_run_at.astimezone(timezone.utc).replace(tzinfo=None)
+
+    now = datetime.utcnow()
+    next_run_at = previous_run_at + delta
+    while next_run_at <= now:
+        next_run_at += delta
+    return next_run_at
 
 
 def _format_timestamp(value: Optional[datetime]) -> str:
@@ -142,6 +171,20 @@ async def _mark_schedule_status(
     )
 
 
+async def _reschedule_recurring_task(
+    schedule_id: int,
+    last_run_at: datetime,
+    next_run_at: datetime,
+) -> None:
+    await mysql_connection.execute(
+        "UPDATE ai_schedules "
+        "SET status = 'pending', run_at = %s, last_run_at = %s, "
+        "executed_at = UTC_TIMESTAMP(), error = NULL "
+        "WHERE id = %s",
+        (next_run_at, last_run_at, schedule_id),
+    )
+
+
 async def _persist_tool_logs(
     conversation_id: int,
     tool_logs: list[dict],
@@ -226,7 +269,8 @@ async def _persist_tool_logs(
 async def _claim_due_schedules(limit: int = SCHEDULE_BATCH_SIZE) -> list[tuple]:
     async with mysql_connection.transaction() as connection:
         rows = await mysql_connection.fetch_all(
-            "SELECT id, user_id, run_at, created_at, trigger_reason, context, prompt "
+            "SELECT id, user_id, run_at, created_at, trigger_reason, context, prompt, "
+            "recurrence_unit, recurrence_interval "
             "FROM ai_schedules "
             "WHERE status = 'pending' AND run_at <= UTC_TIMESTAMP() "
             "ORDER BY run_at ASC, id ASC "
@@ -251,13 +295,32 @@ async def _process_schedule_task(
     task_row: tuple,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    schedule_id, user_id, run_at, created_at, trigger_reason, context_text, instruction = task_row
+    (
+        schedule_id,
+        user_id,
+        run_at,
+        created_at,
+        trigger_reason,
+        context_text,
+        instruction,
+        recurrence_unit,
+        recurrence_interval,
+    ) = task_row
     if isinstance(trigger_reason, bytes):
         trigger_reason = trigger_reason.decode("utf-8", errors="ignore")
     if isinstance(context_text, bytes):
         context_text = context_text.decode("utf-8", errors="ignore")
     if isinstance(instruction, bytes):
         instruction = instruction.decode("utf-8", errors="ignore")
+    if isinstance(recurrence_unit, bytes):
+        recurrence_unit = recurrence_unit.decode("utf-8", errors="ignore")
+    recurrence_unit = (recurrence_unit or "none").strip().lower()
+    try:
+        recurrence_interval = int(recurrence_interval or 1)
+    except (TypeError, ValueError):
+        recurrence_interval = 1
+    if recurrence_interval < 1:
+        recurrence_interval = 1
 
     try:
         user_state_prompt = await _build_user_state_prompt(user_id)
@@ -347,7 +410,15 @@ async def _process_schedule_task(
                 fallback_send=send_func,
             )
 
-        await _mark_schedule_status(schedule_id, "executed")
+        next_run_at = _calculate_next_run_at(
+            run_at,
+            recurrence_unit,
+            recurrence_interval,
+        )
+        if next_run_at is None:
+            await _mark_schedule_status(schedule_id, "executed")
+        else:
+            await _reschedule_recurring_task(schedule_id, run_at, next_run_at)
     except Exception as exc:
         logger.exception("Scheduled task %s failed: %s", schedule_id, exc)
         error_text = str(exc)
