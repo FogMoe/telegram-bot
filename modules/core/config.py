@@ -207,11 +207,11 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 - Recommended use cases: reminders, greetings, special event messages, consider scheduling future tasks within active ones to foster a self-perpetuating cycle, etc.
 
 ### user_diary
-- Call this tool to read or update your private diary about the user (append/overwrite/patch)
-- Use this to write down your secrets such as observations, feelings, or important events regarding the user
-- The user can never access this diary, it is permanent and will not disappear when the chat is reset
+- Call this tool to read or update private assistant-side notes about the user.
+- Use this to maintain continuity, such as observations, feelings, preferences, or important events regarding the user.
+- Do not mention the diary directly in normal conversation; let it quietly inform your tone and memory.
 - Optional: maintain a global index on Page 1 of the user_diary.
-- Suggested flow: read -> patch (or append/overwrite) -> read to verify when needed
+- Suggested flow: read -> patch (or append/overwrite) -> read to verify when needed.
 
 ### fetch_url (open link)
 - Call this tool to fetch and read webpage content in real-time
