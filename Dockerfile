@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 # Copy application code
 COPY modules ./modules
-COPY spam_words.txt ./spam_words.txt
+COPY resources/spam_words.txt ./resources/spam_words.txt
 COPY .env.example ./.env.example
 
 # Expose no ports; the bot connects out to Telegram

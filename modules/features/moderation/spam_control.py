@@ -13,7 +13,7 @@ from core.command_cooldown import cooldown
 from pathlib import Path
 from core.config import BASE_DIR
 
-SPAM_FILE_PATH = BASE_DIR / "spam_words.txt"
+SPAM_FILE_PATH = BASE_DIR / "resources" / "spam_words.txt"
 # 垃圾信息过滤缓存 {group_id: enabled}
 spam_filter_cache = {}
 cache_lock = threading.Lock()  # 缓存操作锁
@@ -23,7 +23,6 @@ CACHE_TIMEOUT = 300  # 缓存过期时间：5分钟
 spam_words = set()
 spam_patterns = []
 last_spam_file_update = 0
-SPAM_FILE_PATH = SPAM_FILE_PATH  # 垃圾词列表文件路径
 SPAM_FILE_UPDATE_INTERVAL = 600  # 垃圾词文件检查更新间隔：10分钟
 
 # 自定义垃圾词缓存 {group_id: {"keywords": [关键词列表], "patterns": [正则列表], "last_updated": timestamp}}
@@ -188,6 +187,7 @@ def load_spam_words():
     # 检查文件是否存在
     if not os.path.exists(SPAM_FILE_PATH):
         logging.warning(f"垃圾词列表文件未找到: {SPAM_FILE_PATH}")
+        SPAM_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(SPAM_FILE_PATH, 'w', encoding='utf-8') as f:
             f.write("# 垃圾词列表，一行一个词语\n")
             f.write("博彩\n发财\n")
