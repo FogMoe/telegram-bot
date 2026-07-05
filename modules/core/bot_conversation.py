@@ -113,6 +113,62 @@ def _format_xml_message(
     return "\n".join(lines)
 
 
+def _media_mime_type(media_type: str, effective_message) -> str | None:
+    if media_type == "photo":
+        return "image/jpeg"
+    if media_type == "sticker":
+        sticker = effective_message.sticker
+        if getattr(sticker, "is_animated", False) or getattr(sticker, "is_video", False):
+            return None
+        return "image/webp"
+    return None
+
+
+def _build_multimodal_user_message(
+    formatted_message: str,
+    *,
+    base64_str: str,
+    mime_type: str | None,
+) -> dict | None:
+    if not mime_type:
+        return None
+    return {
+        "role": "user",
+        "content": [
+            {
+                "type": "text",
+                "text": formatted_message,
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{mime_type};base64,{base64_str}",
+                },
+            },
+        ],
+    }
+
+
+def _replace_current_user_message_for_ai(
+    messages: list,
+    *,
+    persisted_content: str,
+    runtime_message: dict | None,
+) -> list:
+    if not runtime_message:
+        return list(messages)
+
+    messages_for_ai = list(messages)
+    for index in range(len(messages_for_ai) - 1, -1, -1):
+        message = messages_for_ai[index]
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "user" and message.get("content") == persisted_content:
+            messages_for_ai[index] = runtime_message
+            break
+    return messages_for_ai
+
+
 async def should_trigger_ai_response(message_text: str) -> bool:
     """
     使用配置的 classifier AI 模型判断群聊消息是否需要调用主 AI 回复。
@@ -355,6 +411,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     chat_type = update.effective_chat.type or "private"
     group_title = (update.effective_chat.title or "").strip() if update.effective_chat else ""
+    runtime_user_message = None
 
     # 如果是媒体消息，进行下载、AI分析、格式化描述
     if is_media:
@@ -404,6 +461,20 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 media_type=media_type,
                 media_description=image_description,
                 media_emoji=media_emoji,
+            )
+            runtime_formatted_message = _format_xml_message(
+                chat_type=chat_type,
+                chat_title=group_title or None,
+                timestamp=message_time,
+                user_name=user_name,
+                message_text=message_text,
+                media_type=media_type,
+                media_emoji=media_emoji,
+            )
+            runtime_user_message = _build_multimodal_user_message(
+                runtime_formatted_message,
+                base64_str=base64_str,
+                mime_type=_media_mime_type(media_type, effective_message),
             )
 
         except Exception as e:
@@ -469,7 +540,11 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # 立即获取最新历史记录，以便AI能看到刚刚插入的消息
     chat_history = await mysql_connection.async_get_chat_history(conversation_id)
 
-    chat_history_for_ai = list(chat_history)
+    chat_history_for_ai = _replace_current_user_message_for_ai(
+        chat_history,
+        persisted_content=formatted_message,
+        runtime_message=runtime_user_message,
+    )
 
     # 异步发送"正在输入"状态
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
@@ -483,7 +558,12 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "user_state_prompt": user_state_prompt,
     }
 
-    assistant_message, tool_logs = await ai_chat.get_ai_response(chat_history_for_ai, user_id, tool_context=tool_context)
+    assistant_message, tool_logs = await ai_chat.get_ai_response(
+        chat_history_for_ai,
+        user_id,
+        tool_context=tool_context,
+        text_fallback_messages=chat_history,
+    )
 
     pending_tool_call_ids = []
     for tool_log in tool_logs:
