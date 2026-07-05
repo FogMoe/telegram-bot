@@ -1,4 +1,4 @@
-"""Utility helpers for Telegram message sending."""
+"""Utility helpers for Telegram messages and sending."""
 
 import logging
 from io import BytesIO
@@ -16,6 +16,116 @@ except ImportError:  # pragma: no cover
 AsyncSendFunc = Callable[..., Awaitable[Any]]
 
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None
+
+
+def _message_context(
+    message_type: str,
+    *,
+    text: str | None = None,
+    caption: str | None = None,
+    summary: str | None = None,
+    emoji: str | None = None,
+) -> dict[str, str | None]:
+    return {
+        "type": message_type,
+        "text": text,
+        "caption": caption,
+        "summary": summary,
+        "emoji": emoji,
+    }
+
+
+def describe_message_for_context(message: Any) -> dict[str, str | None]:
+    """Return a compact, prompt-friendly description of a Telegram message."""
+    if not message:
+        return _message_context("other", summary="[unsupported message]")
+
+    text = _optional_text(getattr(message, "text", None))
+    if text:
+        return _message_context("text", text=text)
+
+    caption = _optional_text(getattr(message, "caption", None))
+
+    if getattr(message, "photo", None):
+        return _message_context(
+            "photo",
+            caption=caption,
+            summary=None if caption else "[photo without caption]",
+        )
+
+    sticker = getattr(message, "sticker", None)
+    if sticker:
+        emoji = _optional_text(getattr(sticker, "emoji", None))
+        summary = f"[sticker {emoji}]" if emoji else "[sticker]"
+        return _message_context("sticker", summary=summary, emoji=emoji)
+
+    document = getattr(message, "document", None)
+    if document:
+        file_name = _optional_text(getattr(document, "file_name", None))
+        summary = f"[document: {file_name}]" if file_name else "[document]"
+        return _message_context("document", caption=caption, summary=summary)
+
+    if getattr(message, "animation", None):
+        return _message_context(
+            "animation",
+            caption=caption,
+            summary=None if caption else "[animation]",
+        )
+
+    if getattr(message, "video", None):
+        return _message_context(
+            "video",
+            caption=caption,
+            summary=None if caption else "[video message]",
+        )
+
+    audio = getattr(message, "audio", None)
+    if audio:
+        title = (
+            _optional_text(getattr(audio, "title", None))
+            or _optional_text(getattr(audio, "file_name", None))
+        )
+        summary = f"[audio: {title}]" if title else "[audio]"
+        return _message_context("audio", caption=caption, summary=summary)
+
+    if getattr(message, "voice", None):
+        return _message_context("voice", caption=caption, summary="[voice message]")
+
+    if getattr(message, "video_note", None):
+        return _message_context("video_note", summary="[video note]")
+
+    if getattr(message, "poll", None):
+        question = _optional_text(getattr(message.poll, "question", None))
+        summary = f"[poll: {question}]" if question else "[poll]"
+        return _message_context("poll", summary=summary)
+
+    if getattr(message, "location", None):
+        return _message_context("location", summary="[location]")
+
+    if getattr(message, "venue", None):
+        title = _optional_text(getattr(message.venue, "title", None))
+        summary = f"[venue: {title}]" if title else "[venue]"
+        return _message_context("venue", summary=summary)
+
+    if getattr(message, "contact", None):
+        return _message_context("contact", summary="[contact]")
+
+    if getattr(message, "dice", None):
+        emoji = _optional_text(getattr(message.dice, "emoji", None))
+        summary = f"[dice {emoji}]" if emoji else "[dice]"
+        return _message_context("dice", summary=summary, emoji=emoji)
+
+    if caption:
+        return _message_context("other", caption=caption)
+
+    return _message_context("other", summary="[unsupported message]")
 
 
 def _split_text_segments(text: str, limit: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> list[str]:

@@ -12,7 +12,7 @@ from telegram.ext import ContextTypes
 from core import config, db, group_chat_history, mysql_connection, process_user, stake_reward_pool
 from core.archive_utils import send_permanent_records_archive
 from core.prompt_utils import format_metadata_attrs, format_user_state_prompt, xml_escape
-from core.telegram_utils import partial_send, safe_send_markdown
+from core.telegram_utils import describe_message_for_context, partial_send, safe_send_markdown
 from features.ai import ai_chat, summary
 from features.ai.sticker_sender import send_ai_reply_with_stickers
 from features.ai.task_runner import run_ai_task
@@ -64,6 +64,12 @@ def get_effective_message(update: Update):
     return update.message or update.edited_message
 
 
+def _format_xml_attrs(attrs: list[tuple[str, str | None]]) -> str:
+    return " ".join(
+        f'{key}="{xml_escape(value)}"' for key, value in attrs if value
+    )
+
+
 def _format_xml_message(
     *,
     chat_type: str,
@@ -73,6 +79,10 @@ def _format_xml_message(
     message_text: str,
     reply_user: str | None = None,
     reply_text: str | None = None,
+    reply_type: str | None = None,
+    reply_caption: str | None = None,
+    reply_summary: str | None = None,
+    reply_emoji: str | None = None,
     media_type: str | None = None,
     media_description: str | None = None,
     media_emoji: str | None = None,
@@ -86,23 +96,32 @@ def _format_xml_message(
         attrs.insert(1, ("title", chat_title))
     attr_text = format_metadata_attrs(attrs)
     lines = [f"<metadata {attr_text}>"]
-    if reply_user or reply_text:
+    if reply_type:
         reply_user_value = f"@{reply_user}" if reply_user else ""
-        reply_attr = (
-            f' user="{xml_escape(reply_user_value)}"'
-            if reply_user_value
-            else ""
+        reply_attr_text = _format_xml_attrs(
+            [
+                ("user", reply_user_value),
+                ("type", reply_type),
+                ("emoji", reply_emoji),
+            ]
         )
-        lines.append(
-            f"  <reply{reply_attr}>{xml_escape(reply_text or '')}</reply>"
-        )
+        lines.append(f"  <reply {reply_attr_text}>")
+        if reply_text:
+            lines.append(f"    <text>{xml_escape(reply_text)}</text>")
+        if reply_caption:
+            lines.append(f"    <caption>{xml_escape(reply_caption)}</caption>")
+        if reply_summary:
+            lines.append(f"    <summary>{xml_escape(reply_summary)}</summary>")
+        lines.append("  </reply>")
+    elif reply_user or reply_text:
+        reply_user_value = f"@{reply_user}" if reply_user else ""
+        reply_attr = f' user="{xml_escape(reply_user_value)}"' if reply_user_value else ""
+        lines.append(f"  <reply{reply_attr}>{xml_escape(reply_text or '')}</reply>")
     if media_type:
         media_attrs = [("type", media_type)]
         if media_emoji:
             media_attrs.append(("emoji", media_emoji))
-        media_attr_text = " ".join(
-            f'{key}="{xml_escape(value)}"' for key, value in media_attrs if value
-        )
+        media_attr_text = _format_xml_attrs(media_attrs)
         lines.append(f"  <media {media_attr_text}>")
         if media_description:
             lines.append(
@@ -123,6 +142,28 @@ def _media_mime_type(media_type: str, effective_message) -> str | None:
             return None
         return "image/webp"
     return None
+
+
+def _build_reply_format_kwargs(reply_message) -> dict[str, str | None]:
+    description = describe_message_for_context(reply_message)
+    quoted_user = (
+        getattr(getattr(reply_message, "from_user", None), "username", None)
+        or "EmptyUsername"
+    )
+
+    if description.get("type") == "text":
+        return {
+            "reply_user": quoted_user,
+            "reply_text": description.get("text") or "",
+        }
+
+    return {
+        "reply_user": quoted_user,
+        "reply_type": description.get("type") or "other",
+        "reply_caption": description.get("caption"),
+        "reply_summary": description.get("summary"),
+        "reply_emoji": description.get("emoji"),
+    }
 
 
 def _build_multimodal_user_message(
@@ -487,24 +528,19 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         # 保留原有文本处理逻辑，处理文本消息
         user_message = effective_message.text or ""
+        reply_kwargs = (
+            _build_reply_format_kwargs(effective_message.reply_to_message)
+            if effective_message.reply_to_message
+            else {}
+        )
         if effective_message.reply_to_message:
-            quoted_message = (
-                effective_message.reply_to_message.text
-                or effective_message.reply_to_message.caption
-                or "[non-text message]"
-            )
-            quoted_user = (
-                effective_message.reply_to_message.from_user.username
-                or "EmptyUsername"
-            )
             formatted_message = _format_xml_message(
                 chat_type=chat_type,
                 chat_title=group_title or None,
                 timestamp=message_time,
                 user_name=user_name,
                 message_text=user_message,
-                reply_user=quoted_user,
-                reply_text=quoted_message,
+                **reply_kwargs,
             )
         else:
             formatted_message = _format_xml_message(
