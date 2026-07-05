@@ -1,6 +1,7 @@
 """Utility helpers for Telegram messages and sending."""
 
 import logging
+from datetime import datetime, timezone
 from io import BytesIO
 from functools import partial
 from typing import Any, Awaitable, Callable, Optional
@@ -35,6 +36,43 @@ def _optional_text(value: Any) -> str | None:
         return None
     text = str(value)
     return text if text else None
+
+
+def _context_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+    return _optional_text(value)
+
+
+def _user_label(user: Any) -> str | None:
+    if not user:
+        return None
+    username = _optional_text(getattr(user, "username", None))
+    if username:
+        return f"@{username}"
+    return (
+        _optional_text(getattr(user, "full_name", None))
+        or _optional_text(getattr(user, "name", None))
+    )
+
+
+def _chat_label(chat: Any) -> str | None:
+    if not chat:
+        return None
+    username = _optional_text(getattr(chat, "username", None))
+    if username:
+        return f"@{username}"
+    return (
+        _optional_text(getattr(chat, "title", None))
+        or _optional_text(getattr(chat, "full_name", None))
+        or _optional_text(getattr(chat, "name", None))
+    )
 
 
 def _message_context(
@@ -78,18 +116,18 @@ def describe_message_for_context(message: Any) -> dict[str, str | None]:
         summary = f"[sticker {emoji}]" if emoji else "[sticker]"
         return _message_context("sticker", summary=summary, emoji=emoji)
 
-    document = getattr(message, "document", None)
-    if document:
-        file_name = _optional_text(getattr(document, "file_name", None))
-        summary = f"[document: {file_name}]" if file_name else "[document]"
-        return _message_context("document", caption=caption, summary=summary)
-
     if getattr(message, "animation", None):
         return _message_context(
             "animation",
             caption=caption,
             summary=None if caption else "[animation]",
         )
+
+    document = getattr(message, "document", None)
+    if document:
+        file_name = _optional_text(getattr(document, "file_name", None))
+        summary = f"[document: {file_name}]" if file_name else "[document]"
+        return _message_context("document", caption=caption, summary=summary)
 
     if getattr(message, "video", None):
         return _message_context(
@@ -118,13 +156,13 @@ def describe_message_for_context(message: Any) -> dict[str, str | None]:
         summary = f"[poll: {question}]" if question else "[poll]"
         return _message_context("poll", summary=summary)
 
-    if getattr(message, "location", None):
-        return _message_context("location", summary="[location]")
-
     if getattr(message, "venue", None):
         title = _optional_text(getattr(message.venue, "title", None))
         summary = f"[venue: {title}]" if title else "[venue]"
         return _message_context("venue", summary=summary)
+
+    if getattr(message, "location", None):
+        return _message_context("location", summary="[location]")
 
     if getattr(message, "contact", None):
         return _message_context("contact", summary="[contact]")
@@ -138,6 +176,107 @@ def describe_message_for_context(message: Any) -> dict[str, str | None]:
         return _message_context("other", caption=caption)
 
     return _message_context("other", summary="[unsupported message]")
+
+
+def _forward_context(
+    origin_type: str,
+    *,
+    origin_timestamp: str | None = None,
+    user: str | None = None,
+    name: str | None = None,
+    chat: str | None = None,
+    message_id: str | None = None,
+    author_signature: str | None = None,
+) -> dict[str, str | None]:
+    return {
+        "type": origin_type,
+        "origin_timestamp": origin_timestamp,
+        "user": user,
+        "name": name,
+        "chat": chat,
+        "message_id": message_id,
+        "author_signature": author_signature,
+    }
+
+
+def describe_forward_for_context(message: Any) -> dict[str, str | None] | None:
+    """Return Telegram forward-origin metadata for prompt serialization."""
+    if not message:
+        return None
+
+    origin = getattr(message, "forward_origin", None)
+    if origin:
+        origin_type = _optional_text(getattr(origin, "type", None)) or "unknown"
+        origin_timestamp = _context_timestamp(getattr(origin, "date", None))
+
+        if origin_type == "user":
+            return _forward_context(
+                origin_type,
+                origin_timestamp=origin_timestamp,
+                user=_user_label(getattr(origin, "sender_user", None)),
+            )
+        if origin_type == "hidden_user":
+            return _forward_context(
+                origin_type,
+                origin_timestamp=origin_timestamp,
+                name=_optional_text(getattr(origin, "sender_user_name", None)),
+            )
+        if origin_type == "chat":
+            return _forward_context(
+                origin_type,
+                origin_timestamp=origin_timestamp,
+                chat=_chat_label(getattr(origin, "sender_chat", None)),
+                author_signature=_optional_text(
+                    getattr(origin, "author_signature", None)
+                ),
+            )
+        if origin_type == "channel":
+            message_id = getattr(origin, "message_id", None)
+            return _forward_context(
+                origin_type,
+                origin_timestamp=origin_timestamp,
+                chat=_chat_label(getattr(origin, "chat", None)),
+                message_id=str(message_id) if message_id is not None else None,
+                author_signature=_optional_text(
+                    getattr(origin, "author_signature", None)
+                ),
+            )
+
+        return _forward_context(origin_type, origin_timestamp=origin_timestamp)
+
+    forward_date = _context_timestamp(getattr(message, "forward_date", None))
+    forward_user = getattr(message, "forward_from", None)
+    if forward_user:
+        return _forward_context(
+            "user",
+            origin_timestamp=forward_date,
+            user=_user_label(forward_user),
+        )
+
+    forward_sender_name = _optional_text(getattr(message, "forward_sender_name", None))
+    if forward_sender_name:
+        return _forward_context(
+            "hidden_user",
+            origin_timestamp=forward_date,
+            name=forward_sender_name,
+        )
+
+    forward_chat = getattr(message, "forward_from_chat", None)
+    if forward_chat:
+        message_id = getattr(message, "forward_from_message_id", None)
+        forward_chat_type = _optional_text(getattr(forward_chat, "type", None))
+        origin_type = "channel" if forward_chat_type == "channel" else "chat"
+        return _forward_context(
+            origin_type,
+            origin_timestamp=forward_date,
+            chat=_chat_label(forward_chat),
+            message_id=str(message_id) if message_id is not None else None,
+            author_signature=_optional_text(
+                getattr(message, "forward_signature", None)
+            ),
+        )
+
+    return None
 
 
 def _split_text_segments(text: str, limit: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> list[str]:

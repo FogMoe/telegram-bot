@@ -345,6 +345,21 @@ def _find_last_user_message_index(messages: list[dict]) -> int | None:
     return None
 
 
+def _find_first_user_message_index(
+    messages: list[dict],
+    start_index: int = 0,
+) -> int | None:
+    for idx in range(max(0, start_index), len(messages)):
+        msg = messages[idx]
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "user":
+            continue
+        if isinstance(msg.get("content"), str):
+            return idx
+    return None
+
+
 def _last_history_state_event(messages: list[dict]) -> str | None:
     for msg in reversed(messages):
         if not _is_history_state_event(msg):
@@ -446,10 +461,19 @@ async def insert_chat_records(
             event_state = None
 
         if event_state:
-            target_index = _find_last_user_message_index(messages_with_new)
+            if event_state == "new_session":
+                target_index = _find_first_user_message_index(
+                    messages_with_new,
+                    existing_count,
+                )
+            else:
+                target_index = _find_last_user_message_index(messages_with_new)
             if target_index is not None:
                 event_message = _build_history_state_event(event_state)
-                insert_at = target_index if event_state == "new_session" else target_index + 1
+                if event_state == "new_session":
+                    insert_at = target_index
+                else:
+                    insert_at = target_index + 1
                 messages_with_new.insert(insert_at, event_message)
                 if event_state == "near_limit":
                     near_limit_inserted = True
