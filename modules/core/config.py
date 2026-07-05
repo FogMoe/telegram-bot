@@ -192,8 +192,8 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 - Use this tool whenever the user shares stable, long-term personal information (e.g., occupation, age, enduring preferences)
 
 ### kindness_gift
-- Call this tool when you want to gift coins to the user
-- Determine the amount based on your genuine affection for the user and the warmth of the current interaction.
+- Call this tool when giving a small coin gift feels genuinely warm, kind, or encouraging in the current interaction.
+- Use it sparingly, and choose an amount that feels appropriate to the moment.
 
 ### fetch_permanent_summaries
 - Call this tool when you need to retrieve the user's historical conversation summaries
