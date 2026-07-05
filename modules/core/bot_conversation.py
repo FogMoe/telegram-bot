@@ -2,8 +2,6 @@ import asyncio
 import base64
 import json
 import logging
-import os
-import tempfile
 import time
 from collections import deque
 
@@ -23,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 _BOT_ID: int | None = None
 _BOT_USERNAME: str = "FogMoeBot"
+MAX_MEDIA_DOWNLOAD_BYTES = 8 * 1024 * 1024
 
 
 def _cache_bot_identity(bot_user: telegram.User) -> None:
@@ -372,18 +371,24 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             # 检查是否有文本说明
             caption = effective_message.caption if effective_message.caption else ""
 
-            # 使用临时文件来存储
-            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                file_path = temp_file.name
-                await file.download_to_drive(file_path)
+            file_size = getattr(file, "file_size", None)
+            if file_size and file_size > MAX_MEDIA_DOWNLOAD_BYTES:
+                await effective_message.reply_text(
+                    "图片太大啦，请压缩后再发送。\n"
+                    "The image is too large. Please compress it and try again."
+                )
+                return
 
-            # 读取文件转base64
-            with open(file_path, 'rb') as f:
-                file_bytes = f.read()
+            # 直接下载到内存，避免把用户图片落盘。
+            file_bytes = await file.download_as_bytearray()
+            if len(file_bytes) > MAX_MEDIA_DOWNLOAD_BYTES:
+                await effective_message.reply_text(
+                    "图片太大啦，请压缩后再发送。\n"
+                    "The image is too large. Please compress it and try again."
+                )
+                return
+
             base64_str = base64.b64encode(file_bytes).decode('utf-8')
-
-            # 删除临时文件
-            os.unlink(file_path)
 
             # 异步调用图像分析AI
             image_description = await ai_chat.analyze_image(base64_str)
