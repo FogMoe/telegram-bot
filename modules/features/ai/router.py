@@ -94,7 +94,7 @@ async def _try_ai_services(
                     s, messages.copy(), user_id, tool_context
                 ),
             )
-            return response
+            return response, None
         except SafetyBlockError:
             if service_name == "gemini":
                 logging.warning("Gemini triggered safety block, trying next service")
