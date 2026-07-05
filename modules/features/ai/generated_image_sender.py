@@ -10,6 +10,33 @@ from .tools.image_tools import pop_generated_image_file
 MAX_GENERATED_IMAGES_PER_REPLY = 10
 
 
+def _iter_generate_image_results(tool_logs: list[dict]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for tool_log in tool_logs:
+        if tool_log.get("type") != "tool_result":
+            continue
+        if tool_log.get("tool_name") != "generate_image":
+            continue
+        result = tool_log.get("internal_result") or tool_log.get("result")
+        if isinstance(result, dict):
+            results.append(result)
+    return results
+
+
+def _summarise_generate_image_result(result: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "status": result.get("status"),
+        "error": result.get("error"),
+        "count": result.get("count"),
+        "retry_after_seconds": result.get("retry_after_seconds"),
+    }
+    if result.get("details"):
+        summary["details"] = str(result.get("details"))[:500]
+    if result.get("response_preview"):
+        summary["response_preview"] = str(result.get("response_preview"))[:500]
+    return {key: value for key, value in summary.items() if value is not None}
+
+
 def _cleanup_generated_image(path: Path, logger: logging.Logger) -> None:
     try:
         path.unlink(missing_ok=True)
@@ -103,13 +130,8 @@ async def _send_with_retry(
 
 def _collect_generated_images(tool_logs: list[dict]) -> list[dict[str, Any]]:
     images: list[dict[str, Any]] = []
-    for tool_log in tool_logs:
-        if tool_log.get("type") != "tool_result":
-            continue
-        if tool_log.get("tool_name") != "generate_image":
-            continue
-        result = tool_log.get("internal_result") or tool_log.get("result")
-        if not isinstance(result, dict) or result.get("status") != "generated":
+    for result in _iter_generate_image_results(tool_logs):
+        if result.get("status") != "generated":
             continue
         result_images = result.get("images")
         if not isinstance(result_images, list):
@@ -128,9 +150,17 @@ async def send_generated_images_from_tool_logs(
     logger: logging.Logger,
 ) -> list[Any]:
     """Send generated images referenced by image generation tool results."""
+    image_tool_results = _iter_generate_image_results(tool_logs)
     images = _collect_generated_images(tool_logs)
     if not images:
+        if image_tool_results:
+            logger.info(
+                "No generated images to send; generate_image_results=%s",
+                [_summarise_generate_image_result(result) for result in image_tool_results],
+            )
         return []
+
+    logger.info("Preparing to send %s generated image(s) to chat_id=%s", len(images), chat_id)
 
     sent_messages: list[Any] = []
     for image in images:
@@ -145,6 +175,13 @@ async def send_generated_images_from_tool_logs(
             logger.warning("Generated image file does not exist: %s", path)
             continue
 
+        logger.info(
+            "Sending generated image image_id=%s chat_id=%s mime_type=%s size_bytes=%s",
+            image_id,
+            chat_id,
+            image.get("mime_type"),
+            image.get("size_bytes"),
+        )
         try:
             sent_message = await _send_with_retry(
                 bot=bot,
@@ -155,9 +192,23 @@ async def send_generated_images_from_tool_logs(
             )
             if sent_message is not None:
                 sent_messages.append(sent_message)
+                logger.info(
+                    "Generated image sent image_id=%s chat_id=%s telegram_message_id=%s",
+                    image_id,
+                    chat_id,
+                    getattr(sent_message, "message_id", None),
+                )
+            else:
+                logger.warning("Generated image was not sent image_id=%s chat_id=%s", image_id, chat_id)
         finally:
             _cleanup_generated_image(path, logger)
 
+    logger.info(
+        "Generated image sending finished chat_id=%s sent=%s requested=%s",
+        chat_id,
+        len(sent_messages),
+        len(images),
+    )
     return sent_messages
 
 

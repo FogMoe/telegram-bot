@@ -34,6 +34,7 @@ _GENERATED_IMAGE_LOCK = threading.Lock()
 _IMAGE_RATE_LIMITS: dict[int, list[float]] = {}
 _IMAGE_RATE_LIMIT_LOCK = threading.Lock()
 _IMAGE_VALUE_KEYS = {
+    "b64",
     "b64_json",
     "base64",
     "image_base64",
@@ -421,8 +422,13 @@ def _request_and_save_generated_image(
             response_payload = json.loads(response_content.decode("utf-8"))
     except ImageGenerationSizeError as exc:
         return {"error": str(exc)}
+    except requests.Timeout as exc:
+        logger.warning("Image generation API timed out after %s seconds: %s", timeout, exc)
+        return {
+            "error": f"Image generation API timed out after {timeout} seconds",
+        }
     except requests.RequestException as exc:
-        logger.exception("Image generation request failed: %s", exc)
+        logger.warning("Image generation request failed: %s", exc)
         return {
             "error": f"Failed to contact image generation API: {exc}",
         }

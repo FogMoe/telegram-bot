@@ -1,3 +1,5 @@
+import logging
+
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -190,4 +192,7 @@ def register_handlers(application) -> None:
 
 def run() -> None:
     application = create_application()
-    application.run_polling()
+    try:
+        application.run_polling()
+    except KeyboardInterrupt:
+        logging.info("Bot shutdown requested by keyboard interrupt.")

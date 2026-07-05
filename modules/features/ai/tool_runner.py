@@ -145,6 +145,40 @@ def _public_tool_result(tool_name: str, tool_result: Dict[str, Any]) -> Dict[str
     return {"status": tool_result.get("status") or "unknown"}
 
 
+def _log_generate_image_result(provider_name: str, tool_result: Dict[str, Any]) -> None:
+    if not isinstance(tool_result, dict):
+        logging.warning("%s generate_image returned non-dict result: %s", provider_name, type(tool_result).__name__)
+        return
+
+    if tool_result.get("error"):
+        logging.warning(
+            "%s generate_image returned error: error=%s, status_code=%s, retry_after_seconds=%s, details=%s",
+            provider_name,
+            tool_result.get("error"),
+            tool_result.get("status_code"),
+            tool_result.get("retry_after_seconds"),
+            str(tool_result.get("details") or tool_result.get("response_preview") or "")[:500],
+        )
+        return
+
+    if tool_result.get("status") == "generated":
+        images = tool_result.get("images") if isinstance(tool_result.get("images"), list) else []
+        logging.info(
+            "%s generate_image generated %s image(s): count=%s, warnings=%s",
+            provider_name,
+            len(images),
+            tool_result.get("count"),
+            tool_result.get("warnings"),
+        )
+        return
+
+    logging.info(
+        "%s generate_image returned status=%s",
+        provider_name,
+        tool_result.get("status") or "unknown",
+    )
+
+
 def run_tool_loop(
     provider: str,
     model: str,
@@ -240,12 +274,21 @@ def run_tool_loop(
             if handler:
                 try:
                     internal_tool_result = handler(**function_args)
-                    logging.info(
-                        "%s 工具执行成功: %s, args=%s",
-                        provider_name,
-                        function_name,
-                        json.dumps(function_args, ensure_ascii=False),
-                    )
+                    if isinstance(internal_tool_result, dict) and internal_tool_result.get("error"):
+                        logging.warning(
+                            "%s 工具返回错误: %s, args=%s, error=%s",
+                            provider_name,
+                            function_name,
+                            json.dumps(function_args, ensure_ascii=False),
+                            internal_tool_result.get("error"),
+                        )
+                    else:
+                        logging.info(
+                            "%s 工具执行成功: %s, args=%s",
+                            provider_name,
+                            function_name,
+                            json.dumps(function_args, ensure_ascii=False),
+                        )
                 except TypeError as exc:
                     logging.error("%s 工具参数错误: %s, %s", provider_name, function_name, exc)
                     internal_tool_result = {"error": f"参数错误: {str(exc)}"}
@@ -255,6 +298,9 @@ def run_tool_loop(
             else:
                 logging.warning("%s 未知工具: %s", provider_name, function_name)
                 internal_tool_result = {"error": f"未知工具: {function_name}"}
+
+            if function_name == "generate_image":
+                _log_generate_image_result(provider_name, internal_tool_result)
 
             tool_result = _public_tool_result(function_name, internal_tool_result)
 
