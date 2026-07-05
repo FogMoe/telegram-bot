@@ -1,14 +1,12 @@
 import asyncio
 import logging
 
-from core import config
-
-from ..clients import create_zhipu_client
 from ..runtime import EXECUTOR
+from ..task_runner import run_ai_task
 
 
 async def analyze_image(base64_str):
-    """调用 Z.ai 对图像进行分析并返回描述文本（异步版本）"""
+    """调用配置的 AI vision 模型分析图像并返回描述文本（异步版本）"""
     try:
         if not base64_str:
             raise ValueError("Image data is empty.")
@@ -24,7 +22,7 @@ async def analyze_image(base64_str):
         return "Image validation failed, please check the image format."
 
     except ConnectionError as exc:
-        logging.error("连接 Z.ai 服务失败: %s", exc)
+        logging.error("连接 AI vision 服务失败: %s", exc)
         return "Failed to connect to AI service."
 
     except Exception as exc:
@@ -34,9 +32,8 @@ async def analyze_image(base64_str):
 
 def _sync_analyze_image(base64_str):
     """同步版本的图像分析函数，供异步函数调用"""
-    client = create_zhipu_client()
-    response = client.chat.completions.create(
-        model=config.ZHIPU_VISION_MODEL,
+    response = run_ai_task(
+        "vision",
         messages=[
             {
                 "role": "user",

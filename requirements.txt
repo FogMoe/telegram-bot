@@ -2,7 +2,7 @@ python-telegram-bot[job-queue]
 SQLAlchemy>=2.0
 asyncmy
 alembic
-openai
+litellm
 binance-futures-connector
 aiohttp
 telegramify-markdown

@@ -3,10 +3,8 @@ import logging
 import time
 from collections import deque
 
-from core import config
-
-from ..clients import create_zhipu_client
 from ..runtime import EXECUTOR
+from ..task_runner import run_ai_task
 
 
 class APIRateLimiter:
@@ -47,9 +45,8 @@ async def translate_text(text: str) -> str:
 
 def _sync_translate_text(text: str) -> str:
     """同步版本的翻译函数，供异步函数调用"""
-    client = create_zhipu_client()
-    response = client.chat.completions.create(
-        model=config.ZHIPU_TRANSLATE_MODEL,
+    response = run_ai_task(
+        "translate",
         messages=[
             {
                 "role": "system",

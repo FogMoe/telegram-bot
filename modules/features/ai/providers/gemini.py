@@ -3,7 +3,6 @@ from typing import Dict, Optional
 
 from core import config
 
-from ..clients import create_gemini_client
 from ..errors import SafetyBlockError
 from ..tool_runner import run_tool_loop
 from ..types import AIResponse
@@ -14,15 +13,13 @@ def get_ai_response(
     user_id: int,
     tool_context: Optional[Dict[str, object]] = None,
 ) -> AIResponse:
-    """同步版本的Google Gemini响应函数（OpenAI兼容接口）。"""
-    client = create_gemini_client()
-
-    primary_model = config.GEMINI_MODEL
-    fallback_model = config.GEMINI_FALLBACK_MODEL
+    """同步版本的 Google Gemini 响应函数（LiteLLM）。"""
+    primary_model = config.GEMINI_CHAT_MODEL
+    fallback_model = config.GEMINI_CHAT_FALLBACK_MODEL
 
     def _run(model_name: str) -> AIResponse:
         return run_tool_loop(
-            client,
+            "gemini",
             model_name,
             messages,
             tool_context,

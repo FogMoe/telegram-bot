@@ -12,19 +12,19 @@ def get_ai_response(
     user_id: int,
     tool_context: Optional[Dict[str, object]] = None,
 ) -> AIResponse:
-    """同步版本的Azure OpenAI响应函数（支持工具调用）"""
-    azure_model = config.AZURE_OPENAI_CHAT_MODEL
-    if not azure_model:
-        raise RuntimeError("Missing AZURE_OPENAI_CHAT_MODEL configuration.")
+    """同步版本的 OpenAI 响应函数（支持工具调用）"""
+    openai_model = config.OPENAI_CHAT_MODEL
+    if not openai_model:
+        raise RuntimeError("Missing OPENAI_CHAT_MODEL configuration.")
 
     try:
         return run_tool_loop(
-            "azure",
-            azure_model,
+            "openai",
+            openai_model,
             messages,
             tool_context,
-            provider_name="Azure",
+            provider_name="OpenAI",
         )
     except Exception as exc:
-        logging.error("Azure OpenAI 请求失败: %s", exc)
+        logging.error("OpenAI 请求失败: %s", exc)
         raise

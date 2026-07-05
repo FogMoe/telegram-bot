@@ -4,6 +4,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .tools import OPENAI_TOOLS, AI_TOOL_HANDLERS
 from .prompts import compose_system_prompt
+from .litellm_client import create_chat_completion
 from .types import AIResponse, ToolLog
 
 
@@ -121,7 +122,7 @@ def _format_tool_fallback(payload: Tuple[str, Dict[str, Any]]) -> str:
 
 
 def run_tool_loop(
-    client: Any,
+    provider: str,
     model: str,
     messages: List[Dict[str, Any]],
     tool_context: Optional[Dict[str, object]] = None,
@@ -133,7 +134,7 @@ def run_tool_loop(
     max_iterations: int = 10,
     skip_tools: Optional[Iterable[str]] = None,
 ) -> AIResponse:
-    """Run a tool-calling loop for OpenAI-compatible chat.completions APIs."""
+    """Run a tool-calling loop through LiteLLM using OpenAI-format tools."""
     tools = OPENAI_TOOLS
     system_message = {
         "role": "system",
@@ -151,8 +152,9 @@ def run_tool_loop(
 
     for iteration in range(max_iterations):
         request_tool_choice = tool_choice
-        response = client.chat.completions.create(
-            model=model,
+        response = create_chat_completion(
+            provider,
+            model,
             messages=filtered_messages,
             tools=tools,
             tool_choice=request_tool_choice,

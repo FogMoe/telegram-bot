@@ -6,14 +6,16 @@ from core import config
 
 from .tools import clear_tool_request_context, set_tool_request_context
 from .errors import SafetyBlockError
-from .providers import azure, gemini, zhipu
+from .providers import azure, gemini, openai, zhipu
 from .runtime import EXECUTOR
 from .types import AIResponse
 
 AI_SERVICE_MAP = {
+    "openai": openai.get_ai_response,
     "gemini": gemini.get_ai_response,
     "azure": azure.get_ai_response,
     "zhipu": zhipu.get_ai_response,
+    "zai": zhipu.get_ai_response,
 }
 
 AI_SERVICE_ORDER = config.AI_SERVICE_ORDER

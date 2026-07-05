@@ -16,6 +16,7 @@ from core.archive_utils import send_permanent_records_archive
 from core.prompt_utils import format_metadata_attrs, format_user_state_prompt, xml_escape
 from core.telegram_utils import partial_send, safe_send_markdown, split_ai_reply
 from features.ai import ai_chat, summary
+from features.ai.task_runner import run_ai_task
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ class RateLimiter:
         return False
 
 
-_zai_allowance = RateLimiter(max_calls=10, time_window=60.0)
+_classifier_allowance = RateLimiter(max_calls=10, time_window=60.0)
 
 
 # 添加一个帮助函数来获取实际的消息对象
@@ -115,7 +116,7 @@ def _format_xml_message(
 
 async def should_trigger_ai_response(message_text: str) -> bool:
     """
-    使用 Z.ai glm-4.5-flash 模型判断群聊消息是否需要调用主 AI 回复。
+    使用配置的 classifier AI 模型判断群聊消息是否需要调用主 AI 回复。
     仅返回布尔结果，出现异常时默认不触发回复。
     """
     if not message_text:
@@ -129,13 +130,12 @@ async def should_trigger_ai_response(message_text: str) -> bool:
 
 
 def _sync_should_trigger_ai_response(message_text: str) -> bool:
-    if not _zai_allowance.consume():
-        logging.debug("Z.ai rate limiter blocked a request.")
+    if not _classifier_allowance.consume():
+        logging.debug("AI classifier rate limiter blocked a request.")
         return False
-    client = ai_chat.create_zhipu_client()
     try:
-        response = client.chat.completions.create(
-            model=config.ZHIPU_MODEL,
+        response = run_ai_task(
+            "classifier",
             messages=[
                 {
                     "role": "system",
@@ -156,7 +156,7 @@ def _sync_should_trigger_ai_response(message_text: str) -> bool:
         content = response.choices[0].message.content.strip().lower()
         return content.startswith("yes") or content.startswith("是")
     except Exception as exc:
-        logging.error("Z.ai 检测是否应回复失败: %s", exc)
+        logging.error("AI 检测是否应回复失败: %s", exc)
         return False
 
 

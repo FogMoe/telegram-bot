@@ -1,4 +1,4 @@
-"""Background conversation summarization using OpenAI-compatible providers."""
+"""Background conversation summarization using LiteLLM providers."""
 
 import asyncio
 import json
@@ -7,12 +7,10 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple
 
-from core import config, mysql_connection
+from core import mysql_connection
 from core.token_estimator import estimate_tokens
-from .clients import create_gemini_client
+from .task_runner import run_ai_task
 
-SUMMARY_MODEL = config.SUMMARY_MODEL
-SUMMARY_FALLBACK_MODEL = config.SUMMARY_FALLBACK_MODEL
 SUMMARY_MAX_TOKENS = 2500
 SUMMARY_RETRY_LIMIT = 3
 SUMMARY_SYSTEM_PROMPT = (
@@ -230,8 +228,6 @@ def _trim_summary_to_tokens(summary: str, max_tokens: int) -> str:
 
 
 def _generate_summary(user_id: int, snapshot_text: str) -> Optional[str]:
-    client = create_gemini_client()
-
     transcript = _format_history_for_summary(snapshot_text)
     prompt = (
         "你是一名聊天记录整理助手。接下来是一段雾萌娘与用户的对话转录"
@@ -248,10 +244,9 @@ def _generate_summary(user_id: int, snapshot_text: str) -> Optional[str]:
     ]
 
     for attempt in range(1, SUMMARY_RETRY_LIMIT + 1):
-        model_to_use = SUMMARY_MODEL if attempt == 1 else SUMMARY_FALLBACK_MODEL
         try:
-            response = client.chat.completions.create(
-                model=model_to_use,
+            response = run_ai_task(
+                "summary",
                 messages=messages,
                 temperature=0.2,
                 max_tokens=SUMMARY_MAX_TOKENS,
@@ -261,19 +256,17 @@ def _generate_summary(user_id: int, snapshot_text: str) -> Optional[str]:
                 summary = _trim_summary_to_tokens(summary, SUMMARY_MAX_TOKENS)
                 if attempt > 1:
                     logging.info(
-                        "Summary generated successfully using fallback model %s for user %s (attempt %s)",
-                        model_to_use,
+                        "Summary generated successfully for user %s (attempt %s)",
                         user_id,
                         attempt,
                     )
                 return summary
         except Exception as exc:  # pragma: no cover - defensive logging
             logging.warning(
-                "Attempt %s/%s to summarize user %s with model %s failed: %s",
+                "Attempt %s/%s to summarize user %s failed: %s",
                 attempt,
                 SUMMARY_RETRY_LIMIT,
                 user_id,
-                model_to_use,
                 exc,
             )
 
