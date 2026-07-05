@@ -4,13 +4,14 @@ from typing import Dict, Optional
 from core import config
 
 from ..tool_runner import run_tool_loop
-from ..types import AIResponse
+from ..types import AIResponse, VisibleContentHandler
 
 
 def get_ai_response(
     messages,
     user_id: int,
     tool_context: Optional[Dict[str, object]] = None,
+    visible_content_handler: Optional[VisibleContentHandler] = None,
 ) -> AIResponse:
     """同步版本的 OpenAI 响应函数（支持工具调用）"""
     openai_model = config.OPENAI_CHAT_MODEL
@@ -24,6 +25,7 @@ def get_ai_response(
             messages,
             tool_context,
             provider_name="OpenAI",
+            visible_content_handler=visible_content_handler,
         )
     except Exception as exc:
         logging.error("OpenAI 请求失败: %s", exc)

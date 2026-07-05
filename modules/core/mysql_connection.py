@@ -16,6 +16,175 @@ run_sync = db.run_sync
 PERMANENT_RECORDS_KEEP = 100
 
 
+def _is_history_state_event(message: object) -> bool:
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    if not isinstance(content, str):
+        return False
+    return 'origin="history_state"' in content
+
+
+def _assistant_tool_call_ids(message: dict) -> list[str]:
+    if message.get("role") != "assistant":
+        return []
+    call_ids: list[str] = []
+    for call in message.get("tool_calls") or []:
+        if not isinstance(call, dict):
+            continue
+        call_id = call.get("id")
+        if call_id:
+            call_ids.append(str(call_id))
+    return call_ids
+
+
+def _sanitize_messages_with_tool_pairs(
+    messages: list[Any],
+    *,
+    allow_trailing_tool_call: bool = False,
+) -> tuple[list[dict], bool]:
+    """Drop tool messages that cannot form a valid assistant tool_call/tool pair."""
+    if not isinstance(messages, list):
+        return [], True
+
+    call_indices: dict[str, int] = {}
+    result_indices: dict[str, int] = {}
+    for idx, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "assistant":
+            for call_id in _assistant_tool_call_ids(msg):
+                call_indices.setdefault(call_id, idx)
+            continue
+        if msg.get("role") == "tool":
+            call_id = msg.get("tool_call_id")
+            if call_id:
+                result_indices.setdefault(str(call_id), idx)
+
+    valid_call_ids = {
+        call_id
+        for call_id, call_idx in call_indices.items()
+        if (result_idx := result_indices.get(call_id)) is not None and result_idx > call_idx
+    }
+    if allow_trailing_tool_call and messages:
+        last_message = messages[-1]
+        if isinstance(last_message, dict):
+            valid_call_ids.update(_assistant_tool_call_ids(last_message))
+
+    sanitized: list[dict] = []
+    emitted_tool_results: set[str] = set()
+    changed = False
+
+    for idx, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            changed = True
+            continue
+
+        role = msg.get("role")
+        if role == "assistant" and msg.get("tool_calls"):
+            kept_calls = []
+            for call in msg.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    changed = True
+                    continue
+                call_id = call.get("id")
+                if call_id and str(call_id) in valid_call_ids:
+                    kept_calls.append(call)
+                else:
+                    changed = True
+
+            if kept_calls:
+                if len(kept_calls) == len(msg.get("tool_calls") or []):
+                    sanitized.append(msg)
+                else:
+                    cleaned = dict(msg)
+                    cleaned["tool_calls"] = kept_calls
+                    sanitized.append(cleaned)
+                continue
+
+            if msg.get("content"):
+                cleaned = dict(msg)
+                cleaned.pop("tool_calls", None)
+                sanitized.append(cleaned)
+            else:
+                changed = True
+            continue
+
+        if role == "tool":
+            call_id = msg.get("tool_call_id")
+            call_id_str = str(call_id) if call_id else ""
+            call_idx = call_indices.get(call_id_str)
+            if (
+                not call_id_str
+                or call_id_str not in valid_call_ids
+                or call_id_str in emitted_tool_results
+                or call_idx is None
+                or call_idx >= idx
+            ):
+                changed = True
+                continue
+            emitted_tool_results.add(call_id_str)
+
+        sanitized.append(msg)
+
+    return sanitized, changed
+
+
+def _trim_messages_with_tool_context(
+    messages: list[dict],
+    keep_non_tool: int = 10,
+) -> tuple[list[dict], list[int]]:
+    if not messages:
+        return [], []
+
+    non_tool_indices: list[int] = []
+    for idx, msg in enumerate(messages):
+        if _is_history_state_event(msg):
+            continue
+        if not isinstance(msg, dict):
+            non_tool_indices.append(idx)
+            continue
+        if msg.get("role") != "tool":
+            non_tool_indices.append(idx)
+    if len(non_tool_indices) <= keep_non_tool:
+        indices = list(range(len(messages)))
+        return list(messages), indices
+
+    start_idx = non_tool_indices[-keep_non_tool]
+    trimmed = messages[start_idx:]
+
+    tool_calls_in_trimmed: set[str] = set()
+    for msg in trimmed:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for call_id in _assistant_tool_call_ids(msg):
+            tool_calls_in_trimmed.add(call_id)
+
+    tool_call_index: dict[str, int] = {}
+    for idx, msg in enumerate(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for call_id in _assistant_tool_call_ids(msg):
+            tool_call_index.setdefault(call_id, idx)
+
+    required_indices: set[int] = set()
+    for msg in trimmed:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        call_id = msg.get("tool_call_id")
+        if call_id and str(call_id) not in tool_calls_in_trimmed:
+            call_idx = tool_call_index.get(str(call_id))
+            if call_idx is not None:
+                required_indices.add(call_idx)
+
+    if not required_indices:
+        indices = list(range(start_idx, len(messages)))
+        return trimmed, indices
+
+    indices = sorted(set(range(start_idx, len(messages))) | required_indices)
+    return [messages[i] for i in indices], indices
+
+
 async def _get_user_permanent_records_limit(
     user_id: int,
     *,
@@ -136,10 +305,66 @@ async def prune_permanent_records(
     return records
 
 
-async def insert_chat_record(
+def _coerce_message_entry(role: str, content: Any) -> dict:
+    if not isinstance(content, dict) or not content.get("role"):
+        return {"role": role, "content": content}
+    return content
+
+
+def _build_history_state_event(
+    state: str,
+    *,
+    summary_text: str | None = None,
+) -> dict:
+    attrs = [
+        ("type", "system"),
+        ("timestamp", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")),
+        ("origin", "history_state"),
+        ("history_state", state),
+    ]
+    attr_text = format_metadata_attrs(attrs)
+    lines = [f"<metadata {attr_text}>"]
+    if summary_text:
+        lines.append(f"  <summary>{xml_escape(summary_text)}</summary>")
+    lines.append("</metadata>")
+    return {
+        "role": "user",
+        "content": "\n".join(lines),
+    }
+
+
+def _find_last_user_message_index(messages: list[dict]) -> int | None:
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "user":
+            continue
+        if isinstance(msg.get("content"), str):
+            return idx
+    return None
+
+
+def _last_history_state_event(messages: list[dict]) -> str | None:
+    for msg in reversed(messages):
+        if not _is_history_state_event(msg):
+            continue
+        content = msg.get("content") or ""
+        marker = 'history_state="'
+        start_idx = content.find(marker)
+        if start_idx == -1:
+            return None
+        value_start = start_idx + len(marker)
+        value_end = content.find('"', value_start)
+        if value_end == -1:
+            return None
+        return content[value_start:value_end]
+    return None
+
+
+async def insert_chat_records(
     conversation_id,
-    role,
-    content,
+    records: list[tuple[str, Any]],
     *,
     system_prompt_extra: str | None = None,
 ):
@@ -148,119 +373,12 @@ async def insert_chat_record(
     archived_records: list[dict] = []
     near_limit_inserted = False
 
-    def _is_history_state_event(message: object) -> bool:
-        if not isinstance(message, dict):
-            return False
-        content = message.get("content")
-        if not isinstance(content, str):
-            return False
-        return 'origin="history_state"' in content
-
-    def _trim_messages_with_tool_context(
-        messages: list[dict],
-        keep_non_tool: int = 10,
-    ) -> tuple[list[dict], list[int]]:
-        if not messages:
-            return [], []
-
-        non_tool_indices: list[int] = []
-        for idx, msg in enumerate(messages):
-            if _is_history_state_event(msg):
-                continue
-            if not isinstance(msg, dict):
-                non_tool_indices.append(idx)
-                continue
-            if msg.get("role") != "tool":
-                non_tool_indices.append(idx)
-        if len(non_tool_indices) <= keep_non_tool:
-            indices = list(range(len(messages)))
-            return list(messages), indices
-
-        start_idx = non_tool_indices[-keep_non_tool]
-        trimmed = messages[start_idx:]
-
-        tool_calls_in_trimmed: set[str] = set()
-        for msg in trimmed:
-            if not isinstance(msg, dict) or msg.get("role") != "assistant":
-                continue
-            for call in msg.get("tool_calls") or []:
-                call_id = call.get("id")
-                if call_id:
-                    tool_calls_in_trimmed.add(call_id)
-
-        tool_call_index: dict[str, int] = {}
-        for idx, msg in enumerate(messages):
-            if not isinstance(msg, dict) or msg.get("role") != "assistant":
-                continue
-            for call in msg.get("tool_calls") or []:
-                call_id = call.get("id")
-                if call_id and call_id not in tool_call_index:
-                    tool_call_index[call_id] = idx
-
-        required_indices: set[int] = set()
-        for msg in trimmed:
-            if not isinstance(msg, dict) or msg.get("role") != "tool":
-                continue
-            call_id = msg.get("tool_call_id")
-            if call_id and call_id not in tool_calls_in_trimmed:
-                call_idx = tool_call_index.get(call_id)
-                if call_idx is not None:
-                    required_indices.add(call_idx)
-
-        if not required_indices:
-            indices = list(range(start_idx, len(messages)))
-            return trimmed, indices
-
-        indices = sorted(set(range(start_idx, len(messages))) | required_indices)
-        return [messages[i] for i in indices], indices
-
-    def _build_history_state_event(
-        state: str,
-        *,
-        summary_text: str | None = None,
-    ) -> dict:
-        attrs = [
-            ("type", "system"),
-            ("timestamp", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")),
-            ("origin", "history_state"),
-            ("history_state", state),
-        ]
-        attr_text = format_metadata_attrs(attrs)
-        lines = [f"<metadata {attr_text}>"]
-        if summary_text:
-            lines.append(f"  <summary>{xml_escape(summary_text)}</summary>")
-        lines.append("</metadata>")
-        return {
-            "role": "user",
-            "content": "\n".join(lines),
-        }
-
-    def _find_last_user_message_index(messages: list[dict]) -> int | None:
-        for idx in range(len(messages) - 1, -1, -1):
-            msg = messages[idx]
-            if not isinstance(msg, dict):
-                continue
-            if msg.get("role") != "user":
-                continue
-            if isinstance(msg.get("content"), str):
-                return idx
-        return None
-
-    def _last_history_state_event(messages: list[dict]) -> str | None:
-        for msg in reversed(messages):
-            if not _is_history_state_event(msg):
-                continue
-            content = msg.get("content") or ""
-            marker = 'history_state="'
-            start_idx = content.find(marker)
-            if start_idx == -1:
-                return None
-            value_start = start_idx + len(marker)
-            value_end = content.find('"', value_start)
-            if value_end == -1:
-                return None
-            return content[value_start:value_end]
-        return None
+    message_entries = [
+        _coerce_message_entry(role, content)
+        for role, content in records
+    ]
+    if not message_entries:
+        return snapshot_created, warning_level, archived_records
 
     async with transaction() as connection:
         row = await fetch_one(
@@ -281,15 +399,19 @@ async def insert_chat_record(
         if not isinstance(messages, list):
             messages = []
 
-        is_new_session = not messages
-
-        if not isinstance(content, dict) or not content.get("role"):
-            message_entry = {"role": role, "content": content}
-        else:
-            message_entry = content
-
         messages_with_new = list(messages)
-        messages_with_new.append(message_entry)
+        messages_with_new.extend(message_entries)
+        allow_trailing_tool_call = (
+            len(message_entries) == 1
+            and bool(_assistant_tool_call_ids(message_entries[-1]))
+        )
+        messages_with_new, _ = _sanitize_messages_with_tool_pairs(
+            messages_with_new,
+            allow_trailing_tool_call=allow_trailing_tool_call,
+        )
+        latest_role = message_entries[-1].get("role")
+        existing_count = max(0, len(messages_with_new) - len(message_entries))
+        is_new_session = existing_count == 0
 
         token_count = estimate_conversation_tokens(
             messages_with_new,
@@ -301,14 +423,14 @@ async def insert_chat_record(
         kept_indices: list[int] | None = None
         if overflow:
             warning_level = "overflow"
-        elif role == "user" and token_count > config.CHAT_TOKEN_WARN_LIMIT:
+        elif latest_role == "user" and token_count > config.CHAT_TOKEN_WARN_LIMIT:
             warning_level = "near_limit"
 
         event_state = None
         compressed_event: dict | None = None
         if warning_level == "overflow":
             event_state = "compressed"
-        elif role == "user":
+        elif latest_role == "user":
             if warning_level == "near_limit":
                 event_state = "near_limit"
             elif is_new_session:
@@ -394,6 +516,20 @@ async def insert_chat_record(
     return snapshot_created, warning_level, archived_records
 
 
+async def insert_chat_record(
+    conversation_id,
+    role,
+    content,
+    *,
+    system_prompt_extra: str | None = None,
+):
+    return await insert_chat_records(
+        conversation_id,
+        [(role, content)],
+        system_prompt_extra=system_prompt_extra,
+    )
+
+
 async def async_insert_chat_record(
     conversation_id,
     role,
@@ -409,14 +545,39 @@ async def async_insert_chat_record(
     )
 
 
+async def async_insert_chat_records(
+    conversation_id,
+    records: list[tuple[str, Any]],
+    *,
+    system_prompt_extra: str | None = None,
+):
+    return await insert_chat_records(
+        conversation_id,
+        records,
+        system_prompt_extra=system_prompt_extra,
+    )
+
+
 async def get_chat_history(conversation_id):
     row = await fetch_one(
         "SELECT messages FROM chat_records WHERE conversation_id = %s",
         (conversation_id,),
     )
-    if row:
-        return json.loads(row[0])
-    return []
+    if not row:
+        return []
+
+    raw_messages = row[0]
+    if isinstance(raw_messages, bytes):
+        raw_messages = raw_messages.decode("utf-8")
+    try:
+        messages = json.loads(raw_messages)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(messages, list):
+        return []
+
+    sanitized, _ = _sanitize_messages_with_tool_pairs(messages)
+    return sanitized
 
 
 async def async_get_chat_history(conversation_id):

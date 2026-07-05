@@ -14,8 +14,10 @@ from core.archive_utils import send_permanent_records_archive
 from core.prompt_utils import format_metadata_attrs, format_user_state_prompt, xml_escape
 from core.telegram_utils import describe_message_for_context, partial_send, safe_send_markdown
 from features.ai import ai_chat, summary
+from features.ai.conversation_locks import get_conversation_lock
 from features.ai.generated_image_sender import send_generated_images_from_tool_logs
 from features.ai.sticker_sender import normalize_sticker_directives, send_ai_reply_with_stickers
+from features.ai.telegram_visible_sender import TelegramVisibleContentHandler
 from features.ai.task_runner import run_ai_task
 
 logger = logging.getLogger(__name__)
@@ -259,6 +261,16 @@ def _sync_should_trigger_ai_response(message_text: str) -> bool:
 
 
 async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    effective_user = update.effective_user
+    if not effective_user:
+        await _reply_unlocked(update, context)
+        return
+
+    async with get_conversation_lock(effective_user.id):
+        await _reply_unlocked(update, context)
+
+
+async def _reply_unlocked(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # 使用帮助函数获取有效消息
     effective_message = get_effective_message(update)
     if not effective_message:
@@ -595,21 +607,47 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "user_id": user_id,
         "user_state_prompt": user_state_prompt,
     }
+    sent_messages = []
+    fallback_send = partial_send(
+        context.bot.send_message,
+        update.effective_chat.id,
+    )
+    visible_content_handler = TelegramVisibleContentHandler(
+        loop=asyncio.get_running_loop(),
+        bot=context.bot,
+        chat_id=update.effective_chat.id,
+        first_text_send=effective_message.reply_text,
+        fallback_send=fallback_send,
+        logger=logger,
+        reply_to_message_id=getattr(effective_message, "message_id", None),
+    )
 
     assistant_message, tool_logs = await ai_chat.get_ai_response(
         chat_history_for_ai,
         user_id,
         tool_context=tool_context,
         text_fallback_messages=chat_history,
+        visible_content_handler=visible_content_handler,
     )
-    assistant_message = await normalize_sticker_directives(
-        str(assistant_message),
-        logger=logger,
-    )
+    sent_messages.extend(visible_content_handler.sent_messages)
+    assistant_message = str(assistant_message or "")
+    if assistant_message.strip():
+        assistant_message = await normalize_sticker_directives(
+            assistant_message,
+            logger=logger,
+        )
 
+    tool_record_entries = []
     pending_tool_call_ids = []
     for tool_log in tool_logs:
         entry_type = tool_log.get("type", "tool_result")
+        if entry_type == "assistant_visible":
+            visible_content = str(tool_log.get("content") or "").strip()
+            if not visible_content:
+                continue
+            tool_record_entries.append(("assistant", visible_content))
+            continue
+
         tool_call_id = tool_log.get("tool_call_id")
         if not tool_call_id:
             if entry_type == "tool_result" and pending_tool_call_ids:
@@ -642,11 +680,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 ],
             }
 
-            tool_snapshot_created, tool_storage_warning, tool_archived_records = await mysql_connection.async_insert_chat_record(
-                conversation_id,
-                "assistant",
-                assistant_call_message,
-            )
+            tool_record_entries.append(("assistant", assistant_call_message))
         else:
             if pending_tool_call_ids and pending_tool_call_ids[0] == tool_call_id:
                 pending_tool_call_ids.pop(0)
@@ -663,12 +697,13 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 "content": tool_result_str,
             }
 
-            tool_snapshot_created, tool_storage_warning, tool_archived_records = await mysql_connection.async_insert_chat_record(
-                conversation_id,
-                "tool",
-                tool_message,
-            )
+            tool_record_entries.append(("tool", tool_message))
 
+    if tool_record_entries:
+        tool_snapshot_created, tool_storage_warning, tool_archived_records = await mysql_connection.async_insert_chat_records(
+            conversation_id,
+            tool_record_entries,
+        )
         if tool_archived_records:
             await send_permanent_records_archive(
                 context.bot,
@@ -682,45 +717,51 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if tool_snapshot_created and tool_storage_warning != "overflow":
             summary.schedule_summary_generation(conversation_id)
 
-    # 异步插入AI回复到聊天记录
-    (
-        assistant_snapshot_created,
-        assistant_storage_warning,
-        assistant_archived_records,
-    ) = await mysql_connection.async_insert_chat_record(conversation_id, "assistant", assistant_message)
-    if assistant_archived_records:
-        await send_permanent_records_archive(
-            context.bot,
-            user_id,
+    if assistant_message.strip():
+        # 异步插入AI回复到聊天记录
+        (
+            assistant_snapshot_created,
+            assistant_storage_warning,
             assistant_archived_records,
-            logger=logger,
+        ) = await mysql_connection.async_insert_chat_record(
+            conversation_id,
+            "assistant",
+            assistant_message,
         )
-    if assistant_storage_warning:
-        remember_history_warning(assistant_storage_warning)
-    await handle_overflow_summary(assistant_storage_warning)
-    if assistant_snapshot_created and assistant_storage_warning != "overflow":
-        summary.schedule_summary_generation(conversation_id)
+        if assistant_archived_records:
+            await send_permanent_records_archive(
+                context.bot,
+                user_id,
+                assistant_archived_records,
+                logger=logger,
+            )
+        if assistant_storage_warning:
+            remember_history_warning(assistant_storage_warning)
+        await handle_overflow_summary(assistant_storage_warning)
+        if assistant_snapshot_created and assistant_storage_warning != "overflow":
+            summary.schedule_summary_generation(conversation_id)
 
     if pending_history_warning:
         await notify_history_warning(pending_history_warning)
 
-    # 发送AI回复
-    sent_messages = []
-    fallback_send = partial_send(
-        context.bot.send_message,
-        update.effective_chat.id,
-    )
-    sent_messages.extend(
-        await send_ai_reply_with_stickers(
-            bot=context.bot,
-            chat_id=update.effective_chat.id,
-            text=assistant_message,
-            first_text_send=effective_message.reply_text,
-            fallback_send=fallback_send,
-            logger=logger,
-            reply_to_message_id=getattr(effective_message, "message_id", None),
+    # 发送未通过可见循环即时发送的最终回复
+    if assistant_message.strip():
+        has_visible_message = bool(sent_messages)
+        try:
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        except Exception:
+            logger.debug("Failed to send typing action before final AI reply")
+        sent_messages.extend(
+            await send_ai_reply_with_stickers(
+                bot=context.bot,
+                chat_id=update.effective_chat.id,
+                text=assistant_message,
+                first_text_send=fallback_send if has_visible_message else effective_message.reply_text,
+                fallback_send=fallback_send,
+                logger=logger,
+                reply_to_message_id=None if has_visible_message else getattr(effective_message, "message_id", None),
+            )
         )
-    )
     sent_messages.extend(
         await send_generated_images_from_tool_logs(
             bot=context.bot,
@@ -729,7 +770,18 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             logger=logger,
         )
     )
-
+    if not sent_messages and not assistant_message.strip():
+        tool_log_types = [
+            str(tool_log.get("type", "tool_result"))
+            for tool_log in tool_logs
+            if isinstance(tool_log, dict)
+        ]
+        logger.info(
+            "AI produced empty response; no Telegram message sent: user_id=%s conversation_id=%s tool_log_types=%s",
+            user_id,
+            conversation_id,
+            tool_log_types,
+        )
     if update.effective_chat.type in ("group", "supergroup"):
         for sent_message in sent_messages:
             if sent_message is None:

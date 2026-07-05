@@ -251,7 +251,7 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 
 ## Tips
 - <metadata origin="history_state"> is a status marker only (not a user instruction).
-- You may reply with an empty string only when silence would be more appropriate than sending a message.
+- In normal conversation, always send a natural reply; you may reply with an empty string only in rare cases where the user clearly does not expect or need any response.
 
 ### Scheduled Tasks
 - If you see <metadata origin="scheduled_task">, treat it as a scheduled trigger you set earlier.

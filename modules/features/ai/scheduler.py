@@ -12,8 +12,10 @@ from core.archive_utils import send_permanent_records_archive
 from core.prompt_utils import format_metadata_attrs, format_user_state_prompt, xml_escape
 from core.telegram_utils import partial_send
 from features.ai import ai_chat, summary
+from features.ai.conversation_locks import get_conversation_lock
 from features.ai.generated_image_sender import send_generated_images_from_tool_logs
 from features.ai.sticker_sender import normalize_sticker_directives, send_ai_reply_with_stickers
+from features.ai.telegram_visible_sender import TelegramVisibleContentHandler
 
 logger = logging.getLogger(__name__)
 
@@ -193,10 +195,18 @@ async def _persist_tool_logs(
     context: ContextTypes.DEFAULT_TYPE,
     user_id: int,
 ) -> None:
+    tool_record_entries: list[tuple[str, object]] = []
     pending_tool_call_ids: list[str] = []
 
     for tool_log in tool_logs:
         entry_type = tool_log.get("type", "tool_result")
+        if entry_type == "assistant_visible":
+            visible_content = str(tool_log.get("content") or "").strip()
+            if not visible_content:
+                continue
+            tool_record_entries.append(("assistant", visible_content))
+            continue
+
         tool_call_id = tool_log.get("tool_call_id")
         if not tool_call_id:
             if entry_type == "tool_result" and pending_tool_call_ids:
@@ -229,11 +239,7 @@ async def _persist_tool_logs(
                 ],
             }
 
-            snapshot_created, warning_level, archived_records = await mysql_connection.async_insert_chat_record(
-                conversation_id,
-                "assistant",
-                assistant_call_message,
-            )
+            tool_record_entries.append(("assistant", assistant_call_message))
         else:
             if pending_tool_call_ids and pending_tool_call_ids[0] == tool_call_id:
                 pending_tool_call_ids.pop(0)
@@ -250,12 +256,13 @@ async def _persist_tool_logs(
                 "content": tool_result_str,
             }
 
-            snapshot_created, warning_level, archived_records = await mysql_connection.async_insert_chat_record(
-                conversation_id,
-                "tool",
-                tool_message,
-            )
+            tool_record_entries.append(("tool", tool_message))
 
+    if tool_record_entries:
+        snapshot_created, warning_level, archived_records = await mysql_connection.async_insert_chat_records(
+            conversation_id,
+            tool_record_entries,
+        )
         if archived_records:
             await send_permanent_records_archive(
                 context.bot,
@@ -294,6 +301,15 @@ async def _claim_due_schedules(limit: int = SCHEDULE_BATCH_SIZE) -> list[tuple]:
 
 
 async def _process_schedule_task(
+    task_row: tuple,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    user_id = int(task_row[1])
+    async with get_conversation_lock(user_id):
+        await _process_schedule_task_locked(task_row, context)
+
+
+async def _process_schedule_task_locked(
     task_row: tuple,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
@@ -375,54 +391,85 @@ async def _process_schedule_task(
         except Exception:
             logger.debug("Failed to send typing action for scheduled task %s", schedule_id)
 
-        assistant_message, tool_logs = await ai_chat.get_ai_response(
-            list(chat_history),
-            user_id,
-            tool_context=tool_context,
-        )
-        assistant_message = await normalize_sticker_directives(
-            str(assistant_message),
-            logger=logger,
-        )
-
-        if tool_logs:
-            await _persist_tool_logs(user_id, tool_logs, context, user_id)
-
-        if not assistant_message or not str(assistant_message).strip():
-            raise RuntimeError("empty assistant response")
-
-        snapshot_created, warning_level, archived_records = await mysql_connection.async_insert_chat_record(
-            user_id,
-            "assistant",
-            assistant_message,
-        )
-        if archived_records:
-            await send_permanent_records_archive(
-                context.bot,
-                user_id,
-                archived_records,
-                logger=logger,
-            )
-        await _handle_overflow_summary(user_id, warning_level)
-        if snapshot_created and warning_level != "overflow":
-            summary.schedule_summary_generation(user_id)
-
+        sent_messages: list = []
         send_func = partial_send(context.bot.send_message, user_id)
-        await send_ai_reply_with_stickers(
+        visible_content_handler = TelegramVisibleContentHandler(
+            loop=asyncio.get_running_loop(),
             bot=context.bot,
             chat_id=user_id,
-            text=str(assistant_message),
             first_text_send=send_func,
             fallback_send=send_func,
             logger=logger,
         )
-        await send_generated_images_from_tool_logs(
-            bot=context.bot,
-            chat_id=user_id,
-            tool_logs=tool_logs,
-            logger=logger,
-        )
 
+        assistant_message, tool_logs = await ai_chat.get_ai_response(
+            list(chat_history),
+            user_id,
+            tool_context=tool_context,
+            visible_content_handler=visible_content_handler,
+        )
+        sent_messages.extend(visible_content_handler.sent_messages)
+        assistant_message = str(assistant_message or "")
+        if assistant_message.strip():
+            assistant_message = await normalize_sticker_directives(
+                assistant_message,
+                logger=logger,
+            )
+
+        if tool_logs:
+            await _persist_tool_logs(user_id, tool_logs, context, user_id)
+
+        if assistant_message.strip():
+            snapshot_created, warning_level, archived_records = await mysql_connection.async_insert_chat_record(
+                user_id,
+                "assistant",
+                assistant_message,
+            )
+            if archived_records:
+                await send_permanent_records_archive(
+                    context.bot,
+                    user_id,
+                    archived_records,
+                    logger=logger,
+                )
+            await _handle_overflow_summary(user_id, warning_level)
+            if snapshot_created and warning_level != "overflow":
+                summary.schedule_summary_generation(user_id)
+
+            try:
+                await context.bot.send_chat_action(chat_id=user_id, action="typing")
+            except Exception:
+                logger.debug("Failed to send typing action before scheduled AI reply")
+            sent_messages.extend(
+                await send_ai_reply_with_stickers(
+                    bot=context.bot,
+                    chat_id=user_id,
+                    text=str(assistant_message),
+                    first_text_send=send_func,
+                    fallback_send=send_func,
+                    logger=logger,
+                )
+            )
+        sent_messages.extend(
+            await send_generated_images_from_tool_logs(
+                bot=context.bot,
+                chat_id=user_id,
+                tool_logs=tool_logs,
+                logger=logger,
+            )
+        )
+        if not sent_messages and not assistant_message.strip():
+            tool_log_types = [
+                str(tool_log.get("type", "tool_result"))
+                for tool_log in tool_logs
+                if isinstance(tool_log, dict)
+            ]
+            logger.info(
+                "Scheduled AI produced empty response; no Telegram message sent: user_id=%s schedule_id=%s tool_log_types=%s",
+                user_id,
+                schedule_id,
+                tool_log_types,
+            )
         next_run_at = _calculate_next_run_at(
             run_at,
             recurrence_unit,

@@ -5,13 +5,14 @@ from core import config
 
 from ..errors import SafetyBlockError
 from ..tool_runner import run_tool_loop
-from ..types import AIResponse
+from ..types import AIResponse, PartialAIResponseError, VisibleContentHandler
 
 
 def get_ai_response(
     messages,
     user_id: int,
     tool_context: Optional[Dict[str, object]] = None,
+    visible_content_handler: Optional[VisibleContentHandler] = None,
 ) -> AIResponse:
     """同步版本的 Google Gemini 响应函数（LiteLLM）。"""
     primary_model = config.GEMINI_CHAT_MODEL
@@ -24,10 +25,13 @@ def get_ai_response(
             messages,
             tool_context,
             provider_name="Gemini",
+            visible_content_handler=visible_content_handler,
         )
 
     try:
         return _run(primary_model)
+    except PartialAIResponseError:
+        raise
     except Exception as exc:
         error_str = str(exc)
         if fallback_model and fallback_model != primary_model:

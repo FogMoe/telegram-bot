@@ -5,7 +5,7 @@ from typing import Any, Awaitable, Callable
 
 import telegram.error
 
-from core.telegram_utils import safe_send_markdown, split_ai_reply
+from core.telegram_utils import PartialTelegramSendError, safe_send_markdown, split_ai_reply
 from .tools.sticker_tools import choose_sticker_file_id, sticker_exists
 
 AsyncSendFunc = Callable[..., Awaitable[Any]]
@@ -14,6 +14,18 @@ MAX_STICKERS_PER_REPLY = 10
 _STICKER_DIRECTIVE_RE = re.compile(
     r"^\[sticker_pack:(?P<pack>[A-Za-z0-9_]+)\s+emoji:(?P<emoji>[^\]]+)\]$"
 )
+
+
+class PartialAIReplySendError(Exception):
+    def __init__(
+        self,
+        message: str,
+        sent_messages: list[Any],
+        sent_content: str,
+    ) -> None:
+        super().__init__(message)
+        self.sent_messages = list(sent_messages)
+        self.sent_content = sent_content
 
 
 def _parse_sticker_directive(line: str) -> tuple[str, str] | None:
@@ -81,9 +93,17 @@ async def send_ai_reply_with_stickers(
     reply_to_message_id: int | None = None,
 ) -> list[Any]:
     """Send an AI reply, interpreting sticker directives as Telegram stickers."""
+    if not str(text).strip():
+        logger.info("Skipping empty AI reply send: chat_id=%s", chat_id)
+        return []
+
     sent_messages: list[Any] = []
+    sent_content_parts: list[str] = []
     text_has_been_sent = False
     sticker_count = 0
+
+    def sent_content() -> str:
+        return "\n\n".join(part for part in sent_content_parts if part).strip()
 
     async def flush_text(lines: list[str]) -> None:
         nonlocal text_has_been_sent
@@ -93,13 +113,21 @@ async def send_ai_reply_with_stickers(
             return
 
         send_func = first_text_send if not text_has_been_sent else fallback_send
-        results = await safe_send_markdown(
-            send_func,
-            payload,
-            logger=logger,
-            fallback_send=fallback_send,
-        )
+        try:
+            results = await safe_send_markdown(
+                send_func,
+                payload,
+                logger=logger,
+                fallback_send=fallback_send,
+            )
+        except PartialTelegramSendError as exc:
+            sent_messages.extend(exc.sent_messages)
+            if exc.sent_text.strip():
+                sent_content_parts.append(exc.sent_text.strip())
+                text_has_been_sent = True
+            raise
         sent_messages.extend(results)
+        sent_content_parts.append(payload)
         text_has_been_sent = True
 
     async def send_sticker(pack_name: str, emoji: str) -> None:
@@ -139,31 +167,38 @@ async def send_ai_reply_with_stickers(
             )
 
         sent_messages.append(sent_message)
+        sent_content_parts.append(f"[sticker_pack:{pack_name} emoji:{emoji}]")
         sticker_count += 1
         text_has_been_sent = True
 
-    for segment in split_ai_reply(str(text)):
-        buffer: list[str] = []
-        in_code_block = False
+    try:
+        for segment in split_ai_reply(str(text)):
+            buffer: list[str] = []
+            in_code_block = False
 
-        for line in segment.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("```"):
-                in_code_block = not in_code_block
-                buffer.append(line)
-                continue
+            for line in segment.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("```"):
+                    in_code_block = not in_code_block
+                    buffer.append(line)
+                    continue
 
-            directive = None if in_code_block else _parse_sticker_directive(stripped)
-            if directive is None:
-                buffer.append(line)
-                continue
+                directive = None if in_code_block else _parse_sticker_directive(stripped)
+                if directive is None:
+                    buffer.append(line)
+                    continue
+
+                await flush_text(buffer)
+                await send_sticker(*directive)
 
             await flush_text(buffer)
-            await send_sticker(*directive)
-
-        await flush_text(buffer)
-
-    if not sent_messages:
-        await flush_text(["雾萌娘不想回复你的这条消息。"])
+    except Exception as exc:
+        if sent_messages:
+            raise PartialAIReplySendError(
+                str(exc),
+                sent_messages,
+                sent_content(),
+            ) from exc
+        raise
 
     return sent_messages

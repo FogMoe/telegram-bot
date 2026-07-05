@@ -1,11 +1,11 @@
 import json
 import logging
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
 from .tools import OPENAI_TOOLS, AI_TOOL_HANDLERS
 from .prompts import compose_system_prompt
 from .litellm_client import create_chat_completion
-from .types import AIResponse, ToolLog
+from .types import AIResponse, PartialAIResponseError, ToolLog, VisibleContentHandler
 
 
 def _tool_call_to_plain(tool_call: Any) -> Dict[str, Any]:
@@ -179,6 +179,68 @@ def _log_generate_image_result(provider_name: str, tool_result: Dict[str, Any]) 
     )
 
 
+class _VisibleContentResult(NamedTuple):
+    content: str
+    completed: bool
+
+
+def _last_visible_content(handler: VisibleContentHandler) -> str:
+    visible_events = getattr(handler, "visible_events", None)
+    if callable(visible_events):
+        try:
+            events = visible_events()
+            if isinstance(events, list):
+                for event in reversed(events):
+                    if not isinstance(event, dict):
+                        continue
+                    content = str(event.get("content") or "").strip()
+                    if content:
+                        return content
+        except Exception:
+            logging.exception("Failed to read visible content events")
+
+    contents = getattr(handler, "sent_contents", [])
+    if not isinstance(contents, list):
+        return ""
+    for content in reversed(contents):
+        normalized = str(content or "").strip()
+        if normalized:
+            return normalized
+    return ""
+
+
+def _emit_visible_content(
+    handler: VisibleContentHandler,
+    content: str,
+    *,
+    provider_name: str,
+) -> _VisibleContentResult:
+    """Send visible assistant content through the host app and return what was sent."""
+    if not content.strip():
+        return _VisibleContentResult("", True)
+
+    try:
+        visible_content = handler(content)
+    except Exception as exc:
+        logging.exception("%s visible content handler failed: %s", provider_name, exc)
+        partial_content = _last_visible_content(handler)
+        if partial_content:
+            return _VisibleContentResult(partial_content, False)
+        return _VisibleContentResult("", True)
+
+    if visible_content is None:
+        partial_content = _last_visible_content(handler)
+        if partial_content:
+            return _VisibleContentResult(partial_content, False)
+        return _VisibleContentResult("", True)
+    normalized = str(visible_content).strip()
+    if not normalized:
+        partial_content = _last_visible_content(handler)
+        if partial_content:
+            return _VisibleContentResult(partial_content, False)
+    return _VisibleContentResult(normalized, True)
+
+
 def run_tool_loop(
     provider: str,
     model: str,
@@ -191,6 +253,7 @@ def run_tool_loop(
     max_tokens: int = 4096,
     max_iterations: int = 10,
     skip_tools: Optional[Iterable[str]] = None,
+    visible_content_handler: Optional[VisibleContentHandler] = None,
 ) -> AIResponse:
     """Run a tool-calling loop through LiteLLM using OpenAI-format tools."""
     tools = OPENAI_TOOLS
@@ -210,15 +273,20 @@ def run_tool_loop(
 
     for iteration in range(max_iterations):
         request_tool_choice = tool_choice
-        response = create_chat_completion(
-            provider,
-            model,
-            messages=filtered_messages,
-            tools=tools,
-            tool_choice=request_tool_choice,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        try:
+            response = create_chat_completion(
+                provider,
+                model,
+                messages=filtered_messages,
+                tools=tools,
+                tool_choice=request_tool_choice,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:
+            if tool_logs:
+                raise PartialAIResponseError(str(exc), tool_logs) from exc
+            raise
 
         assistant_message = response.choices[0].message
         raw_tool_calls = getattr(assistant_message, "tool_calls", None)
@@ -228,10 +296,40 @@ def run_tool_loop(
             logging.info("%s 第 %s 轮：无工具调用，直接返回答案", provider_name, iteration + 1)
             content_text = assistant_content
             if content_text.strip():
+                if visible_content_handler:
+                    visible_result = _emit_visible_content(
+                        visible_content_handler,
+                        content_text,
+                        provider_name=provider_name,
+                    )
+                    if visible_result.content:
+                        tool_logs.append({
+                            "type": "assistant_visible",
+                            "content": visible_result.content,
+                        })
+                        return "", tool_logs
+                    if not visible_result.completed:
+                        return "", tool_logs
+                    return content_text, tool_logs
                 return content_text, tool_logs
             if last_tool_payload:
                 fallback = _format_tool_fallback(last_tool_payload) or ""
                 if fallback:
+                    if visible_content_handler:
+                        visible_result = _emit_visible_content(
+                            visible_content_handler,
+                            fallback,
+                            provider_name=provider_name,
+                        )
+                        if visible_result.content:
+                            tool_logs.append({
+                                "type": "assistant_visible",
+                                "content": visible_result.content,
+                            })
+                            return "", tool_logs
+                        if not visible_result.completed:
+                            return "", tool_logs
+                        return fallback, tool_logs
                     return fallback, tool_logs
                 logging.warning("%s 返回内容为空且无可用回退。", provider_name)
             return content_text, tool_logs
@@ -239,9 +337,27 @@ def run_tool_loop(
         tool_calls = _normalise_tool_calls(raw_tool_calls)
         logging.info("%s 第 %s 轮：检测到 %s 个工具调用", provider_name, iteration + 1, len(tool_calls))
 
+        assistant_content_for_model = assistant_content
+        if visible_content_handler and assistant_content.strip():
+            visible_result = _emit_visible_content(
+                visible_content_handler,
+                assistant_content,
+                provider_name=provider_name,
+            )
+            if visible_result.content:
+                assistant_content_for_model = visible_result.content
+                tool_logs.append({
+                    "type": "assistant_visible",
+                    "content": visible_result.content,
+                })
+                if not visible_result.completed:
+                    return "", tool_logs
+            elif not visible_result.completed:
+                return "", tool_logs
+
         filtered_messages.append({
             "role": "assistant",
-            "content": assistant_content,
+            "content": assistant_content_for_model,
             "tool_calls": tool_calls,
         })
 

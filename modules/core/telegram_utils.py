@@ -18,6 +18,18 @@ AsyncSendFunc = Callable[..., Awaitable[Any]]
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 
 
+class PartialTelegramSendError(Exception):
+    def __init__(
+        self,
+        message: str,
+        sent_messages: list[Any],
+        sent_text: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.sent_messages = list(sent_messages)
+        self.sent_text = sent_text
+
+
 def _optional_text(value: Any) -> str | None:
     if value is None:
         return None
@@ -315,14 +327,25 @@ async def safe_send_markdown(
     chunks = _split_text_segments(text)
 
     results: list[Any] = []
+    sent_chunks: list[str] = []
     for index, chunk in enumerate(chunks):
         chunk_kwargs = dict(kwargs)
         if index > 0:
             chunk_kwargs.pop("reply_to_message_id", None)
             chunk_kwargs.pop("reply_to_message", None)
             chunk_kwargs.pop("quote", None)
-        result = await _send_single_chunk(chunk, chunk_kwargs)
+        try:
+            result = await _send_single_chunk(chunk, chunk_kwargs)
+        except Exception as exc:
+            if results:
+                raise PartialTelegramSendError(
+                    str(exc),
+                    results,
+                    "\n".join(sent_chunks).strip(),
+                ) from exc
+            raise
         results.append(result)
+        sent_chunks.append(chunk)
 
     return results
 
