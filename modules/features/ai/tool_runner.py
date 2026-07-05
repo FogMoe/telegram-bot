@@ -127,7 +127,7 @@ def _public_tool_result(tool_name: str, tool_result: Dict[str, Any]) -> Dict[str
 
     if tool_result.get("error"):
         public_result = {"error": tool_result.get("error")}
-        for key in ("status_code", "details", "response_preview", "warnings"):
+        for key in ("status_code", "details", "response_preview", "warnings", "retry_after_seconds"):
             if key in tool_result:
                 public_result[key] = tool_result[key]
         return public_result
@@ -135,7 +135,11 @@ def _public_tool_result(tool_name: str, tool_result: Dict[str, Any]) -> Dict[str
     if tool_result.get("status") == "generated":
         return {
             "status": "generated",
-            "message": "Generated image is ready and will be sent to Telegram.",
+            "message": (
+                "Generated image is ready and will be sent to Telegram. "
+                "If you need to inspect the image yourself later, ask the user "
+                "to forward the sent image back to you."
+            ),
         }
 
     return {"status": tool_result.get("status") or "unknown"}

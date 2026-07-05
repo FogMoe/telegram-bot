@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import math
 import re
 import threading
 import time
@@ -11,6 +12,7 @@ from typing import Any, Optional
 import requests
 
 from core import config
+from .context import get_tool_request_context
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +25,14 @@ MAX_IMAGE_BYTES = 16 * 1024 * 1024
 GENERATED_IMAGE_TTL_SECONDS = 60 * 60
 GENERATED_IMAGE_FILE_PREFIX = "ai_generated_"
 GENERATED_IMAGE_DIR = config.BASE_DIR / "logs" / "generated_images"
+IMAGE_RATE_LIMIT_WINDOW_SECONDS = 5 * 60
+IMAGE_RATE_LIMIT_MAX_GENERATIONS = 2
 
 _SESSION_LOCAL = threading.local()
 _GENERATED_IMAGE_FILES: dict[str, str] = {}
 _GENERATED_IMAGE_LOCK = threading.Lock()
+_IMAGE_RATE_LIMITS: dict[int, list[float]] = {}
+_IMAGE_RATE_LIMIT_LOCK = threading.Lock()
 _IMAGE_VALUE_KEYS = {
     "b64_json",
     "base64",
@@ -46,6 +52,67 @@ _IMAGE_CONTAINER_KEYS = (
 
 class ImageGenerationSizeError(ValueError):
     pass
+
+
+def _get_request_user_id() -> Optional[int]:
+    context = get_tool_request_context()
+    user_id = context.get("user_id")
+    try:
+        return int(user_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _prune_image_rate_limits(now: float) -> None:
+    cutoff = now - IMAGE_RATE_LIMIT_WINDOW_SECONDS
+    for user_id, timestamps in list(_IMAGE_RATE_LIMITS.items()):
+        active_timestamps = [timestamp for timestamp in timestamps if timestamp > cutoff]
+        if active_timestamps:
+            _IMAGE_RATE_LIMITS[user_id] = active_timestamps
+        else:
+            _IMAGE_RATE_LIMITS.pop(user_id, None)
+
+
+def _reserve_image_generation(user_id: int) -> tuple[bool, Optional[float], Optional[int]]:
+    now = time.time()
+    cutoff = now - IMAGE_RATE_LIMIT_WINDOW_SECONDS
+
+    with _IMAGE_RATE_LIMIT_LOCK:
+        _prune_image_rate_limits(now)
+        timestamps = [
+            timestamp
+            for timestamp in _IMAGE_RATE_LIMITS.get(user_id, [])
+            if timestamp > cutoff
+        ]
+
+        if len(timestamps) >= IMAGE_RATE_LIMIT_MAX_GENERATIONS:
+            retry_after = math.ceil(
+                max(1, IMAGE_RATE_LIMIT_WINDOW_SECONDS - (now - timestamps[0]))
+            )
+            _IMAGE_RATE_LIMITS[user_id] = timestamps
+            return False, None, retry_after
+
+        timestamps.append(now)
+        _IMAGE_RATE_LIMITS[user_id] = timestamps
+        return True, now, None
+
+
+def _release_image_generation(user_id: int, reservation_timestamp: Optional[float]) -> None:
+    if reservation_timestamp is None:
+        return
+
+    with _IMAGE_RATE_LIMIT_LOCK:
+        timestamps = _IMAGE_RATE_LIMITS.get(user_id)
+        if not timestamps:
+            return
+        for index, timestamp in enumerate(timestamps):
+            if timestamp == reservation_timestamp:
+                del timestamps[index]
+                break
+        if timestamps:
+            _IMAGE_RATE_LIMITS[user_id] = timestamps
+        else:
+            _IMAGE_RATE_LIMITS.pop(user_id, None)
 
 
 def _is_expired_generated_image(path: Path, cutoff: float) -> bool:
@@ -322,38 +389,13 @@ def _save_image(
     }
 
 
-def generate_image_tool(
-    prompt: Optional[str] = None,
-    width: Optional[int] = None,
-    height: Optional[int] = None,
-    steps: Optional[int] = None,
-    seed: Optional[int] = None,
-    **kwargs,
+def _request_and_save_generated_image(
+    *,
+    request_items: list[dict[str, Any]],
+    api_url: str,
+    api_token: str,
+    timeout: int,
 ) -> dict[str, Any]:
-    """Generate one image and return a temporary image reference."""
-    _cleanup_expired_generated_images()
-
-    api_url = (getattr(config, "IMAGE_GEN_API_URL", "") or "").strip()
-    api_token = (getattr(config, "IMAGE_GEN_API_TOKEN", "") or "").strip()
-    timeout = getattr(config, "IMAGE_GEN_TIMEOUT", 30) or 30
-
-    if not api_url:
-        return {"error": "Image generation API URL is not configured"}
-    if not api_token:
-        return {"error": "Image generation API token is not configured"}
-    if kwargs.get("items") is not None or kwargs.get("count") is not None:
-        return {"error": "generate_image supports exactly one image per tool call"}
-
-    request_items = _build_request_items(
-        prompt=prompt,
-        width=width,
-        height=height,
-        steps=steps,
-        seed=seed,
-    )
-    if not request_items:
-        return {"error": "At least one image prompt is required"}
-
     payload = {"items": request_items}
     headers = {
         "Authorization": f"Bearer {api_token}",
@@ -425,6 +467,71 @@ def generate_image_tool(
     if save_errors:
         result["warnings"] = save_errors[:3]
     return result
+
+
+def generate_image_tool(
+    prompt: Optional[str] = None,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    steps: Optional[int] = None,
+    seed: Optional[int] = None,
+    **kwargs,
+) -> dict[str, Any]:
+    """Generate one image and return a temporary image reference."""
+    _cleanup_expired_generated_images()
+
+    api_url = (getattr(config, "IMAGE_GEN_API_URL", "") or "").strip()
+    api_token = (getattr(config, "IMAGE_GEN_API_TOKEN", "") or "").strip()
+    timeout = getattr(config, "IMAGE_GEN_TIMEOUT", 30) or 30
+
+    if not api_url:
+        return {"error": "Image generation API URL is not configured"}
+    if not api_token:
+        return {"error": "Image generation API token is not configured"}
+    if kwargs.get("items") is not None or kwargs.get("count") is not None:
+        return {"error": "generate_image supports exactly one image per tool call"}
+
+    request_items = _build_request_items(
+        prompt=prompt,
+        width=width,
+        height=height,
+        steps=steps,
+        seed=seed,
+    )
+    if not request_items:
+        return {"error": "At least one image prompt is required"}
+
+    user_id = _get_request_user_id()
+    if user_id is None:
+        return {
+            "error": "Missing user information, cannot generate image",
+            "details": "Image generation requires a user id for per-user rate limiting.",
+        }
+
+    allowed, reservation_timestamp, retry_after = _reserve_image_generation(user_id)
+    if not allowed:
+        return {
+            "error": "Image generation rate limit exceeded",
+            "details": (
+                f"Each user can generate up to {IMAGE_RATE_LIMIT_MAX_GENERATIONS} "
+                "images every 5 minutes."
+            ),
+            "retry_after_seconds": retry_after,
+        }
+
+    generated = False
+    try:
+        result = _request_and_save_generated_image(
+            request_items=request_items,
+            api_url=api_url,
+            api_token=api_token,
+            timeout=timeout,
+        )
+        generated = result.get("status") == "generated"
+        return result
+    finally:
+        if not generated:
+            _release_image_generation(user_id, reservation_timestamp)
 
 
 def pop_generated_image_file(image_id: str) -> Optional[str]:
