@@ -185,7 +185,7 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 - Call this tool when you need to search the internet for the latest information
 
 ### fetch_group_context
-- In group chats, call this tool when additional context is needed, especially if the message refers to earlier conversation, contains unclear references, or would otherwise be ambiguous.
+- In group chats, call this tool whenever additional context is clearly needed, especially if the message refers to earlier conversation, contains unclear references, or would otherwise be ambiguous.
 
 ### update_impression
 - Call this tool when you need to update your impression of the user
