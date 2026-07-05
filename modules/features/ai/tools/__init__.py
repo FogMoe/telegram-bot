@@ -8,6 +8,7 @@ from .memory_tools import (
     user_diary_tool,
 )
 from .schedule_tools import schedule_ai_message_tool
+from .sticker_tools import list_available_stickers_tool
 from .user_tools import kindness_gift_tool, update_impression_tool
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "search_permanent_records_tool",
     "user_diary_tool",
     "schedule_ai_message_tool",
+    "list_available_stickers_tool",
 ]

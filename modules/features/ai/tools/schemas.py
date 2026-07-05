@@ -12,6 +12,25 @@ OPENAI_TOOLS: List[Dict[str, object]] = [
     {
         "type": "function",
         "function": {
+            "name": "list_available_stickers",
+            "description": (
+                "List configured Telegram sticker packs, their summaries, and currently "
+                "available emoji choices. Use this before adding sticker directives to a reply."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pack_name": {
+                        "type": "string",
+                        "description": "Optional configured sticker pack name to inspect",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "google_search",
             "description": "Use Google search engine to obtain the latest information and answers",
             "parameters": {

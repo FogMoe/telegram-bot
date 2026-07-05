@@ -11,6 +11,7 @@ from .memory_tools import (
 )
 from .schedule_tools import schedule_ai_message_tool
 from .schemas import OPENAI_TOOLS
+from .sticker_tools import list_available_stickers_tool
 from .user_tools import kindness_gift_tool, update_impression_tool
 
 AI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
@@ -25,6 +26,7 @@ AI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
     "search_permanent_records": search_permanent_records_tool,
     "user_diary": user_diary_tool,
     "schedule_ai_message": schedule_ai_message_tool,
+    "list_available_stickers": list_available_stickers_tool,
 }
 
 __all__ = ["OPENAI_TOOLS", "AI_TOOL_HANDLERS"]

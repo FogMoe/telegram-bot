@@ -12,8 +12,9 @@ from telegram.ext import ContextTypes
 from core import config, db, group_chat_history, mysql_connection, process_user, stake_reward_pool
 from core.archive_utils import send_permanent_records_archive
 from core.prompt_utils import format_metadata_attrs, format_user_state_prompt, xml_escape
-from core.telegram_utils import partial_send, safe_send_markdown, split_ai_reply
+from core.telegram_utils import partial_send, safe_send_markdown
 from features.ai import ai_chat, summary
+from features.ai.sticker_sender import send_ai_reply_with_stickers
 from features.ai.task_runner import run_ai_task
 
 logger = logging.getLogger(__name__)
@@ -668,15 +669,17 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         context.bot.send_message,
         update.effective_chat.id,
     )
-    for index, segment in enumerate(split_ai_reply(assistant_message)):
-        send_func = effective_message.reply_text if index == 0 else fallback_send
-        results = await safe_send_markdown(
-            send_func,
-            segment,
-            logger=logger,
+    sent_messages.extend(
+        await send_ai_reply_with_stickers(
+            bot=context.bot,
+            chat_id=update.effective_chat.id,
+            text=assistant_message,
+            first_text_send=effective_message.reply_text,
             fallback_send=fallback_send,
+            logger=logger,
+            reply_to_message_id=getattr(effective_message, "message_id", None),
         )
-        sent_messages.extend(results)
+    )
 
     if update.effective_chat.type in ("group", "supergroup"):
         for sent_message in sent_messages:

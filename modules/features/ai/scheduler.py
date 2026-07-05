@@ -10,8 +10,9 @@ from telegram.ext import ContextTypes
 from core import mysql_connection, process_user
 from core.archive_utils import send_permanent_records_archive
 from core.prompt_utils import format_metadata_attrs, format_user_state_prompt, xml_escape
-from core.telegram_utils import partial_send, safe_send_markdown, split_ai_reply
+from core.telegram_utils import partial_send
 from features.ai import ai_chat, summary
+from features.ai.sticker_sender import send_ai_reply_with_stickers
 
 logger = logging.getLogger(__name__)
 
@@ -402,13 +403,14 @@ async def _process_schedule_task(
             summary.schedule_summary_generation(user_id)
 
         send_func = partial_send(context.bot.send_message, user_id)
-        for segment in split_ai_reply(str(assistant_message)):
-            await safe_send_markdown(
-                send_func,
-                segment,
-                logger=logger,
-                fallback_send=send_func,
-            )
+        await send_ai_reply_with_stickers(
+            bot=context.bot,
+            chat_id=user_id,
+            text=str(assistant_message),
+            first_text_send=send_func,
+            fallback_send=send_func,
+            logger=logger,
+        )
 
         next_run_at = _calculate_next_run_at(
             run_at,

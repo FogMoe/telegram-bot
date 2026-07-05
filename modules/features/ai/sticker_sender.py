@@ -1,0 +1,124 @@
+import asyncio
+import logging
+import re
+from typing import Any, Awaitable, Callable
+
+import telegram.error
+
+from core.telegram_utils import safe_send_markdown, split_ai_reply
+from .tools.sticker_tools import choose_sticker_file_id
+
+AsyncSendFunc = Callable[..., Awaitable[Any]]
+MAX_STICKERS_PER_REPLY = 10
+
+_STICKER_DIRECTIVE_RE = re.compile(
+    r"^\[sticker_pack:(?P<pack>[A-Za-z0-9_]+)\s+emoji:(?P<emoji>[^\]]+)\]$"
+)
+
+
+def _parse_sticker_directive(line: str) -> tuple[str, str] | None:
+    match = _STICKER_DIRECTIVE_RE.match(line.strip())
+    if not match:
+        return None
+    pack_name = match.group("pack").strip()
+    emoji = match.group("emoji").strip()
+    if not pack_name or not emoji:
+        return None
+    return pack_name, emoji
+
+
+async def send_ai_reply_with_stickers(
+    *,
+    bot: Any,
+    chat_id: int,
+    text: str,
+    first_text_send: AsyncSendFunc,
+    fallback_send: AsyncSendFunc,
+    logger: logging.Logger,
+    reply_to_message_id: int | None = None,
+) -> list[Any]:
+    """Send an AI reply, interpreting sticker directives as Telegram stickers."""
+    sent_messages: list[Any] = []
+    text_has_been_sent = False
+    sticker_count = 0
+
+    async def flush_text(lines: list[str]) -> None:
+        nonlocal text_has_been_sent
+        payload = "\n".join(lines).strip()
+        lines.clear()
+        if not payload:
+            return
+
+        send_func = first_text_send if not text_has_been_sent else fallback_send
+        results = await safe_send_markdown(
+            send_func,
+            payload,
+            logger=logger,
+            fallback_send=fallback_send,
+        )
+        sent_messages.extend(results)
+        text_has_been_sent = True
+
+    async def send_sticker(pack_name: str, emoji: str) -> None:
+        nonlocal sticker_count, text_has_been_sent
+        if sticker_count >= MAX_STICKERS_PER_REPLY:
+            return
+
+        file_id = await asyncio.to_thread(choose_sticker_file_id, pack_name, emoji)
+        if not file_id:
+            return
+
+        send_kwargs: dict[str, Any] = {}
+        if not text_has_been_sent and reply_to_message_id is not None:
+            send_kwargs["reply_to_message_id"] = reply_to_message_id
+            send_kwargs["allow_sending_without_reply"] = True
+
+        try:
+            sent_message = await bot.send_sticker(
+                chat_id=chat_id,
+                sticker=file_id,
+                **send_kwargs,
+            )
+        except telegram.error.BadRequest as exc:
+            if "message to be replied not found" not in str(exc).lower():
+                logger.warning(
+                    "Failed to send sticker pack=%s emoji=%s: %s",
+                    pack_name,
+                    emoji,
+                    exc,
+                )
+                return
+            sent_message = await bot.send_sticker(
+                chat_id=chat_id,
+                sticker=file_id,
+            )
+
+        sent_messages.append(sent_message)
+        sticker_count += 1
+        text_has_been_sent = True
+
+    for segment in split_ai_reply(str(text)):
+        buffer: list[str] = []
+        in_code_block = False
+
+        for line in segment.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_code_block = not in_code_block
+                buffer.append(line)
+                continue
+
+            directive = None if in_code_block else _parse_sticker_directive(stripped)
+            if directive is None:
+                buffer.append(line)
+                continue
+
+            await flush_text(buffer)
+            await send_sticker(*directive)
+
+        await flush_text(buffer)
+
+    if not sent_messages:
+        await flush_text(["雾萌娘不想回复你的这条消息。"])
+
+    return sent_messages

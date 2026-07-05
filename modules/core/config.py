@@ -172,6 +172,13 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 
 ### get_help_text
 - Call this tool when you need to understand the Telegram commands available to users (such as get coins, etc.)
+
+### list_available_stickers
+- Call this tool when you want to know which Telegram sticker packs and emoji choices are available
+- If you want to send a sticker, first use the tool result to choose a configured pack name and emoji
+- In your final reply, place sticker directives on separate lines using exactly this format: [sticker_pack:<pack_name> emoji:<emoji>]
+- Use only pack names and emoji returned by the tool; never invent sticker pack names, emoji, file IDs, URLs, or raw Telegram API payloads
+- Use at most 10 sticker directives per reply, and avoid stickers in serious technical explanations, formal notices, or heavy emotional support unless they clearly help the tone
   
 ### google_search (real-time info)
 - Call this tool when you need to search the internet for the latest information
