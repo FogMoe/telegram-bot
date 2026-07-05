@@ -21,6 +21,7 @@ _STICKER_SET_CACHE: dict[str, dict[str, Any]] = {}
 
 def _load_pack_configs() -> dict[str, dict[str, Any]]:
     if not Path(PACKS_CONFIG_PATH).exists():
+        logger.warning("AI sticker pack config does not exist: %s", PACKS_CONFIG_PATH)
         return {}
 
     try:
