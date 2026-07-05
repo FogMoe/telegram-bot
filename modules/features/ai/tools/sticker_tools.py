@@ -243,3 +243,25 @@ def choose_sticker_file_id(pack_name: str, emoji: str) -> str | None:
         )
         return None
     return random.choice(file_ids)
+
+
+def sticker_exists(pack_name: str, emoji: str) -> bool:
+    """Return whether a configured sticker pack contains at least one sticker for emoji."""
+    normalized_pack_name = (pack_name or "").strip()
+    normalized_emoji = (emoji or "").strip()
+    if not normalized_pack_name or not normalized_emoji:
+        return False
+
+    try:
+        metadata = _metadata_for_pack(normalized_pack_name)
+    except Exception as exc:
+        logger.warning(
+            "Failed to validate sticker for pack=%s emoji=%s: %s",
+            normalized_pack_name,
+            normalized_emoji,
+            exc,
+        )
+        return False
+
+    emoji_to_file_ids = metadata.get("emoji_to_file_ids") or {}
+    return bool(emoji_to_file_ids.get(normalized_emoji))

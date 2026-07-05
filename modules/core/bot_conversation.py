@@ -15,7 +15,7 @@ from core.prompt_utils import format_metadata_attrs, format_user_state_prompt, x
 from core.telegram_utils import describe_message_for_context, partial_send, safe_send_markdown
 from features.ai import ai_chat, summary
 from features.ai.generated_image_sender import send_generated_images_from_tool_logs
-from features.ai.sticker_sender import send_ai_reply_with_stickers
+from features.ai.sticker_sender import normalize_sticker_directives, send_ai_reply_with_stickers
 from features.ai.task_runner import run_ai_task
 
 logger = logging.getLogger(__name__)
@@ -601,6 +601,10 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user_id,
         tool_context=tool_context,
         text_fallback_messages=chat_history,
+    )
+    assistant_message = await normalize_sticker_directives(
+        str(assistant_message),
+        logger=logger,
     )
 
     pending_tool_call_ids = []

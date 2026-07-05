@@ -13,7 +13,7 @@ from core.prompt_utils import format_metadata_attrs, format_user_state_prompt, x
 from core.telegram_utils import partial_send
 from features.ai import ai_chat, summary
 from features.ai.generated_image_sender import send_generated_images_from_tool_logs
-from features.ai.sticker_sender import send_ai_reply_with_stickers
+from features.ai.sticker_sender import normalize_sticker_directives, send_ai_reply_with_stickers
 
 logger = logging.getLogger(__name__)
 
@@ -379,6 +379,10 @@ async def _process_schedule_task(
             list(chat_history),
             user_id,
             tool_context=tool_context,
+        )
+        assistant_message = await normalize_sticker_directives(
+            str(assistant_message),
+            logger=logger,
         )
 
         if tool_logs:

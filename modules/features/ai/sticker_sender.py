@@ -6,7 +6,7 @@ from typing import Any, Awaitable, Callable
 import telegram.error
 
 from core.telegram_utils import safe_send_markdown, split_ai_reply
-from .tools.sticker_tools import choose_sticker_file_id
+from .tools.sticker_tools import choose_sticker_file_id, sticker_exists
 
 AsyncSendFunc = Callable[..., Awaitable[Any]]
 MAX_STICKERS_PER_REPLY = 10
@@ -25,6 +25,49 @@ def _parse_sticker_directive(line: str) -> tuple[str, str] | None:
     if not pack_name or not emoji:
         return None
     return pack_name, emoji
+
+
+async def normalize_sticker_directives(
+    text: str,
+    *,
+    logger: logging.Logger,
+) -> str:
+    """Downgrade invalid sticker directives to their plain emoji text."""
+    normalized_segments: list[str] = []
+
+    for segment in split_ai_reply(str(text)):
+        normalized_lines: list[str] = []
+        in_code_block = False
+
+        for line in segment.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_code_block = not in_code_block
+                normalized_lines.append(line)
+                continue
+
+            directive = None if in_code_block else _parse_sticker_directive(stripped)
+            if directive is None:
+                normalized_lines.append(line)
+                continue
+
+            pack_name, emoji = directive
+            exists = await asyncio.to_thread(sticker_exists, pack_name, emoji)
+            if exists:
+                normalized_lines.append(line)
+                continue
+
+            if logger:
+                logger.info(
+                    "Invalid sticker directive downgraded to emoji: pack=%s emoji=%s",
+                    pack_name,
+                    emoji,
+                )
+            normalized_lines.append(emoji)
+
+        normalized_segments.append("\n".join(normalized_lines).strip())
+
+    return "\n\n".join(segment for segment in normalized_segments if segment).strip()
 
 
 async def send_ai_reply_with_stickers(
@@ -66,6 +109,7 @@ async def send_ai_reply_with_stickers(
 
         file_id = await asyncio.to_thread(choose_sticker_file_id, pack_name, emoji)
         if not file_id:
+            await flush_text([emoji])
             return
 
         send_kwargs: dict[str, Any] = {}
@@ -87,6 +131,7 @@ async def send_ai_reply_with_stickers(
                     emoji,
                     exc,
                 )
+                await flush_text([emoji])
                 return
             sent_message = await bot.send_sticker(
                 chat_id=chat_id,
