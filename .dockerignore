@@ -9,6 +9,8 @@ venv/
 .gitignore
 tgbot.log
 *.log
+*.log.*
+logs/
 
 # Local env & configs
 .env

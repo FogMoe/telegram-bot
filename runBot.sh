@@ -4,7 +4,8 @@
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 BOT_DIR="$SCRIPT_DIR"
 MODULES_DIR="$BOT_DIR/modules"
-LOG_FILE="$BOT_DIR/tgbot.log"
+LOG_DIR="$BOT_DIR/logs"
+LOG_FILE="$LOG_DIR/tgbot.log"
 VENV_DIR="$BOT_DIR/venv"
 REQUIREMENTS_FILE="$BOT_DIR/requirements.txt"
 
@@ -167,8 +168,9 @@ start_bot() {
 
     # 启动bot并记录日志
     echo "正在启动bot..."
+    mkdir -p "$LOG_DIR"
     echo "日志文件: $LOG_FILE"
-    nohup python3 -u main.py > $LOG_FILE 2>&1 &
+    nohup python3 -u main.py > "$LOG_FILE" 2>&1 &
 
     # 获取新进程PID
     NEW_PID=$!

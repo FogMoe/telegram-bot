@@ -102,6 +102,8 @@ SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL") or _build_mysql_dsn()
 
 # 日志级别 (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 LOG_LEVEL="INFO"
+LOG_DIR = BASE_DIR / "logs"
+LOG_FILE_PATH = LOG_DIR / "tgbot.log"
 
 # help 命令的帮助信息
 HELP_TEXT = (

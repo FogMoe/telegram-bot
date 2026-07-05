@@ -11,6 +11,6 @@ services:
       MYSQL_HOST: ${MYSQL_HOST:-host.docker.internal}
     volumes: [] # 如需落盘日志，改为下方注释形式
     # volumes:
-    #   - ./tgbot.log:/app/tgbot.log
+    #   - ./logs:/app/logs
     restart: unless-stopped
     # 如需使用代理，可在此添加 extra_hosts 或网络设置

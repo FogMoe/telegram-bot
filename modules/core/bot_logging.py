@@ -5,8 +5,9 @@ from core import config
 
 
 def configure_logging() -> None:
+    config.LOG_DIR.mkdir(parents=True, exist_ok=True)
     handler = RotatingFileHandler(
-        config.BASE_DIR / "tgbot.log",
+        config.LOG_FILE_PATH,
         maxBytes=1 * 1024 * 1024,
         backupCount=5,
         encoding="utf-8",

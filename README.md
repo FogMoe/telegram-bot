@@ -174,7 +174,7 @@ venv\Scripts\activate
    ```bash
    docker compose up -d bot
    ```
-4. 查看日志：`docker compose logs -f bot`。如需把日志落盘到宿主机，取消 `docker-compose.yml` 中 `tgbot.log` 挂载行的注释。
+4. 查看日志：`docker compose logs -f bot`。如需把日志落盘到宿主机，取消 `docker-compose.yml` 中 `logs` 挂载行的注释。
 5. Git pull 更新后重启容器：
    ```bash
    git pull
