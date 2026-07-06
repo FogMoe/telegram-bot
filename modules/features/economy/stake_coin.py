@@ -41,14 +41,66 @@ async def calculate_reward_rate():
     return reward_rate
 
 
-def _calculate_reward_window(user_stake: dict, reward_rate: float) -> tuple[int, int, datetime]:
+def _calculate_reward_for_intervals(
+    stake_amount,
+    reward_rate: float,
+    intervals: int,
+) -> int:
+    if intervals <= 0:
+        return 0
+
+    reward_days = intervals * REWARD_INTERVAL_DAYS
+    reward = (
+        Decimal(str(stake_amount))
+        * Decimal(str(reward_rate))
+        * Decimal(reward_days)
+        / Decimal("100")
+    )
+    return max(0, int(reward))
+
+
+def _calculate_payable_intervals(
+    stake_amount,
+    reward_rate: float,
+    intervals_passed: int,
+    pool_balance,
+) -> int:
+    pool_balance = Decimal(str(pool_balance or 0))
+    if intervals_passed <= 0 or pool_balance <= 0:
+        return 0
+
+    low = 0
+    high = intervals_passed
+    while low < high:
+        mid = (low + high + 1) // 2
+        reward = _calculate_reward_for_intervals(stake_amount, reward_rate, mid)
+        if Decimal(reward) <= pool_balance:
+            low = mid
+        else:
+            high = mid - 1
+
+    if _calculate_reward_for_intervals(stake_amount, reward_rate, low) <= 0:
+        return 0
+    return low
+
+
+def _calculate_reward_window(
+    user_stake: dict,
+    reward_rate: float,
+    *,
+    now: datetime | None = None,
+) -> tuple[int, int, datetime]:
     last_reward_time = user_stake["last_reward_time"] or user_stake["stake_time"]
-    now = datetime.now()
-    hours_passed = (now - last_reward_time).total_seconds() / 3600
-    days_passed = int(hours_passed / 24)
-    daily_reward = int(float(user_stake["stake_amount"]) * (reward_rate / 100))
+    now = now or datetime.now()
+    elapsed_seconds = max(0, (now - last_reward_time).total_seconds())
+    days_passed = int(elapsed_seconds // 86400)
     intervals_passed = days_passed // REWARD_INTERVAL_DAYS
-    return daily_reward, intervals_passed, last_reward_time
+    reward = _calculate_reward_for_intervals(
+        user_stake["stake_amount"],
+        reward_rate,
+        intervals_passed,
+    )
+    return reward, intervals_passed, last_reward_time
 
 
 async def get_user_stake(user_id, *, connection=None):
@@ -72,8 +124,8 @@ async def calculate_available_reward(user_id):
         return 0
 
     reward_rate = await calculate_reward_rate()
-    daily_reward, intervals_passed, _ = _calculate_reward_window(user_stake, reward_rate)
-    return daily_reward * intervals_passed * REWARD_INTERVAL_DAYS
+    reward, _, _ = _calculate_reward_window(user_stake, reward_rate)
+    return reward
 
 
 @cooldown
@@ -222,29 +274,41 @@ async def collect_reward(query, user_id):
                     return
 
                 reward_rate = await calculate_reward_rate()
-                daily_reward, intervals_passed, last_reward_time = _calculate_reward_window(
+                reward_due, intervals_passed, last_reward_time = _calculate_reward_window(
                     user_stake,
                     reward_rate,
                 )
-                if daily_reward <= 0 or intervals_passed <= 0:
+                if intervals_passed <= 0:
                     await query.answer(
                         f"没有可领取的回报。需要等待至少{REWARD_INTERVAL_DAYS}天。",
                         show_alert=True,
                     )
                     return
-                interval_reward = daily_reward * REWARD_INTERVAL_DAYS
+                if reward_due <= 0:
+                    await query.answer(
+                        f"已满{REWARD_INTERVAL_DAYS}天，但累计回报不足 1 金币，继续质押会继续累计。",
+                        show_alert=True,
+                    )
+                    return
+
                 pool_balance = await stake_reward_pool.get_pool_balance(
                     connection=connection,
                     for_update=True,
                 )
-                max_intervals_by_pool = int(
-                    Decimal(pool_balance) // Decimal(interval_reward)
+                intervals_paid = _calculate_payable_intervals(
+                    user_stake["stake_amount"],
+                    reward_rate,
+                    intervals_passed,
+                    pool_balance,
                 )
-                intervals_paid = min(intervals_passed, max_intervals_by_pool)
-                if intervals_paid <= 0:
+                reward = _calculate_reward_for_intervals(
+                    user_stake["stake_amount"],
+                    reward_rate,
+                    intervals_paid,
+                )
+                if intervals_paid <= 0 or reward <= 0:
                     await query.answer("奖励池余额不足，暂时无法发放回报。", show_alert=True)
                     return
-                reward = interval_reward * intervals_paid
 
                 await process_user.add_free_coins(
                     user_id,
@@ -290,22 +354,27 @@ async def withdraw_stake(query, user_id):
                 fee = int(stake_amount * WITHDRAW_FEE_RATE)
                 refunded_principal = max(stake_amount - fee, 0)
                 reward_rate = await calculate_reward_rate()
-                daily_reward, intervals_passed, _ = _calculate_reward_window(
+                reward_due, intervals_passed, _ = _calculate_reward_window(
                     user_stake,
                     reward_rate,
                 )
                 reward = 0
-                if daily_reward > 0 and intervals_passed > 0:
-                    interval_reward = daily_reward * REWARD_INTERVAL_DAYS
+                if reward_due > 0 and intervals_passed > 0:
                     pool_balance = await stake_reward_pool.get_pool_balance(
                         connection=connection,
                         for_update=True,
                     )
-                    max_intervals_by_pool = int(
-                        Decimal(pool_balance) // Decimal(interval_reward)
+                    intervals_paid = _calculate_payable_intervals(
+                        user_stake["stake_amount"],
+                        reward_rate,
+                        intervals_passed,
+                        pool_balance,
                     )
-                    intervals_paid = min(intervals_passed, max_intervals_by_pool)
-                    reward = interval_reward * intervals_paid
+                    reward = _calculate_reward_for_intervals(
+                        user_stake["stake_amount"],
+                        reward_rate,
+                        intervals_paid,
+                    )
 
                 await process_user.add_free_coins(
                     user_id,
@@ -323,10 +392,15 @@ async def withdraw_stake(query, user_id):
                     msg = (
                         f"您已取出质押本金 {refunded_principal} 金币（手续费 {fee} 金币），并获得回报 {reward} 金币！"
                     )
-                elif daily_reward > 0 and intervals_passed > 0:
+                elif reward_due > 0 and intervals_passed > 0:
                     msg = (
                         f"您已取出质押本金 {refunded_principal} 金币（手续费 {fee} 金币）。\n"
                         "奖励池余额不足，本次未发放回报。"
+                    )
+                elif intervals_passed > 0:
+                    msg = (
+                        f"您已取出质押本金 {refunded_principal} 金币（手续费 {fee} 金币）。\n"
+                        f"已满{REWARD_INTERVAL_DAYS}天，但累计回报不足 1 金币，无法获得回报。"
                     )
                 else:
                     msg = (
