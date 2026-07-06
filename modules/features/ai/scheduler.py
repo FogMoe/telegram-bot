@@ -1,7 +1,5 @@
 import asyncio
-import json
 import logging
-import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -14,8 +12,10 @@ from core.telegram_utils import partial_send
 from features.ai import ai_chat, summary
 from features.ai.conversation_locks import get_conversation_lock
 from features.ai.generated_image_sender import send_generated_images_from_tool_logs
+from features.ai.reply_filter import normalize_ai_reply_text
 from features.ai.sticker_sender import normalize_sticker_directives, send_ai_reply_with_stickers
 from features.ai.telegram_visible_sender import TelegramVisibleContentHandler
+from features.ai.tool_history import tool_logs_to_record_entries
 
 logger = logging.getLogger(__name__)
 
@@ -195,68 +195,7 @@ async def _persist_tool_logs(
     context: ContextTypes.DEFAULT_TYPE,
     user_id: int,
 ) -> None:
-    tool_record_entries: list[tuple[str, object]] = []
-    pending_tool_call_ids: list[str] = []
-
-    for tool_log in tool_logs:
-        entry_type = tool_log.get("type", "tool_result")
-        if entry_type == "assistant_visible":
-            visible_content = str(tool_log.get("content") or "").strip()
-            if not visible_content:
-                continue
-            tool_record_entries.append(("assistant", visible_content))
-            continue
-
-        tool_call_id = tool_log.get("tool_call_id")
-        if not tool_call_id:
-            if entry_type == "tool_result" and pending_tool_call_ids:
-                tool_call_id = pending_tool_call_ids.pop(0)
-            else:
-                tool_call_id = f"auto_{int(time.time() * 1000)}"
-        if entry_type == "assistant_tool_call":
-            pending_tool_call_ids.append(tool_call_id)
-            tool_log["tool_call_id"] = tool_call_id
-
-        if entry_type == "assistant_tool_call":
-            arguments = tool_log.get("arguments") or {}
-            try:
-                arguments_json = json.dumps(arguments, ensure_ascii=False)
-            except TypeError:
-                arguments_json = json.dumps({}, ensure_ascii=False)
-
-            assistant_call_message = {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": tool_call_id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_log.get("tool_name"),
-                            "arguments": arguments_json,
-                        },
-                    }
-                ],
-            }
-
-            tool_record_entries.append(("assistant", assistant_call_message))
-        else:
-            if pending_tool_call_ids and pending_tool_call_ids[0] == tool_call_id:
-                pending_tool_call_ids.pop(0)
-            tool_result = tool_log.get("result")
-            try:
-                tool_result_str = json.dumps(tool_result, ensure_ascii=False, default=str)
-            except TypeError:
-                tool_result_str = str(tool_result)
-
-            tool_message = {
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "name": tool_log.get("tool_name"),
-                "content": tool_result_str,
-            }
-
-            tool_record_entries.append(("tool", tool_message))
+    tool_record_entries = tool_logs_to_record_entries(tool_logs)
 
     if tool_record_entries:
         snapshot_created, warning_level, archived_records = await mysql_connection.async_insert_chat_records(
@@ -409,7 +348,7 @@ async def _process_schedule_task_locked(
             visible_content_handler=visible_content_handler,
         )
         sent_messages.extend(visible_content_handler.sent_messages)
-        assistant_message = str(assistant_message or "")
+        assistant_message = normalize_ai_reply_text(assistant_message)
         if assistant_message.strip():
             assistant_message = await normalize_sticker_directives(
                 assistant_message,

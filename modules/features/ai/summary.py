@@ -248,7 +248,6 @@ def _generate_summary(user_id: int, snapshot_text: str) -> Optional[str]:
             response = run_ai_task(
                 "summary",
                 messages=messages,
-                temperature=0.2,
                 max_tokens=SUMMARY_MAX_TOKENS,
             )
             summary = (response.choices[0].message.content or "").strip()

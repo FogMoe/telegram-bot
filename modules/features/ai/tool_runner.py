@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
@@ -8,10 +9,37 @@ from .litellm_client import create_chat_completion
 from .types import AIResponse, PartialAIResponseError, ToolLog, VisibleContentHandler
 
 
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, bytes):
+        return base64.b64encode(value).decode("ascii")
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    for attr in ("model_dump", "dict"):
+        if hasattr(value, attr):
+            dump_func = getattr(value, attr)
+            for kwargs in ({"mode": "json"}, {}, {"by_alias": True}):
+                try:
+                    dumped = dump_func(**kwargs)
+                except TypeError:
+                    continue
+                except Exception:
+                    break
+                return _json_safe(dumped)
+    return str(value)
+
+
+def _drop_none_items(value: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: item for key, item in value.items() if item is not None}
+
+
 def _tool_call_to_plain(tool_call: Any) -> Dict[str, Any]:
     """Normalize a tool call object into a plain JSON-serializable dict."""
     if isinstance(tool_call, dict):
-        plain_call = dict(tool_call)
+        plain_call = _json_safe(dict(tool_call))
         function_payload = plain_call.get("function")
         if isinstance(function_payload, dict):
             plain_function = dict(function_payload)
@@ -21,18 +49,22 @@ def _tool_call_to_plain(tool_call: Any) -> Dict[str, Any]:
             elif arguments is None:
                 plain_function["arguments"] = "{}"
             plain_call["function"] = plain_function
-        return plain_call
+        return _drop_none_items(plain_call)
     plain_call: Dict[str, Any] | None = None
 
     for attr in ("model_dump", "dict"):
         if hasattr(tool_call, attr):
             try:
-                plain_call = getattr(tool_call, attr)()
+                plain_call = getattr(tool_call, attr)(mode="json")
             except TypeError:
-                plain_call = getattr(tool_call, attr)(by_alias=True)
+                try:
+                    plain_call = getattr(tool_call, attr)()
+                except TypeError:
+                    plain_call = getattr(tool_call, attr)(by_alias=True)
             except Exception:
                 plain_call = None
             if isinstance(plain_call, dict):
+                plain_call = _json_safe(plain_call)
                 break
 
     if not isinstance(plain_call, dict):
@@ -43,7 +75,7 @@ def _tool_call_to_plain(tool_call: Any) -> Dict[str, Any]:
         else:
             arguments_str = arguments if arguments is not None else "{}"
 
-        return {
+        plain_call = {
             "id": getattr(tool_call, "id", None),
             "type": getattr(tool_call, "type", "function"),
             "function": {
@@ -51,6 +83,14 @@ def _tool_call_to_plain(tool_call: Any) -> Dict[str, Any]:
                 "arguments": arguments_str,
             },
         }
+        provider_specific_fields = getattr(
+            tool_call,
+            "provider_specific_fields",
+            None,
+        )
+        if provider_specific_fields:
+            plain_call["provider_specific_fields"] = _json_safe(provider_specific_fields)
+        return _drop_none_items(plain_call)
 
     function_payload = plain_call.get("function")
     if not isinstance(function_payload, dict):
@@ -75,7 +115,55 @@ def _tool_call_to_plain(tool_call: Any) -> Dict[str, Any]:
             plain_function["arguments"] = "{}"
         plain_call["function"] = plain_function
 
-    return plain_call
+    return _drop_none_items(plain_call)
+
+
+def _message_to_plain_dict(message: Any) -> Dict[str, Any]:
+    if isinstance(message, dict):
+        return _drop_none_items(_json_safe(dict(message)))
+
+    for attr in ("model_dump", "dict"):
+        if hasattr(message, attr):
+            dump_func = getattr(message, attr)
+            for kwargs in ({"mode": "json"}, {}, {"by_alias": True}):
+                try:
+                    dumped = dump_func(**kwargs)
+                except TypeError:
+                    continue
+                except Exception:
+                    break
+                if isinstance(dumped, dict):
+                    return _drop_none_items(_json_safe(dumped))
+
+    result: Dict[str, Any] = {}
+    for key in (
+        "role",
+        "content",
+        "tool_calls",
+        "function_call",
+        "provider_specific_fields",
+        "reasoning_content",
+    ):
+        value = getattr(message, key, None)
+        if value is not None:
+            result[key] = _json_safe(value)
+    return _drop_none_items(result)
+
+
+def _assistant_message_to_plain(
+    assistant_message: Any,
+    *,
+    content: str,
+    tool_calls: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    message = _message_to_plain_dict(assistant_message)
+    message["role"] = "assistant"
+    message["content"] = content
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    else:
+        message.pop("tool_calls", None)
+    return message
 
 
 def _normalise_tool_calls(tool_calls: Optional[List[Any]]) -> List[Dict[str, Any]]:
@@ -249,7 +337,6 @@ def run_tool_loop(
     *,
     provider_name: str = "AI",
     tool_choice: str | Dict[str, object] = "auto",
-    temperature: float = 1.0,
     max_tokens: int = 4096,
     max_iterations: int = 10,
     skip_tools: Optional[Iterable[str]] = None,
@@ -280,7 +367,6 @@ def run_tool_loop(
                 messages=filtered_messages,
                 tools=tools,
                 tool_choice=request_tool_choice,
-                temperature=temperature,
                 max_tokens=max_tokens,
             )
         except Exception as exc:
@@ -355,12 +441,14 @@ def run_tool_loop(
             elif not visible_result.completed:
                 return "", tool_logs
 
-        filtered_messages.append({
-            "role": "assistant",
-            "content": assistant_content_for_model,
-            "tool_calls": tool_calls,
-        })
+        assistant_model_message = _assistant_message_to_plain(
+            assistant_message,
+            content=assistant_content_for_model,
+            tool_calls=tool_calls,
+        )
+        filtered_messages.append(assistant_model_message)
 
+        assistant_message_logged = False
         for tool_call in tool_calls:
             function_payload = tool_call.get("function") or {}
             function_name = function_payload.get("name")
@@ -379,12 +467,16 @@ def run_tool_loop(
                 function_args = {}
 
             tool_call_id = tool_call.get("id")
-            tool_logs.append({
+            tool_log_entry = {
                 "type": "assistant_tool_call",
                 "tool_name": function_name,
                 "arguments": function_args,
                 "tool_call_id": tool_call_id,
-            })
+            }
+            if not assistant_message_logged:
+                tool_log_entry["assistant_message"] = assistant_model_message
+                assistant_message_logged = True
+            tool_logs.append(tool_log_entry)
 
             handler = AI_TOOL_HANDLERS.get(function_name)
             if handler:

@@ -15,6 +15,10 @@ PROVIDER_ALIASES = {
     "zai": "zai",
 }
 
+PROVIDER_SPECIFIC_KEYS = {
+    "provider_specific_fields",
+}
+
 
 def normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
@@ -32,9 +36,60 @@ def _prefixed_model(provider: str, model: str) -> str:
 
 
 def _litellm_model(provider: str, model: str) -> str:
-    if provider == "gemini" and config.GEMINI_API_BASE:
+    if provider == "gemini" and config.GEMINI_OPENAI_COMPATIBLE:
         return _prefixed_model("openai", model)
     return _prefixed_model(provider, model)
+
+
+def _sanitize_tool_call_for_provider(
+    tool_call: Dict[str, Any],
+    provider: str,
+) -> Dict[str, Any]:
+    sanitized = dict(tool_call)
+    if provider != "gemini":
+        for key in PROVIDER_SPECIFIC_KEYS:
+            sanitized.pop(key, None)
+    return sanitized
+
+
+def _sanitize_message_for_provider(
+    message: Dict[str, Any],
+    provider: str,
+) -> Dict[str, Any]:
+    sanitized = dict(message)
+    if provider != "gemini":
+        for key in PROVIDER_SPECIFIC_KEYS:
+            sanitized.pop(key, None)
+
+    tool_calls = sanitized.get("tool_calls")
+    if isinstance(tool_calls, list):
+        sanitized["tool_calls"] = [
+            _sanitize_tool_call_for_provider(tool_call, provider)
+            if isinstance(tool_call, dict)
+            else tool_call
+            for tool_call in tool_calls
+        ]
+
+    if (
+        provider == "gemini"
+        and sanitized.get("role") == "assistant"
+        and sanitized.get("tool_calls")
+        and not str(sanitized.get("content") or "").strip()
+    ):
+        sanitized.pop("content", None)
+    return sanitized
+
+
+def _sanitize_messages_for_provider(
+    messages: List[Dict[str, Any]],
+    provider: str,
+) -> List[Dict[str, Any]]:
+    return [
+        _sanitize_message_for_provider(message, provider)
+        if isinstance(message, dict)
+        else message
+        for message in messages
+    ]
 
 
 def _azure_api_base() -> str:
@@ -64,6 +119,8 @@ def _provider_params(provider: str) -> Dict[str, Any]:
     if provider == "gemini":
         if not config.GEMINI_API_KEY:
             raise RuntimeError("Missing GEMINI_API_KEY configuration.")
+        if config.GEMINI_OPENAI_COMPATIBLE and not config.GEMINI_API_BASE:
+            raise RuntimeError("GEMINI_OPENAI_COMPATIBLE requires GEMINI_API_BASE.")
         params = {"api_key": config.GEMINI_API_KEY}
         if config.GEMINI_API_BASE:
             params["api_base"] = config.GEMINI_API_BASE
@@ -101,6 +158,12 @@ def create_chat_completion(
     **kwargs: Any,
 ) -> Any:
     litellm_provider = normalize_provider(provider)
+    history_provider = (
+        "openai"
+        if litellm_provider == "gemini" and config.GEMINI_OPENAI_COMPATIBLE
+        else litellm_provider
+    )
+    provider_messages = _sanitize_messages_for_provider(messages, history_provider)
     request_kwargs = {
         key: value
         for key, value in kwargs.items()
@@ -113,7 +176,7 @@ def create_chat_completion(
 
     return litellm.completion(
         model=litellm_model,
-        messages=messages,
+        messages=provider_messages,
         **_provider_params(litellm_provider),
         **request_kwargs,
     )

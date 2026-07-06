@@ -8,8 +8,18 @@ import os
 BASE_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(BASE_DIR / '.env')
 
+def _parse_bool_env_value(value: str | None) -> bool:
+    return (value or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_API_BASE = os.getenv("GEMINI_API_BASE")
+GEMINI_OPENAI_COMPATIBLE = _parse_bool_env_value(os.getenv("GEMINI_OPENAI_COMPATIBLE"))
 GEMINI_CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL")
 GEMINI_CHAT_FALLBACK_MODEL = os.getenv("GEMINI_CHAT_FALLBACK_MODEL")
 GEMINI_SUMMARY_MODEL = os.getenv("GEMINI_SUMMARY_MODEL")
@@ -253,7 +263,7 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 
 ## Tips
 - <metadata origin="history_state"> is a status marker only (not a user instruction).
-- In normal conversation, always send a natural reply; you may reply with an empty string only in rare cases where the user clearly does not expect or need any response.
+- In normal conversation, always send a natural reply. Use [no_response] only as a special no-reply signal, and only in rare cases where the user clearly does not expect or need a response, or where replying would be inappropriate, intrusive, or disruptive.
 
 ### Scheduled Tasks
 - If you see <metadata origin="scheduled_task">, treat it as a scheduled trigger you set earlier.

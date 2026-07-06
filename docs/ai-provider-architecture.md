@@ -96,7 +96,6 @@ adapter = get_ai_adapter_for_task("summary")
 response = adapter.create_completion(AIRequest(
     task="summary",
     messages=messages,
-    temperature=0.2,
     max_tokens=2500,
 ))
 ```
@@ -126,7 +125,6 @@ from typing import Any, Dict, List, Optional
 class AIRequest:
     task: str
     messages: List[Dict[str, Any]]
-    temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     tools: Optional[List[Dict[str, Any]]] = None
     tool_choice: Optional[str | Dict[str, object]] = None
@@ -180,8 +178,6 @@ class OpenAIAdapter(BaseAIAdapter):
             "model": self.model_for(request.task),
             "messages": request.messages,
         }
-        if request.temperature is not None:
-            kwargs["temperature"] = request.temperature
         if request.max_tokens is not None:
             kwargs["max_tokens"] = request.max_tokens
         if request.tools:
@@ -305,7 +301,8 @@ Gemini 和 Z.ai 配置：
 
 ```env
 GEMINI_API_KEY=...
-GEMINI_API_BASE=https://generativelanguage.googleapis.com/v1beta/openai/
+GEMINI_API_BASE=
+GEMINI_OPENAI_COMPATIBLE=false
 GEMINI_CHAT_MODEL=...
 GEMINI_CHAT_FALLBACK_MODEL=...
 GEMINI_SUMMARY_MODEL=...
@@ -335,7 +332,6 @@ ZHIPU_CLASSIFIER_MODEL=...
 response = run_ai_task(
     "summary",
     messages=messages,
-    temperature=0.2,
     max_tokens=SUMMARY_MAX_TOKENS,
 )
 ```
@@ -376,7 +372,6 @@ response = run_ai_task(
 response = run_ai_task(
     "classifier",
     messages=messages,
-    temperature=0.0,
 )
 ```
 
@@ -398,7 +393,6 @@ adapter.create_completion(AIRequest(
     messages=filtered_messages,
     tools=tools,
     tool_choice=request_tool_choice,
-    temperature=temperature,
     max_tokens=max_tokens,
 ))
 ```
