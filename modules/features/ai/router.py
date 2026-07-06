@@ -70,6 +70,10 @@ def _visible_content_was_sent(
     if sent_count > 0:
         return True
 
+    sent_messages = getattr(visible_content_handler, "sent_messages", [])
+    if isinstance(sent_messages, list) and any(message is not None for message in sent_messages):
+        return True
+
     contents = getattr(visible_content_handler, "sent_contents", [])
     if isinstance(contents, list) and any(str(content).strip() for content in contents):
         return True

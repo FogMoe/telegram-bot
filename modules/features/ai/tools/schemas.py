@@ -47,6 +47,10 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
         "Generate exactly one image from a text prompt.",
     ),
     _tool_definition(
+        "generate_voice",
+        "Generate exactly one spoken audio clip from text.",
+    ),
+    _tool_definition(
         "kindness_gift",
         "Gift a certain amount of coins to the user",
     ),

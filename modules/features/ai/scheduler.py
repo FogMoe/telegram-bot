@@ -11,6 +11,7 @@ from core.prompt_utils import format_metadata_attrs, format_user_state_prompt, x
 from core.telegram_utils import partial_send
 from features.ai import ai_chat, summary
 from features.ai.conversation_locks import get_conversation_lock
+from features.ai.generated_audio_sender import send_generated_audio_from_tool_logs
 from features.ai.generated_image_sender import send_generated_images_from_tool_logs
 from features.ai.reply_filter import normalize_ai_reply_text
 from features.ai.sticker_sender import normalize_sticker_directives, send_ai_reply_with_stickers
@@ -389,6 +390,14 @@ async def _process_schedule_task_locked(
                     logger=logger,
                 )
             )
+        sent_messages.extend(
+            await send_generated_audio_from_tool_logs(
+                bot=context.bot,
+                chat_id=user_id,
+                tool_logs=tool_logs,
+                logger=logger,
+            )
+        )
         sent_messages.extend(
             await send_generated_images_from_tool_logs(
                 bot=context.bot,

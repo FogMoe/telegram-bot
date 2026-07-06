@@ -15,6 +15,7 @@ from .models import AI_TOOL_ARG_MODELS
 from .schemas import OPENAI_TOOLS
 from .sticker_tools import list_available_stickers_tool
 from .user_tools import kindness_gift_tool, update_impression_tool
+from .voice_tools import generate_voice_tool
 
 AI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
     "get_help_text": get_help_text_tool,
@@ -24,6 +25,7 @@ AI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
     "fetch_url": fetch_url_tool,
     "execute_python_code": execute_python_code_tool,
     "generate_image": generate_image_tool,
+    "generate_voice": generate_voice_tool,
     "update_impression": update_impression_tool,
     "fetch_permanent_summaries": fetch_permanent_summaries_tool,
     "search_permanent_records": search_permanent_records_tool,

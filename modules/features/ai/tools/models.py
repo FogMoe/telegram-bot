@@ -88,6 +88,14 @@ class GenerateImageArgs(ToolArguments):
     )
 
 
+class GenerateVoiceArgs(ToolArguments):
+    text: str = Field(
+        min_length=1,
+        max_length=500,
+        description="Text to synthesize into one spoken audio clip.",
+    )
+
+
 class KindnessGiftArgs(ToolArguments):
     amount: int | None = Field(
         default=None,
@@ -222,6 +230,7 @@ AI_TOOL_ARG_MODELS: dict[str, type[ToolArguments]] = {
     "fetch_url": FetchUrlArgs,
     "execute_python_code": ExecutePythonCodeArgs,
     "generate_image": GenerateImageArgs,
+    "generate_voice": GenerateVoiceArgs,
     "kindness_gift": KindnessGiftArgs,
     "update_impression": UpdateImpressionArgs,
     "fetch_permanent_summaries": FetchPermanentSummariesArgs,

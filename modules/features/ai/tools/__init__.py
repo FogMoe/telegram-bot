@@ -11,6 +11,7 @@ from .memory_tools import (
 from .schedule_tools import schedule_ai_message_tool
 from .sticker_tools import list_available_stickers_tool
 from .user_tools import kindness_gift_tool, update_impression_tool
+from .voice_tools import generate_voice_tool
 
 __all__ = [
     "OPENAI_TOOLS",
@@ -21,6 +22,7 @@ __all__ = [
     "get_tool_request_context",
     "fetch_url_tool",
     "generate_image_tool",
+    "generate_voice_tool",
     "execute_python_code_tool",
     "kindness_gift_tool",
     "update_impression_tool",

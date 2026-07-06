@@ -211,8 +211,13 @@ def _normalise_tool_calls(tool_calls: Optional[List[Any]]) -> List[Dict[str, Any
     return [_tool_call_to_plain(call) for call in tool_calls]
 
 
-def _public_tool_result(tool_name: str, tool_result: Dict[str, Any]) -> Dict[str, Any]:
-    if tool_name != "generate_image" or not isinstance(tool_result, dict):
+def _public_tool_result(
+    tool_name: str,
+    tool_result: Dict[str, Any],
+    *,
+    media_sent: bool = False,
+) -> Dict[str, Any]:
+    if tool_name not in {"generate_image", "generate_voice"} or not isinstance(tool_result, dict):
         return tool_result
 
     if tool_result.get("error"):
@@ -222,13 +227,27 @@ def _public_tool_result(tool_name: str, tool_result: Dict[str, Any]) -> Dict[str
                 public_result[key] = tool_result[key]
         return public_result
 
-    if tool_result.get("status") == "generated":
+    if tool_name == "generate_image" and tool_result.get("status") == "generated":
         return {
             "status": "generated",
             "message": (
-                "Generated image is ready and will be sent to Telegram. "
-                "If you need to inspect the image yourself later, ask the user "
-                "to forward the sent image back to you."
+                "Generated image has been sent to Telegram."
+                if media_sent
+                else (
+                    "Generated image is ready and will be sent to Telegram. "
+                    "If you need to inspect the image yourself later, ask the user "
+                    "to forward the sent image back to you."
+                )
+            ),
+        }
+
+    if tool_name == "generate_voice" and tool_result.get("status") == "generated":
+        return {
+            "status": "generated",
+            "message": (
+                "Generated audio has been sent to Telegram."
+                if media_sent
+                else "Generated audio is ready and will be sent to Telegram."
             ),
         }
 
@@ -267,6 +286,69 @@ def _log_generate_image_result(provider_name: str, tool_result: Dict[str, Any]) 
         provider_name,
         tool_result.get("status") or "unknown",
     )
+
+
+def _log_generate_voice_result(provider_name: str, tool_result: Dict[str, Any]) -> None:
+    if not isinstance(tool_result, dict):
+        logging.warning("%s generate_voice returned non-dict result: %s", provider_name, type(tool_result).__name__)
+        return
+
+    if tool_result.get("error"):
+        logging.warning(
+            "%s generate_voice returned error: error=%s, status_code=%s, retry_after_seconds=%s, details=%s",
+            provider_name,
+            tool_result.get("error"),
+            tool_result.get("status_code"),
+            tool_result.get("retry_after_seconds"),
+            str(tool_result.get("details") or tool_result.get("response_preview") or "")[:500],
+        )
+        return
+
+    if tool_result.get("status") == "generated":
+        audios = tool_result.get("audios") if isinstance(tool_result.get("audios"), list) else []
+        logging.info(
+            "%s generate_voice generated %s audio clip(s): count=%s, warnings=%s",
+            provider_name,
+            len(audios),
+            tool_result.get("count"),
+            tool_result.get("warnings"),
+        )
+        return
+
+    logging.info(
+        "%s generate_voice returned status=%s",
+        provider_name,
+        tool_result.get("status") or "unknown",
+    )
+
+
+def _send_media_result_immediately(
+    *,
+    visible_content_handler: Optional[VisibleContentHandler],
+    tool_name: str,
+    tool_result: Dict[str, Any],
+    provider_name: str,
+) -> list[Any]:
+    if visible_content_handler is None:
+        return []
+    if tool_name not in {"generate_image", "generate_voice"}:
+        return []
+    if not isinstance(tool_result, dict) or tool_result.get("status") != "generated":
+        return []
+
+    send_tool_media = getattr(visible_content_handler, "send_tool_media", None)
+    if not callable(send_tool_media):
+        return []
+
+    try:
+        sent_messages = send_tool_media(tool_name, tool_result)
+    except Exception as exc:
+        logging.exception("%s failed to send %s result immediately: %s", provider_name, tool_name, exc)
+        return []
+
+    if not isinstance(sent_messages, list):
+        return []
+    return sent_messages
 
 
 class _VisibleContentResult(NamedTuple):
@@ -515,8 +597,22 @@ def run_tool_loop(
 
             if function_name == "generate_image":
                 _log_generate_image_result(provider_name, internal_tool_result)
+            elif function_name == "generate_voice":
+                _log_generate_voice_result(provider_name, internal_tool_result)
 
-            tool_result = _public_tool_result(function_name, internal_tool_result)
+            sent_media_messages = _send_media_result_immediately(
+                visible_content_handler=visible_content_handler,
+                tool_name=function_name,
+                tool_result=internal_tool_result,
+                provider_name=provider_name,
+            )
+            media_sent = bool(sent_media_messages)
+
+            tool_result = _public_tool_result(
+                function_name,
+                internal_tool_result,
+                media_sent=media_sent,
+            )
 
             filtered_messages.append({
                 "role": "tool",
@@ -531,8 +627,11 @@ def run_tool_loop(
                 "result": tool_result,
                 "tool_call_id": tool_call_id,
             }
-            if function_name == "generate_image":
+            if function_name in {"generate_image", "generate_voice"}:
                 tool_log_entry["internal_result"] = internal_tool_result
+                if media_sent:
+                    tool_log_entry["media_sent"] = True
+                    tool_log_entry["sent_message_count"] = len(sent_media_messages)
             tool_logs.append(tool_log_entry)
 
     logging.warning("%s 工具调用次数超限（%s轮）", provider_name, max_iterations)

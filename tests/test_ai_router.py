@@ -38,3 +38,12 @@ def test_get_ai_response_retries_image_messages_as_text(monkeypatch):
         image_messages,
         [{"role": "user", "content": "describe this image"}],
     ]
+
+
+def test_visible_content_was_sent_counts_media_messages():
+    class _VisibleHandler:
+        sent_count = 0
+        sent_contents = []
+        sent_messages = [object()]
+
+    assert router._visible_content_was_sent(_VisibleHandler()) is True

@@ -21,6 +21,7 @@ from core.telegram_utils import (
 )
 from features.ai import ai_chat, summary
 from features.ai.conversation_locks import get_conversation_lock
+from features.ai.generated_audio_sender import send_generated_audio_from_tool_logs
 from features.ai.generated_image_sender import send_generated_images_from_tool_logs
 from features.ai.reply_filter import normalize_ai_reply_text
 from features.ai.sticker_sender import normalize_sticker_directives, send_ai_reply_with_stickers
@@ -879,6 +880,14 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
                 reply_to_message_id=None if has_visible_message else getattr(effective_message, "message_id", None),
             )
         )
+    sent_messages.extend(
+        await send_generated_audio_from_tool_logs(
+            bot=context.bot,
+            chat_id=update.effective_chat.id,
+            tool_logs=tool_logs,
+            logger=logger,
+        )
+    )
     sent_messages.extend(
         await send_generated_images_from_tool_logs(
             bot=context.bot,

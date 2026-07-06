@@ -87,6 +87,10 @@ class AppSettings(BaseSettings):
     IMAGE_GEN_API_TOKEN: str = ""
     IMAGE_GEN_TIMEOUT: int = 30
 
+    FISH_AUDIO_API_KEY: str | None = None
+    FISH_AUDIO_MODEL: str = "s2.1-pro-free"
+    FISH_AUDIO_REFERENCE_ID: str = "dc020cb237df4248907565718715b20b"
+
     ADMIN_USER_ID: int = 1002288404
     NEW_USER_BONUS_COINS: int = 10
 
@@ -204,6 +208,9 @@ JUDGE0_API_KEY = SETTINGS.JUDGE0_API_KEY
 IMAGE_GEN_API_URL = SETTINGS.IMAGE_GEN_API_URL
 IMAGE_GEN_API_TOKEN = SETTINGS.IMAGE_GEN_API_TOKEN
 IMAGE_GEN_TIMEOUT = SETTINGS.IMAGE_GEN_TIMEOUT
+FISH_AUDIO_API_KEY = SETTINGS.FISH_AUDIO_API_KEY
+FISH_AUDIO_MODEL = SETTINGS.FISH_AUDIO_MODEL
+FISH_AUDIO_REFERENCE_ID = SETTINGS.FISH_AUDIO_REFERENCE_ID
 
 ADMIN_USER_ID = SETTINGS.ADMIN_USER_ID
 NEW_USER_BONUS_COINS = SETTINGS.NEW_USER_BONUS_COINS
@@ -363,7 +370,13 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 - Call this tool when an image would clearly enhance the interaction, whether the user explicitly asks you to create, generate, draw, or render an image, or when a small visual surprise naturally fits the moment.
 - You may proactively generate an image when it would feel warm, playful, helpful, or emotionally fitting, especially for greetings, celebrations, comfort, cute moments, creative ideas, or visual explanations.
 - Do not overuse this tool. Avoid generating images when a normal text reply is enough, or when the situation is serious, sensitive, formal, or purely technical unless the image clearly helps.
-- Generated images are sent to Telegram after your final response. 
+- Generated images are sent to Telegram immediately after the tool call succeeds.
+
+### generate_voice
+- Call this tool when spoken audio would clearly improve the interaction, or when the user explicitly asks you to say, read aloud, dub, narrate, or generate voice/audio.
+- Use it sparingly. Do not generate audio when a normal text reply is enough, unless the user's intent clearly favors voice.
+- Generate concise, natural speech text only. Avoid converting very long replies unless the user asks for it.
+- Generated audio is sent to Telegram immediately after the tool call succeeds.
 
 ## Multi-Step Rules
 - Call tools as needed, including multiple times.

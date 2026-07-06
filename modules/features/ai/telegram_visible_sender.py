@@ -2,6 +2,8 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable
 
+from .generated_audio_sender import send_generated_audio_from_tool_result
+from .generated_image_sender import send_generated_images_from_tool_result
 from .sticker_sender import (
     PartialAIReplySendError,
     normalize_sticker_directives,
@@ -73,6 +75,40 @@ class TelegramVisibleContentHandler:
 
     def __call__(self, content: str) -> str | None:
         future = asyncio.run_coroutine_threadsafe(self._send(content), self.loop)
+        return future.result()
+
+    async def _send_tool_media(self, tool_name: str, result: dict[str, Any]) -> list[Any]:
+        action = "upload_photo" if tool_name == "generate_image" else "upload_document"
+        try:
+            await self.bot.send_chat_action(chat_id=self.chat_id, action=action)
+        except Exception:
+            self.logger.debug("Failed to send upload action before generated media")
+
+        if tool_name == "generate_image":
+            sent_messages = await send_generated_images_from_tool_result(
+                bot=self.bot,
+                chat_id=self.chat_id,
+                result=result,
+                logger=self.logger,
+            )
+        elif tool_name == "generate_voice":
+            sent_messages = await send_generated_audio_from_tool_result(
+                bot=self.bot,
+                chat_id=self.chat_id,
+                result=result,
+                logger=self.logger,
+            )
+        else:
+            sent_messages = []
+
+        self.sent_messages.extend(sent_messages)
+        return sent_messages
+
+    def send_tool_media(self, tool_name: str, result: dict[str, Any]) -> list[Any]:
+        future = asyncio.run_coroutine_threadsafe(
+            self._send_tool_media(tool_name, result),
+            self.loop,
+        )
         return future.result()
 
     def visible_events(self) -> list[dict[str, str]]:
