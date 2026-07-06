@@ -415,6 +415,35 @@ def _emit_visible_content(
     return _VisibleContentResult(normalized, True)
 
 
+def _return_final_text_response(
+    *,
+    content_text: str,
+    tool_logs: List[ToolLog],
+    visible_content_handler: Optional[VisibleContentHandler],
+    provider_name: str,
+) -> AIResponse:
+    if content_text.strip():
+        if visible_content_handler:
+            visible_result = _emit_visible_content(
+                visible_content_handler,
+                content_text,
+                provider_name=provider_name,
+            )
+            if visible_result.content:
+                tool_logs.append({
+                    "type": "assistant_visible",
+                    "content": visible_result.content,
+                })
+                return "", tool_logs
+            if not visible_result.completed:
+                return "", tool_logs
+            return content_text, tool_logs
+        return content_text, tool_logs
+    if tool_logs:
+        logging.warning("%s 工具调用后最终回复为空。", provider_name)
+    return content_text, tool_logs
+
+
 def run_tool_loop(
     provider: str,
     model: str,
@@ -467,27 +496,12 @@ def run_tool_loop(
 
         if not raw_tool_calls:
             logging.info("%s 第 %s 轮：无工具调用，直接返回答案", provider_name, iteration + 1)
-            content_text = assistant_content
-            if content_text.strip():
-                if visible_content_handler:
-                    visible_result = _emit_visible_content(
-                        visible_content_handler,
-                        content_text,
-                        provider_name=provider_name,
-                    )
-                    if visible_result.content:
-                        tool_logs.append({
-                            "type": "assistant_visible",
-                            "content": visible_result.content,
-                        })
-                        return "", tool_logs
-                    if not visible_result.completed:
-                        return "", tool_logs
-                    return content_text, tool_logs
-                return content_text, tool_logs
-            if tool_logs:
-                logging.warning("%s 工具调用后最终回复为空。", provider_name)
-            return content_text, tool_logs
+            return _return_final_text_response(
+                content_text=assistant_content,
+                tool_logs=tool_logs,
+                visible_content_handler=visible_content_handler,
+                provider_name=provider_name,
+            )
 
         tool_calls = _normalise_tool_calls(raw_tool_calls)
         logging.info("%s 第 %s 轮：检测到 %s 个工具调用", provider_name, iteration + 1, len(tool_calls))
@@ -637,4 +651,29 @@ def run_tool_loop(
             tool_logs.append(tool_log_entry)
 
     logging.warning("%s 工具调用次数超限（%s轮）", provider_name, max_iterations)
-    return "抱歉，处理您的请求时遇到了问题，请稍后再试。", tool_logs
+    try:
+        request_kwargs = {"max_tokens": max_tokens, **(completion_kwargs or {})}
+        response = create_chat_completion(
+            provider,
+            model,
+            messages=filtered_messages,
+            **request_kwargs,
+        )
+    except Exception as exc:
+        if tool_logs:
+            raise PartialAIResponseError(str(exc), tool_logs) from exc
+        raise
+
+    assistant_message = response.choices[0].message
+    raw_tool_calls = getattr(assistant_message, "tool_calls", None)
+    if raw_tool_calls:
+        logging.warning(
+            "%s 工具调用超限后的最终回复仍包含工具调用，忽略工具调用并使用文本内容。",
+            provider_name,
+        )
+    return _return_final_text_response(
+        content_text=assistant_message.content or "",
+        tool_logs=tool_logs,
+        visible_content_handler=visible_content_handler,
+        provider_name=provider_name,
+    )

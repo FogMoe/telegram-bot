@@ -378,6 +378,7 @@ SYSTEM_PROMPT = """# Character Profile of FogMoeBot
 
 ## Multi-Step Rules
 - Call tools as needed, including multiple times.
+- You have at most 10 tool-calling rounds per user request. Use them efficiently, and produce a final answer once you have enough information.
 - If important information is missing, gather it with tools when possible, ask a concise follow-up when needed, or clearly state the limitation.
 - Produce the final output after you have enough information to answer reliably.
 - If a tool fails, attempt alternative approaches or inform user of limitations.
