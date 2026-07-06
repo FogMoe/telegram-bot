@@ -271,7 +271,9 @@ def _log_generate_image_result(provider_name: str, tool_result: Dict[str, Any]) 
         return
 
     if tool_result.get("status") == "generated":
-        images = tool_result.get("images") if isinstance(tool_result.get("images"), list) else []
+        images = [tool_result["image"]] if isinstance(tool_result.get("image"), dict) else []
+        if not images and isinstance(tool_result.get("images"), list):
+            images = tool_result["images"]
         logging.info(
             "%s generate_image generated %s image(s): count=%s, warnings=%s",
             provider_name,

@@ -82,8 +82,8 @@ def _prepare_successful_image_tool(monkeypatch, recorded_request):
         return {
             "status": "generated",
             "count": 1,
-            "images": [],
-            "message": "Generated images are ready and will be sent to Telegram.",
+            "image": {},
+            "message": "Generated image is ready and will be sent to Telegram.",
         }
 
     monkeypatch.setattr(

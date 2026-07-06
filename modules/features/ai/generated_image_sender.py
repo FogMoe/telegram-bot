@@ -138,6 +138,9 @@ def _collect_generated_images_from_result(
         return images
     if result.get("status") != "generated":
         return images
+    result_image = result.get("image")
+    if isinstance(result_image, dict):
+        return [result_image][:limit]
     result_images = result.get("images")
     if not isinstance(result_images, list):
         return images
@@ -240,7 +243,8 @@ def _limit_generated_image_result(
     if not images:
         return None
     limited_result = dict(result)
-    limited_result["images"] = images
+    limited_result.pop("images", None)
+    limited_result["image"] = images[0]
     limited_result["count"] = len(images)
     return limited_result
 
@@ -290,7 +294,7 @@ async def send_generated_images_from_tool_logs(
                 logger=logger,
             )
         )
-        remaining -= len(limited_result.get("images") or [])
+        remaining -= len(_collect_generated_images_from_result(limited_result))
         if remaining <= 0:
             break
     return sent_messages

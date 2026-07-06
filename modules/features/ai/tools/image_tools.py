@@ -450,7 +450,7 @@ def _request_and_save_generated_image(
     image_values = _extract_image_values(response_payload)
     if not image_values:
         return {
-            "error": "Image generation API returned no base64 images",
+            "error": "Image generation API returned no base64 image",
             "response_preview": _payload_preview(response_payload),
         }
 
@@ -479,8 +479,8 @@ def _request_and_save_generated_image(
     result = {
         "status": "generated",
         "count": len(saved_images),
-        "images": saved_images,
-        "message": "Generated images are ready and will be sent to Telegram.",
+        "image": saved_images[0],
+        "message": "Generated image is ready and will be sent to Telegram.",
     }
     if save_errors:
         result["warnings"] = save_errors[:3]
