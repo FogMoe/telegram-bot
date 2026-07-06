@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 KONACHAN_API_URL = "https://konachan.net/post.json"
 KONACHAN_BACKUP_API_URL = "https://konachan.com/post.json"
 YANDE_API_URL = "https://yande.re/post.json"  # 另一个备用API
+FORBIDDEN_API_COOLDOWN_SECONDS = 30 * 60
 COIN_COST = 5  # 使用/pic命令消耗的金币数量
 HD_COIN_COST = 10  # 获取高清图片额外消耗的金币数量
 
@@ -36,6 +37,9 @@ IMAGE_CACHE = {
     "nsfw": [],  # 成人内容图片缓存
     "last_update": None  # 最后更新时间
 }
+
+# 临时熔断稳定返回403的图片源，避免无效重试拖慢缓存刷新
+FORBIDDEN_API_UNTIL = {}
 
 # 全局图片数据缓存，用于高清图片功能
 # 结构: {image_id: {'file_url': url, 'expires': datetime, 'tags': tags, 'stats': stats}}
@@ -94,6 +98,22 @@ def clean_expired_images():
     for key in expired_keys:
         HD_IMAGE_CACHE.pop(key, None)
     logger.info(f"清理了 {len(expired_keys)} 条过期图片数据，当前缓存图片数量: {len(HD_IMAGE_CACHE)}")
+
+def is_api_forbidden_circuit_open(api_url):
+    """检查图片源是否因403处于短期熔断中"""
+    forbidden_until = FORBIDDEN_API_UNTIL.get(api_url)
+    if not forbidden_until:
+        return False
+
+    if time.time() < forbidden_until:
+        return True
+
+    FORBIDDEN_API_UNTIL.pop(api_url, None)
+    return False
+
+def open_api_forbidden_circuit(api_url):
+    """403时短期跳过该图片源，让刷新流程快速降级到其他源"""
+    FORBIDDEN_API_UNTIL[api_url] = time.time() + FORBIDDEN_API_COOLDOWN_SECONDS
 
 # 格式化图片标签和统计信息
 def format_image_info(image_data):
@@ -579,6 +599,10 @@ async def fetch_and_cache_images(is_nsfw=False, max_retries=3):
     
     async with request_semaphore:  # 限制并发请求数
         for api_url in api_urls:
+            if is_api_forbidden_circuit_open(api_url):
+                logger.debug(f"跳过临时熔断的图片API: {api_url}")
+                continue
+
             retries = 0
             while retries < max_retries:
                 try:
@@ -606,25 +630,38 @@ async def fetch_and_cache_images(is_nsfw=False, max_retries=3):
                                         IMAGE_CACHE[cache_key] = [img.copy() for img in images]
                                         IMAGE_CACHE["last_update"] = datetime.now()
                                         return images
+
+                            elif response.status == 403:
+                                open_api_forbidden_circuit(api_url)
+                                logger.warning(
+                                    f"API {api_url} 返回403，"
+                                    f"{FORBIDDEN_API_COOLDOWN_SECONDS // 60}分钟内跳过该源并继续尝试备用源"
+                                )
+                                break
+
                             else:
                                 logger.error(f"API {api_url} 请求失败，状态码: {response.status}")
                                 
                     retries += 1
                     # 如果API请求失败，等待一小段时间再重试
-                    await asyncio.sleep(1)
+                    if retries < max_retries:
+                        await asyncio.sleep(1)
                     
                 except aiohttp.ClientError as e:
                     logger.error(f"连接 {api_url} 时出错: {str(e)}")
                     retries += 1
-                    await asyncio.sleep(1)
+                    if retries < max_retries:
+                        await asyncio.sleep(1)
                 except asyncio.TimeoutError:
                     logger.error(f"请求 {api_url} 超时")
                     retries += 1
-                    await asyncio.sleep(1)
+                    if retries < max_retries:
+                        await asyncio.sleep(1)
                 except Exception as e:
                     logger.error(f"从 {api_url} 获取图片时出错: {str(e)}")
                     retries += 1
-                    await asyncio.sleep(1)
+                    if retries < max_retries:
+                        await asyncio.sleep(1)
     
     # 如果API请求都失败，但缓存中有旧数据，返回旧数据的副本
     if IMAGE_CACHE[cache_key]:
