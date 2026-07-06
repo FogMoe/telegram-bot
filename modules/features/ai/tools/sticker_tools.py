@@ -210,7 +210,7 @@ def list_available_stickers_tool(
         "usage": (
             "To send a sticker in the final answer, put a directive on its own line: "
             "[sticker_pack:<pack_name> emoji:<emoji>]. Use only configured pack names "
-            "and emoji returned by this tool. Use at most 10 stickers per reply."
+            "and emoji returned by this tool. Use at most 3 stickers per reply."
         ),
     }
 
