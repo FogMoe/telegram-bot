@@ -379,6 +379,7 @@ def run_tool_loop(
     max_tokens: int = 4096,
     max_iterations: int = 10,
     skip_tools: Optional[Iterable[str]] = None,
+    completion_kwargs: Optional[Dict[str, Any]] = None,
     visible_content_handler: Optional[VisibleContentHandler] = None,
 ) -> AIResponse:
     """Run a tool-calling loop through LiteLLM using OpenAI-format tools."""
@@ -400,13 +401,14 @@ def run_tool_loop(
     for iteration in range(max_iterations):
         request_tool_choice = tool_choice
         try:
+            request_kwargs = {"max_tokens": max_tokens, **(completion_kwargs or {})}
             response = create_chat_completion(
                 provider,
                 model,
                 messages=filtered_messages,
                 tools=tools,
                 tool_choice=request_tool_choice,
-                max_tokens=max_tokens,
+                **request_kwargs,
             )
         except Exception as exc:
             if tool_logs:

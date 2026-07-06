@@ -86,6 +86,18 @@ def get_models_for_task(provider: str, task: str) -> List[str]:
     ])
 
 
+def _provider_completion_kwargs(provider: str, task: str) -> Dict[str, Any]:
+    provider_name = normalize_provider(provider)
+    task_name = task.lower()
+    if (
+        provider_name == "gemini"
+        and not config.GEMINI_OPENAI_COMPATIBLE
+        and task_name not in {"translate", "classifier"}
+    ):
+        return {"reasoning_effort": "high"}
+    return {}
+
+
 def run_ai_task(
     task: str,
     messages: List[Dict[str, Any]],
@@ -100,7 +112,11 @@ def run_ai_task(
 
         for model in models:
             try:
-                return create_chat_completion(provider, model, messages, **kwargs)
+                request_kwargs = {
+                    **_provider_completion_kwargs(provider, task),
+                    **kwargs,
+                }
+                return create_chat_completion(provider, model, messages, **request_kwargs)
             except Exception as exc:
                 logging.warning(
                     "AI task %s failed via provider=%s model=%s: %s",

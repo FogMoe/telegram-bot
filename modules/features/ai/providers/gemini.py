@@ -25,6 +25,11 @@ def get_ai_response(
             messages,
             tool_context,
             provider_name="Gemini",
+            completion_kwargs=(
+                {"reasoning_effort": "high"}
+                if not config.GEMINI_OPENAI_COMPATIBLE
+                else None
+            ),
             visible_content_handler=visible_content_handler,
         )
 
