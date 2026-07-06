@@ -76,8 +76,9 @@ class AppSettings(BaseSettings):
     AI_CLASSIFIER_FALLBACK_PROVIDER: str | None = None
     AI_CHAT_ORDER: str = ""
 
-    CHAT_TOKEN_WARN_LIMIT: int = 95000
-    CHAT_TOKEN_LIMIT: int = 100000
+    # Token estimates apply DEFAULT_GUARD_RATIO before comparing these limits.
+    CHAT_TOKEN_WARN_LIMIT: int = 114000
+    CHAT_TOKEN_LIMIT: int = 120000
     CHAT_BATCH_WINDOW_SECONDS: float = 1.0
 
     JUDGE0_API_URL: str = "https://ce.judge0.com"

@@ -5,6 +5,7 @@ from typing import Any, Iterable, Optional
 from sqlalchemy.engine import Result
 
 from . import config, db
+from .litellm_models import litellm_model_name
 from .prompt_utils import format_metadata_attrs, xml_escape
 from .token_estimator import estimate_conversation_tokens
 
@@ -14,6 +15,33 @@ transaction = db.transaction
 run_sync = db.run_sync
 
 PERMANENT_RECORDS_KEEP = 100
+
+
+def _configured_chat_models_for_provider(provider: str) -> list[str]:
+    provider_name = (provider or "").strip().lower()
+    if provider_name == "openai":
+        return [config.OPENAI_CHAT_MODEL]
+    if provider_name == "azure":
+        return [config.AZURE_OPENAI_CHAT_MODEL]
+    if provider_name == "gemini":
+        return [config.GEMINI_CHAT_MODEL, config.GEMINI_CHAT_FALLBACK_MODEL]
+    if provider_name == "siliconflow":
+        return [config.SILICONFLOW_CHAT_MODEL]
+    if provider_name in {"zhipu", "zai"}:
+        return [config.ZHIPU_CHAT_MODEL]
+    return []
+
+
+def _chat_token_count_model() -> str | None:
+    for provider in config.AI_SERVICE_ORDER:
+        for model in _configured_chat_models_for_provider(provider):
+            if not model:
+                continue
+            try:
+                return litellm_model_name(provider, model)
+            except RuntimeError:
+                continue
+    return None
 
 
 def _is_history_state_event(message: object) -> bool:
@@ -432,6 +460,7 @@ async def insert_chat_records(
             messages_with_new,
             system_prompt=config.SYSTEM_PROMPT,
             system_prompt_extra=system_prompt_extra,
+            model=_chat_token_count_model(),
         )
         overflow = token_count > config.CHAT_TOKEN_LIMIT
         trimmed_messages: list[dict] | None = None

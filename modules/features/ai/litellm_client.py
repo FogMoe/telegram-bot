@@ -4,44 +4,11 @@ from typing import Any, Dict, List
 import litellm
 
 from core import config
-
-
-LITELLM_PREFIXES = ("openai/", "azure/", "gemini/", "zai/")
-PROVIDER_ALIASES = {
-    "openai": "openai",
-    "azure": "azure",
-    "gemini": "gemini",
-    "siliconflow": "siliconflow",
-    "zhipu": "zai",
-    "zai": "zai",
-}
+from core.litellm_models import litellm_model_name, normalize_provider
 
 PROVIDER_SPECIFIC_KEYS = {
     "provider_specific_fields",
 }
-
-
-def normalize_provider(provider: str) -> str:
-    normalized = (provider or "").strip().lower()
-    if normalized not in PROVIDER_ALIASES:
-        raise RuntimeError(f"Unsupported AI provider: {provider}")
-    return PROVIDER_ALIASES[normalized]
-
-
-def _prefixed_model(provider: str, model: str) -> str:
-    if not model:
-        raise RuntimeError(f"Missing model configuration for provider: {provider}")
-    if model.startswith(LITELLM_PREFIXES):
-        return model
-    return f"{provider}/{model}"
-
-
-def _litellm_model(provider: str, model: str) -> str:
-    if provider == "gemini" and config.GEMINI_OPENAI_COMPATIBLE:
-        return _prefixed_model("openai", model)
-    if provider == "siliconflow":
-        return _prefixed_model("openai", model)
-    return _prefixed_model(provider, model)
 
 
 def _sanitize_tool_call_for_provider(
@@ -209,7 +176,7 @@ def create_chat_completion(
     }
     request_kwargs.setdefault("drop_params", True)
 
-    litellm_model = _litellm_model(litellm_provider, model)
+    litellm_model = litellm_model_name(litellm_provider, model)
     logging.debug("Calling LiteLLM provider=%s model=%s", litellm_provider, litellm_model)
 
     return litellm.completion(
