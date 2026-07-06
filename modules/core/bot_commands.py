@@ -165,7 +165,13 @@ async def admin_announce(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         users = await mysql_connection.fetch_all("SELECT id FROM user")
         user_ids.update(user[0] for user in users)
 
-        group_tables = ["group_keywords", "group_verification", "group_spam_control", "group_chart_tokens"]
+        group_tables = [
+            "group_keywords",
+            "group_verification",
+            "group_spam_control",
+            "group_chart_tokens",
+            "chat_records_group",
+        ]
         for table in group_tables:
             try:
                 groups = await mysql_connection.fetch_all(f"SELECT DISTINCT group_id FROM {table}")
