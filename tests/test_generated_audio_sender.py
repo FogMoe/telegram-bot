@@ -4,6 +4,41 @@ import logging
 from features.ai import generated_audio_sender
 
 
+def test_send_with_retry_prefers_telegram_voice(monkeypatch, tmp_path):
+    path = tmp_path / "voice.ogg"
+    path.write_bytes(b"audio")
+    calls = []
+
+    async def fake_send_voice_once(**kwargs):
+        calls.append("voice")
+        return object()
+
+    async def fake_send_audio_once(**kwargs):
+        calls.append("audio")
+        return object()
+
+    async def fake_send_document_once(**kwargs):
+        calls.append("document")
+        return object()
+
+    monkeypatch.setattr(generated_audio_sender, "_send_voice_once", fake_send_voice_once)
+    monkeypatch.setattr(generated_audio_sender, "_send_audio_once", fake_send_audio_once)
+    monkeypatch.setattr(generated_audio_sender, "_send_document_once", fake_send_document_once)
+
+    sent = asyncio.run(
+        generated_audio_sender._send_with_retry(
+            bot=object(),
+            chat_id=123,
+            path=path,
+            filename="hello.ogg",
+            logger=logging.getLogger(__name__),
+        )
+    )
+
+    assert sent is not None
+    assert calls == ["voice"]
+
+
 def test_send_generated_audio_from_tool_logs_enforces_total_limit(monkeypatch, tmp_path):
     audio_ids = ["a1", "a2", "a3", "a4"]
     paths = {}

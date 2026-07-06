@@ -70,10 +70,23 @@ def _cache_bot_identity(bot_user: telegram.User) -> None:
     group_chat_history.set_bot_identity(_BOT_ID, _BOT_USERNAME)
 
 
+async def _refresh_bot_identity(bot, *, source: str) -> bool:
+    try:
+        bot_user = await bot.get_me()
+    except telegram.error.NetworkError as exc:
+        logger.warning(
+            "Unable to fetch bot identity during %s; will retry later: %r",
+            source,
+            exc,
+        )
+        return False
+    _cache_bot_identity(bot_user)
+    return True
+
+
 async def post_init(application) -> None:
     db.set_main_loop(asyncio.get_running_loop())
-    bot_user = await application.bot.get_me()
-    _cache_bot_identity(bot_user)
+    await _refresh_bot_identity(application.bot, source="post_init")
 
 
 class RateLimiter:
@@ -429,8 +442,7 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
     # 如果聊天是群组，则只对包含触发词时进行回复，
     if update.effective_chat.type in ("group", "supergroup"):
         if _BOT_ID is None:
-            bot_user = await context.bot.get_me()
-            _cache_bot_identity(bot_user)
+            await _refresh_bot_identity(context.bot, source="group message handling")
         # 记录群聊上下文
         should_process_group_batch = False
         for _, message in valid_items:

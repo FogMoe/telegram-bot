@@ -13,6 +13,7 @@ import requests
 
 from core import config
 from .context import get_tool_request_context
+from .filename_utils import prompt_to_filename
 
 logger = logging.getLogger(__name__)
 
@@ -392,6 +393,11 @@ def _save_image(
     return {
         "image_id": image_id,
         "index": index,
+        "filename": prompt_to_filename(
+            item.get("prompt"),
+            extension,
+            fallback_base="generated_image",
+        ),
         "prompt": item.get("prompt"),
         "width": item.get("width"),
         "height": item.get("height"),

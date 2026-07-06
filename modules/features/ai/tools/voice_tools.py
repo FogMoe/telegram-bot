@@ -10,14 +10,15 @@ import requests
 
 from core import config
 from .context import get_tool_request_context
+from .filename_utils import prompt_to_filename
 
 logger = logging.getLogger(__name__)
 
 FISH_AUDIO_API_URL = "https://api.fish.audio/v1/tts"
 DEFAULT_FISH_AUDIO_MODEL = "s2.1-pro-free"
 DEFAULT_FISH_AUDIO_REFERENCE_ID = "dc020cb237df4248907565718715b20b"
-DEFAULT_AUDIO_FORMAT = "mp3"
-DEFAULT_AUDIO_MIME_TYPE = "audio/mpeg"
+DEFAULT_AUDIO_FORMAT = "opus"
+DEFAULT_AUDIO_MIME_TYPE = "audio/ogg"
 DEFAULT_VOICE_TIMEOUT_SECONDS = 60
 MAX_VOICE_TEXT_CHARS = 500
 MAX_AUDIO_RESPONSE_BYTES = 24 * 1024 * 1024
@@ -198,10 +199,10 @@ def _content_type_to_audio_meta(content_type: str | None) -> tuple[str, str]:
     if normalized in {"audio/wav", "audio/wave", "audio/x-wav"}:
         return ".wav", "audio/wav"
     if normalized in {"audio/ogg", "audio/opus"}:
-        return ".opus", normalized
+        return ".ogg", "audio/ogg"
     if normalized in {"audio/mpeg", "audio/mp3"}:
         return ".mp3", "audio/mpeg"
-    return ".mp3", DEFAULT_AUDIO_MIME_TYPE
+    return ".ogg", DEFAULT_AUDIO_MIME_TYPE
 
 
 def _save_audio(
@@ -231,7 +232,11 @@ def _save_audio(
 
     return {
         "audio_id": audio_id,
-        "filename": filename,
+        "filename": prompt_to_filename(
+            text,
+            extension,
+            fallback_base="generated_audio",
+        ),
         "format": DEFAULT_AUDIO_FORMAT,
         "mime_type": mime_type,
         "size_bytes": len(audio_bytes),

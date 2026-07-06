@@ -44,6 +44,19 @@ def _cleanup_generated_audio(path: Path, logger: logging.Logger) -> None:
         logger.warning("Failed to clean generated audio file %s: %s", path, exc)
 
 
+async def _send_voice_once(
+    *,
+    bot: Any,
+    chat_id: int,
+    path: Path,
+) -> Any:
+    with path.open("rb") as file_obj:
+        return await bot.send_voice(
+            chat_id=chat_id,
+            voice=file_obj,
+        )
+
+
 async def _send_audio_once(
     *,
     bot: Any,
@@ -83,6 +96,30 @@ async def _send_with_retry(
     logger: logging.Logger,
 ) -> Any | None:
     last_error: Exception | None = None
+
+    for attempt in range(2):
+        try:
+            return await _send_voice_once(bot=bot, chat_id=chat_id, path=path)
+        except telegram.error.TelegramError as exc:
+            last_error = exc
+            logger.warning(
+                "Failed to send generated audio as voice (attempt %s/2): %s",
+                attempt + 1,
+                exc,
+            )
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "Failed to send generated audio as voice (attempt %s/2): %s",
+                attempt + 1,
+                exc,
+            )
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+
+    logger.warning("Voice send retry failed, trying audio fallback: %s", last_error)
 
     for attempt in range(2):
         try:

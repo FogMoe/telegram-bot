@@ -209,7 +209,7 @@ async def send_generated_images_from_tool_result(
                 bot=bot,
                 chat_id=chat_id,
                 path=path,
-                filename=path.name,
+                filename=str(image.get("filename") or path.name),
                 logger=logger,
             )
             if sent_message is not None:

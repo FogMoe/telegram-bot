@@ -51,6 +51,21 @@ def test_generate_voice_public_result_hides_audio_id():
     assert "secret-audio-id" not in str(result)
 
 
+def test_save_audio_uses_input_text_filename(monkeypatch, tmp_path):
+    monkeypatch.setattr(voice_tools, "GENERATED_AUDIO_DIR", tmp_path)
+
+    result = voice_tools._save_audio(
+        audio_bytes=b"audio",
+        text="hello:/world",
+        content_type="audio/opus",
+    )
+
+    assert result["filename"] == "hello world.ogg"
+    assert result["format"] == "opus"
+    assert result["mime_type"] == "audio/ogg"
+    voice_tools._GENERATED_AUDIO_FILES.pop(result["audio_id"], None)
+
+
 def _prepare_successful_voice_tool(monkeypatch, recorded_request):
     monkeypatch.setattr(voice_tools, "_cleanup_expired_generated_audio", lambda: None)
     monkeypatch.setattr(voice_tools.config, "FISH_AUDIO_API_KEY", "token")

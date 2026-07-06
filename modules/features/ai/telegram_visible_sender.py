@@ -78,7 +78,7 @@ class TelegramVisibleContentHandler:
         return future.result()
 
     async def _send_tool_media(self, tool_name: str, result: dict[str, Any]) -> list[Any]:
-        action = "upload_photo" if tool_name == "generate_image" else "upload_document"
+        action = "upload_photo" if tool_name == "generate_image" else "upload_voice"
         try:
             await self.bot.send_chat_action(chat_id=self.chat_id, action=action)
         except Exception:
