@@ -100,13 +100,6 @@ def _build_metadata(pack_config: dict[str, Any], sticker_set: dict[str, Any]) ->
         else:
             static_count += 1
 
-    emoji_counts = {
-        emoji: len(file_ids)
-        for emoji, file_ids in sorted(
-            emoji_to_file_ids.items(),
-            key=lambda item: (-len(item[1]), item[0]),
-        )
-    }
     now = time.time()
     return {
         "name": sticker_set.get("name") or pack_config["name"],
@@ -118,11 +111,28 @@ def _build_metadata(pack_config: dict[str, Any], sticker_set: dict[str, Any]) ->
         "static_count": static_count,
         "video_count": video_count,
         "animated_count": animated_count,
-        "emoji_counts": emoji_counts,
         "emoji_to_file_ids": emoji_to_file_ids,
         "cached_at": now,
         "expires_at": now + STICKER_CACHE_TTL_SECONDS,
     }
+
+
+def _log_pack_metadata(metadata: dict[str, Any], *, source: str) -> None:
+    emoji_to_file_ids = metadata.get("emoji_to_file_ids") or {}
+    logger.info(
+        "AI sticker pack metadata %s: name=%s title=%s type=%s stickers=%s static=%s video=%s animated=%s emoji_count=%s cached_at=%s expires_at=%s",
+        source,
+        metadata.get("name"),
+        metadata.get("title"),
+        metadata.get("sticker_type"),
+        metadata.get("sticker_count"),
+        metadata.get("static_count"),
+        metadata.get("video_count"),
+        metadata.get("animated_count"),
+        len(emoji_to_file_ids),
+        int(float(metadata.get("cached_at") or 0)),
+        int(float(metadata.get("expires_at") or 0)),
+    )
 
 
 def _metadata_for_pack(pack_name: str, *, refresh: bool = False) -> dict[str, Any]:
@@ -132,6 +142,7 @@ def _metadata_for_pack(pack_name: str, *, refresh: bool = False) -> dict[str, An
         raise ValueError(f"Sticker pack is not configured: {pack_name}")
 
     now = time.time()
+    cached_metadata: dict[str, Any] | None = None
     with _CACHE_LOCK:
         cached = _STICKER_SET_CACHE.get(pack_name)
         if (
@@ -139,10 +150,15 @@ def _metadata_for_pack(pack_name: str, *, refresh: bool = False) -> dict[str, An
             and cached
             and now < float(cached.get("expires_at") or 0)
         ):
-            return cached
+            cached_metadata = cached
+
+    if cached_metadata is not None:
+        _log_pack_metadata(cached_metadata, source="cache_hit")
+        return cached_metadata
 
     sticker_set = _fetch_sticker_set(pack_name)
     metadata = _build_metadata(pack_config, sticker_set)
+    _log_pack_metadata(metadata, source="fetched")
 
     with _CACHE_LOCK:
         _STICKER_SET_CACHE[pack_name] = metadata
@@ -150,21 +166,21 @@ def _metadata_for_pack(pack_name: str, *, refresh: bool = False) -> dict[str, An
 
 
 def _public_pack_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    cached_at = float(metadata.get("cached_at") or 0)
-    expires_at = float(metadata.get("expires_at") or 0)
+    emoji_to_file_ids = metadata.get("emoji_to_file_ids") or {}
+    emojis = [
+        emoji
+        for emoji, _file_ids in sorted(
+            emoji_to_file_ids.items(),
+            key=lambda item: (-len(item[1]), item[0]),
+        )
+    ]
+
     return {
         "name": metadata.get("name"),
         "title": metadata.get("title"),
         "summary": metadata.get("summary"),
         "avoid": metadata.get("avoid"),
-        "sticker_type": metadata.get("sticker_type"),
-        "sticker_count": metadata.get("sticker_count"),
-        "static_count": metadata.get("static_count"),
-        "video_count": metadata.get("video_count"),
-        "animated_count": metadata.get("animated_count"),
-        "emoji_counts": metadata.get("emoji_counts") or {},
-        "cached_at_unix": int(cached_at),
-        "expires_at_unix": int(expires_at),
+        "emojis": emojis,
     }
 
 
@@ -174,10 +190,7 @@ def list_available_stickers_tool(
     """Return configured Telegram sticker packs and dynamic emoji choices."""
     pack_configs = _load_pack_configs()
     if not pack_configs:
-        return {
-            "packs": [],
-            "usage": "No sticker packs are configured.",
-        }
+        return {"packs": [], "status": "unavailable"}
 
     if pack_name:
         names = [pack_name.strip()]
@@ -185,14 +198,13 @@ def list_available_stickers_tool(
         names = list(pack_configs.keys())
 
     packs: list[dict[str, Any]] = []
-    errors: list[dict[str, str]] = []
+    had_error = False
     for name in names:
         if name not in pack_configs:
-            errors.append(
-                {
-                    "pack_name": name,
-                    "error": "Sticker pack is not configured.",
-                }
+            had_error = True
+            logger.info(
+                "AI sticker pack requested but not configured: %s",
+                name,
             )
             continue
 
@@ -200,18 +212,16 @@ def list_available_stickers_tool(
             metadata = _metadata_for_pack(name)
             packs.append(_public_pack_metadata(metadata))
         except Exception as exc:
+            had_error = True
             logger.warning("Failed to load sticker pack %s: %s", name, exc)
-            errors.append({"pack_name": name, "error": str(exc)})
+
+    status = "available"
+    if had_error:
+        status = "partial" if packs else "unavailable"
 
     return {
         "packs": packs,
-        "errors": errors,
-        "cache_ttl_seconds": STICKER_CACHE_TTL_SECONDS,
-        "usage": (
-            "To send a sticker in the final answer, put a directive on its own line: "
-            "[sticker_pack:<pack_name> emoji:<emoji>]. Use only configured pack names "
-            "and emoji returned by this tool. Use at most 3 stickers per reply."
-        ),
+        "status": status,
     }
 
 
