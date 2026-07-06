@@ -77,6 +77,15 @@ class GenerateImageArgs(ToolArguments):
         default=None,
         description="Optional seed for deterministic generation",
     )
+    timeout_seconds: int | None = Field(
+        default=30,
+        ge=15,
+        le=60,
+        description=(
+            "Optional image generation request timeout in seconds. "
+            "Use 30 by default; choose 15-60 based on expected generation time."
+        ),
+    )
 
 
 class KindnessGiftArgs(ToolArguments):

@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_WIDTH = 1024
 DEFAULT_HEIGHT = 1024
 DEFAULT_STEPS = 9
+DEFAULT_IMAGE_TIMEOUT_SECONDS = 30
+MIN_IMAGE_TIMEOUT_SECONDS = 15
+MAX_IMAGE_TIMEOUT_SECONDS = 60
 MAX_PROMPT_CHARS = 2000
 MAX_IMAGE_RESPONSE_BYTES = 32 * 1024 * 1024
 MAX_IMAGE_BYTES = 16 * 1024 * 1024
@@ -201,6 +204,15 @@ def _normalise_seed(value: Any) -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _normalise_timeout_seconds(value: Any) -> int:
+    return _coerce_int(
+        value,
+        default=DEFAULT_IMAGE_TIMEOUT_SECONDS,
+        minimum=MIN_IMAGE_TIMEOUT_SECONDS,
+        maximum=MAX_IMAGE_TIMEOUT_SECONDS,
+    )
 
 
 def _build_request_items(
@@ -481,6 +493,7 @@ def generate_image_tool(
     height: Optional[int] = None,
     steps: Optional[int] = None,
     seed: Optional[int] = None,
+    timeout_seconds: Optional[int] = None,
     **kwargs,
 ) -> dict[str, Any]:
     """Generate one image and return a temporary image reference."""
@@ -488,7 +501,12 @@ def generate_image_tool(
 
     api_url = (getattr(config, "IMAGE_GEN_API_URL", "") or "").strip()
     api_token = (getattr(config, "IMAGE_GEN_API_TOKEN", "") or "").strip()
-    timeout = getattr(config, "IMAGE_GEN_TIMEOUT", 30) or 30
+    configured_timeout = (
+        timeout_seconds
+        if timeout_seconds is not None
+        else getattr(config, "IMAGE_GEN_TIMEOUT", DEFAULT_IMAGE_TIMEOUT_SECONDS)
+    )
+    timeout = _normalise_timeout_seconds(configured_timeout)
 
     if not api_url:
         return {"error": "Image generation API URL is not configured"}
