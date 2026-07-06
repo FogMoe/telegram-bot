@@ -361,23 +361,8 @@ async def safe_send_markdown(
         A list of Telegram API responses, one per sent chunk.
     """
 
-    def _is_empty_text_error(message: str) -> bool:
-        lower = message.lower()
-        return (
-            "message text is empty" in lower
-            or "text must be non-empty" in lower
-            or "text must be non empty" in lower
-        )
-
-    def _bad_request_info(error: telegram.error.BadRequest) -> dict:
-        message = str(error)
-        lower = message.lower()
-        return {
-            "text": message,
-            "lower": lower,
-            "missing_reply": "message to be replied not found" in lower,
-            "empty_text": _is_empty_text_error(message),
-        }
+    def _is_missing_reply_error(error: telegram.error.BadRequest) -> bool:
+        return "message to be replied not found" in str(error).lower()
 
     async def _attempt_send(
         target: AsyncSendFunc,
@@ -403,25 +388,16 @@ async def safe_send_markdown(
                     result = await current_func(payload, **call_kwargs)
                 return result
             except telegram.error.BadRequest as exc:
-                info = _bad_request_info(exc)
-
-                if info["empty_text"]:
-                    payload = "雾萌娘不想回复你的这条消息。"
-                    continue
-
                 if (
                     not attempted_fallback
                     and fallback_send is not None
-                    and info["missing_reply"]
+                    and _is_missing_reply_error(exc)
                 ):
                     current_func = fallback_send
                     attempted_fallback = True
                     continue
                 raise
-            except ValueError as exc:
-                if _is_empty_text_error(str(exc)):
-                    payload = "雾萌娘不想回复你的这条消息。"
-                    continue
+            except ValueError:
                 raise
 
     async def _send_single_chunk(chunk_text: str, chunk_kwargs: dict[str, Any]) -> Any:

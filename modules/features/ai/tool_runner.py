@@ -1,7 +1,7 @@
 import base64
 import json
 import logging
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional
 
 from pydantic import ValidationError
 
@@ -211,43 +211,6 @@ def _normalise_tool_calls(tool_calls: Optional[List[Any]]) -> List[Dict[str, Any
     return [_tool_call_to_plain(call) for call in tool_calls]
 
 
-def _format_tool_fallback(payload: Tuple[str, Dict[str, Any]]) -> str:
-    tool_name, tool_result = payload
-    if tool_name == "google_search":
-        results = tool_result.get("organic_results") or []
-        if not results:
-            return ""
-        lines = ["以下是最新搜索结果："]
-        for item in results[:3]:
-            title = item.get("title") or "未命名结果"
-            link = item.get("link") or ""
-            snippet = item.get("snippet") or ""
-            line = f"- {title}"
-            if link:
-                line += f" ({link})"
-            if snippet:
-                line += f"\n  {snippet}"
-            lines.append(line)
-        return "\n".join(lines)
-    if tool_name == "fetch_group_context":
-        messages = tool_result.get("messages") or []
-        if not messages:
-            return "未获取到群聊上下文。"
-        lines = ["以下是当前消息之前的群聊记录："]
-        for item in messages[:10]:
-            timestamp = item.get("created_at") or ""
-            username = item.get("username")
-            if username:
-                user_display = f"@{username}"
-            else:
-                user_display = f"用户 {item.get('user_id') or '未知'}"
-            content = item.get("content") or ""
-            mtype = item.get("message_type") or "text"
-            lines.append(f"- [{timestamp}] {user_display} ({mtype}): {content}")
-        return "\n".join(lines)
-    return ""
-
-
 def _public_tool_result(tool_name: str, tool_result: Dict[str, Any]) -> Dict[str, Any]:
     if tool_name != "generate_image" or not isinstance(tool_result, dict):
         return tool_result
@@ -394,7 +357,6 @@ def run_tool_loop(
     ]
     filtered_messages.insert(0, system_message)
 
-    last_tool_payload: Optional[Tuple[str, Dict[str, Any]]] = None
     tool_logs: List[ToolLog] = []
     skip_set = set(skip_tools or [])
 
@@ -439,26 +401,8 @@ def run_tool_loop(
                         return "", tool_logs
                     return content_text, tool_logs
                 return content_text, tool_logs
-            if last_tool_payload:
-                fallback = _format_tool_fallback(last_tool_payload) or ""
-                if fallback:
-                    if visible_content_handler:
-                        visible_result = _emit_visible_content(
-                            visible_content_handler,
-                            fallback,
-                            provider_name=provider_name,
-                        )
-                        if visible_result.content:
-                            tool_logs.append({
-                                "type": "assistant_visible",
-                                "content": visible_result.content,
-                            })
-                            return "", tool_logs
-                        if not visible_result.completed:
-                            return "", tool_logs
-                        return fallback, tool_logs
-                    return fallback, tool_logs
-                logging.warning("%s 返回内容为空且无可用回退。", provider_name)
+            if tool_logs:
+                logging.warning("%s 工具调用后最终回复为空。", provider_name)
             return content_text, tool_logs
 
         tool_calls = _normalise_tool_calls(raw_tool_calls)
@@ -580,7 +524,6 @@ def run_tool_loop(
                 "name": function_name,
                 "content": json.dumps(tool_result, ensure_ascii=False),
             })
-            last_tool_payload = (function_name, tool_result)
             tool_log_entry = {
                 "type": "tool_result",
                 "tool_name": function_name,

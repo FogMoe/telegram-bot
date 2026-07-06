@@ -153,6 +153,7 @@ async def _try_ai_services(
                 "%s failed after partial AI response; not retrying: %s",
                 service_name,
                 exc,
+                exc_info=True,
             )
             if _visible_content_was_sent(visible_content_handler):
                 return ("", exc.tool_logs), None
@@ -163,6 +164,7 @@ async def _try_ai_services(
                     "%s failed after sending visible content; not retrying: %s",
                     service_name,
                     exc,
+                    exc_info=True,
                 )
                 return ("", _visible_content_events(visible_content_handler)), None
             logging.warning("%s 调用失败: %s", service_name, exc)

@@ -50,17 +50,52 @@ def _pop_pending_id(pending_tool_call_ids: list[str], tool_call_id: str) -> None
         return
 
 
+def _assistant_message_content(tool_log: dict[str, Any]) -> str:
+    assistant_message = tool_log.get("assistant_message")
+    if not isinstance(assistant_message, dict):
+        return ""
+    content = assistant_message.get("content")
+    if content is None:
+        return ""
+    return str(content).strip()
+
+
+def _visible_content_repeated_by_tool_call(
+    tool_logs: list[dict[str, Any]],
+    visible_index: int,
+    visible_content: str,
+) -> bool:
+    visible_content = visible_content.strip()
+    if not visible_content:
+        return False
+
+    for later_log in tool_logs[visible_index + 1:]:
+        if not isinstance(later_log, dict):
+            continue
+        entry_type = later_log.get("type", "tool_result")
+        if entry_type == "assistant_tool_call":
+            return _assistant_message_content(later_log) == visible_content
+        if entry_type in {"assistant_visible", "tool_result"}:
+            return False
+
+    return False
+
+
 def tool_logs_to_record_entries(
     tool_logs: list[dict[str, Any]],
 ) -> list[tuple[str, object]]:
     record_entries: list[tuple[str, object]] = []
     pending_tool_call_ids: list[str] = []
 
-    for tool_log in tool_logs:
+    for index, tool_log in enumerate(tool_logs):
         entry_type = tool_log.get("type", "tool_result")
         if entry_type == "assistant_visible":
             visible_content = str(tool_log.get("content") or "").strip()
-            if visible_content:
+            if visible_content and not _visible_content_repeated_by_tool_call(
+                tool_logs,
+                index,
+                visible_content,
+            ):
                 record_entries.append(("assistant", visible_content))
             continue
 
