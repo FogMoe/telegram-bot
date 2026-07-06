@@ -114,6 +114,14 @@ def get_effective_message(update: Update):
     return update.message or update.edited_message
 
 
+def _format_message_timestamp(value) -> str | None:
+    if not value:
+        return None
+    if hasattr(value, "strftime"):
+        return value.strftime('%Y-%m-%d %H:%M:%S')
+    return str(value)
+
+
 def _format_xml_attrs(attrs: list[tuple[str, str | None]]) -> str:
     return " ".join(
         f'{key}="{xml_escape(value)}"' for key, value in attrs if value
@@ -127,6 +135,9 @@ def _format_xml_message(
     timestamp: str,
     user_name: str,
     message_text: str,
+    message_id: str | int | None = None,
+    edited: bool = False,
+    edited_at: str | None = None,
     forward_type: str | None = None,
     forward_origin_timestamp: str | None = None,
     forward_user: str | None = None,
@@ -148,6 +159,9 @@ def _format_xml_message(
         ("type", chat_type),
         ("timestamp", timestamp),
         ("user", f"@{user_name}"),
+        ("message_id", str(message_id) if message_id is not None else None),
+        ("edited", "true" if edited else None),
+        ("edited_at", edited_at if edited else None),
     ]
     if chat_type in ("group", "supergroup") and chat_title:
         attrs.insert(1, ("title", chat_title))
@@ -534,7 +548,7 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
 
     message_jobs = []
     total_coin_cost = 0
-    for _, message in valid_items:
+    for item, message in valid_items:
         # 如果是媒体消息（图片或贴纸），固定硬币消耗5
         if message.photo or message.sticker:
             coin_cost = 5
@@ -565,6 +579,7 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
                 "message": message,
                 "coin_cost": coin_cost,
                 "is_media": is_media,
+                "is_edited": item.update.edited_message is message,
             }
         )
         total_coin_cost += coin_cost
@@ -651,11 +666,19 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
 
     for job in message_jobs:
         message = job["message"]
-        current_message_time = (
-            message.date.strftime('%Y-%m-%d %H:%M:%S')
-            if message.date
-            else time.strftime('%Y-%m-%d %H:%M:%S')
+        current_message_time = _format_message_timestamp(message.date) or time.strftime(
+            '%Y-%m-%d %H:%M:%S'
         )
+        is_edited = bool(job.get("is_edited"))
+        message_metadata_kwargs = {
+            "message_id": getattr(message, "message_id", None),
+            "edited": is_edited,
+            "edited_at": (
+                _format_message_timestamp(getattr(message, "edit_date", None))
+                if is_edited
+                else None
+            ),
+        }
         forward_kwargs = _build_forward_format_kwargs(message)
         reply_kwargs = (
             _build_reply_format_kwargs(message.reply_to_message)
@@ -708,6 +731,7 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
                     timestamp=current_message_time,
                     user_name=user_name,
                     message_text=message_text,
+                    **message_metadata_kwargs,
                     **forward_kwargs,
                     **reply_kwargs,
                     media_type=media_type,
@@ -720,6 +744,7 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
                     timestamp=current_message_time,
                     user_name=user_name,
                     message_text=message_text,
+                    **message_metadata_kwargs,
                     **forward_kwargs,
                     **reply_kwargs,
                     media_type=media_type,
@@ -750,6 +775,7 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
                 timestamp=current_message_time,
                 user_name=user_name,
                 message_text=user_message,
+                **message_metadata_kwargs,
                 **forward_kwargs,
                 **reply_kwargs,
             )
