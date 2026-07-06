@@ -47,6 +47,9 @@ def _provider_model(provider: str, task: str) -> str | None:
     if provider_name == "openai":
         return getattr(config, f"OPENAI_{task_suffix}_MODEL", None)
 
+    if provider_name == "siliconflow":
+        return getattr(config, f"SILICONFLOW_{task_suffix}_MODEL", None)
+
     if provider_name == "gemini":
         return getattr(config, f"GEMINI_{task_suffix}_MODEL", None)
 

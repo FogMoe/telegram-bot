@@ -83,7 +83,7 @@ nano .env
 AI 调用统一通过 LiteLLM SDK，provider 和模型需要在 `.env` 中显式配置。示例：
 
 ```env
-AI_CHAT_ORDER=openai,azure,zhipu,gemini
+AI_CHAT_ORDER=openai,siliconflow,azure,zhipu,gemini
 AI_SUMMARY_PROVIDER=openai
 AI_TRANSLATE_PROVIDER=openai
 AI_VISION_PROVIDER=openai

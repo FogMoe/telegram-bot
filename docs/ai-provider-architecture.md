@@ -282,6 +282,19 @@ OPENAI_VISION_MODEL=gpt-4.1
 OPENAI_CLASSIFIER_MODEL=gpt-4.1-nano
 ```
 
+SiliconFlow 配置（OpenAI-compatible）：
+
+```env
+SILICONFLOW_API_KEY=...
+SILICONFLOW_API_BASE=https://api.siliconflow.cn/v1
+
+SILICONFLOW_CHAT_MODEL=deepseek-ai/DeepSeek-V4-Flash
+SILICONFLOW_SUMMARY_MODEL=deepseek-ai/DeepSeek-V4-Flash
+SILICONFLOW_TRANSLATE_MODEL=deepseek-ai/DeepSeek-V4-Flash
+SILICONFLOW_VISION_MODEL=deepseek-ai/DeepSeek-V4-Flash
+SILICONFLOW_CLASSIFIER_MODEL=deepseek-ai/DeepSeek-V4-Flash
+```
+
 Azure 配置：
 
 ```env

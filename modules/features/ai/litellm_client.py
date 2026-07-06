@@ -11,6 +11,7 @@ PROVIDER_ALIASES = {
     "openai": "openai",
     "azure": "azure",
     "gemini": "gemini",
+    "siliconflow": "siliconflow",
     "zhipu": "zai",
     "zai": "zai",
 }
@@ -37,6 +38,8 @@ def _prefixed_model(provider: str, model: str) -> str:
 
 def _litellm_model(provider: str, model: str) -> str:
     if provider == "gemini" and config.GEMINI_OPENAI_COMPATIBLE:
+        return _prefixed_model("openai", model)
+    if provider == "siliconflow":
         return _prefixed_model("openai", model)
     return _prefixed_model(provider, model)
 
@@ -103,6 +106,14 @@ def _azure_api_base() -> str:
     return base_url.rstrip("/")
 
 
+def _openai_compatible_api_base(value: str) -> str:
+    base_url = (value or "").rstrip("/")
+    suffix = "/chat/completions"
+    if base_url.lower().endswith(suffix):
+        return base_url[: -len(suffix)].rstrip("/")
+    return base_url
+
+
 def _provider_params(provider: str) -> Dict[str, Any]:
     if provider == "openai":
         api_key = config.OPENAI_API_KEY
@@ -133,6 +144,17 @@ def _provider_params(provider: str) -> Dict[str, Any]:
         if config.ZAI_API_BASE:
             params["api_base"] = config.ZAI_API_BASE
         return params
+
+    if provider == "siliconflow":
+        if not config.SILICONFLOW_API_KEY:
+            raise RuntimeError("Missing SILICONFLOW_API_KEY configuration.")
+        api_base = _openai_compatible_api_base(config.SILICONFLOW_API_BASE)
+        if not api_base:
+            raise RuntimeError("Missing SILICONFLOW_API_BASE configuration.")
+        return {
+            "api_key": config.SILICONFLOW_API_KEY,
+            "api_base": api_base,
+        }
 
     if provider == "azure":
         if not config.AZURE_OPENAI_API_KEY:
