@@ -1,1 +1,2 @@
 - Reply to the user in Chinese.
+- Use the project virtual environment for Python commands. On Windows, run `.\.venv\Scripts\python.exe` and `.\.venv\Scripts\python.exe -m pip` instead of global `python` or `pip`.

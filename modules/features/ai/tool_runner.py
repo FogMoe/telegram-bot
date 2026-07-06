@@ -3,7 +3,9 @@ import json
 import logging
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
-from .tools import OPENAI_TOOLS, AI_TOOL_HANDLERS
+from pydantic import ValidationError
+
+from .tools import OPENAI_TOOLS, AI_TOOL_ARG_MODELS, AI_TOOL_HANDLERS
 from .prompts import compose_system_prompt
 from .litellm_client import create_chat_completion
 from .types import AIResponse, PartialAIResponseError, ToolLog, VisibleContentHandler
@@ -34,6 +36,43 @@ def _json_safe(value: Any) -> Any:
 
 def _drop_none_items(value: Dict[str, Any]) -> Dict[str, Any]:
     return {key: item for key, item in value.items() if item is not None}
+
+
+def _format_validation_errors(exc: ValidationError) -> list[dict[str, str]]:
+    details: list[dict[str, str]] = []
+    for error in exc.errors(include_url=False):
+        loc = ".".join(str(item) for item in error.get("loc", ())) or "__root__"
+        details.append({
+            "field": loc,
+            "message": str(error.get("msg") or "Invalid value"),
+            "type": str(error.get("type") or "validation_error"),
+        })
+    return details
+
+
+def _validate_tool_args(
+    function_name: str,
+    raw_args: Any,
+) -> tuple[Dict[str, Any], Dict[str, Any] | None]:
+    model = AI_TOOL_ARG_MODELS.get(function_name)
+    if model is None:
+        if isinstance(raw_args, dict):
+            return raw_args, None
+        return {}, None
+
+    try:
+        validated = model.model_validate(raw_args)
+    except ValidationError as exc:
+        return {}, {
+            "error": "Tool arguments failed validation",
+            "details": _format_validation_errors(exc),
+        }
+
+    return validated.model_dump(
+        mode="json",
+        exclude_none=True,
+        exclude_unset=True,
+    ), None
 
 
 def _tool_call_to_plain(tool_call: Any) -> Dict[str, Any]:
@@ -461,25 +500,46 @@ def run_tool_loop(
 
             raw_args = function_payload.get("arguments") or "{}"
             try:
-                function_args = json.loads(raw_args)
+                raw_function_args = json.loads(raw_args)
             except json.JSONDecodeError as exc:
                 logging.error("%s 工具参数解析失败: %s", provider_name, exc)
-                function_args = {}
+                raw_function_args = {}
+
+            function_args, validation_error = _validate_tool_args(
+                function_name,
+                raw_function_args,
+            )
+            logged_args = (
+                function_args
+                if validation_error is None
+                else _json_safe(raw_function_args)
+            )
 
             tool_call_id = tool_call.get("id")
             tool_log_entry = {
                 "type": "assistant_tool_call",
                 "tool_name": function_name,
-                "arguments": function_args,
+                "arguments": logged_args,
                 "tool_call_id": tool_call_id,
             }
+            if validation_error is not None:
+                tool_log_entry["validation_error"] = validation_error
             if not assistant_message_logged:
                 tool_log_entry["assistant_message"] = assistant_model_message
                 assistant_message_logged = True
             tool_logs.append(tool_log_entry)
 
             handler = AI_TOOL_HANDLERS.get(function_name)
-            if handler:
+            if validation_error is not None:
+                logging.warning(
+                    "%s 工具参数校验失败: %s, args=%s, error=%s",
+                    provider_name,
+                    function_name,
+                    json.dumps(_json_safe(raw_function_args), ensure_ascii=False),
+                    validation_error.get("details"),
+                )
+                internal_tool_result = validation_error
+            elif handler:
                 try:
                     internal_tool_result = handler(**function_args)
                     if isinstance(internal_tool_result, dict) and internal_tool_result.get("error"):

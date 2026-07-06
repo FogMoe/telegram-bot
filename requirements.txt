@@ -3,6 +3,8 @@ SQLAlchemy>=2.0
 asyncmy
 alembic
 litellm>=1.80.5
+pydantic>=2
+pydantic-settings>=2
 binance-futures-connector
 aiohttp
 telegramify-markdown

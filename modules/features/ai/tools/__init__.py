@@ -1,5 +1,5 @@
 from .context import clear_tool_request_context, get_tool_request_context, set_tool_request_context
-from .registry import AI_TOOL_HANDLERS, OPENAI_TOOLS
+from .registry import AI_TOOL_ARG_MODELS, AI_TOOL_HANDLERS, OPENAI_TOOLS
 from .code_tools import execute_python_code_tool
 from .http_tools import fetch_url_tool
 from .image_tools import generate_image_tool
@@ -15,6 +15,7 @@ from .user_tools import kindness_gift_tool, update_impression_tool
 __all__ = [
     "OPENAI_TOOLS",
     "AI_TOOL_HANDLERS",
+    "AI_TOOL_ARG_MODELS",
     "set_tool_request_context",
     "clear_tool_request_context",
     "get_tool_request_context",
