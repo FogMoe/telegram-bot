@@ -1,9 +1,10 @@
 import asyncio
 import logging
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 from core import config
 
+from .message_content import messages_have_images, strip_image_content
 from .tools import clear_tool_request_context, set_tool_request_context
 from .errors import SafetyBlockError
 from .providers import azure, gemini, openai, siliconflow, zhipu
@@ -36,50 +37,6 @@ PARTIAL_AI_RESPONSE_ERROR_MESSAGE = (
     "您可以发送给管理员 @ScarletKc 报告此问题。\n"
     "You can report this issue to the admin @ScarletKc."
 )
-
-
-def _content_has_image(content: Any) -> bool:
-    if not isinstance(content, list):
-        return False
-    return any(isinstance(item, dict) and item.get("type") == "image_url" for item in content)
-
-
-def _messages_have_images(messages) -> bool:
-    return any(
-        isinstance(message, dict) and _content_has_image(message.get("content"))
-        for message in messages
-    )
-
-
-def _content_to_text(content: Any) -> str:
-    if not isinstance(content, list):
-        return content if isinstance(content, str) else str(content or "")
-
-    text_parts = []
-    for item in content:
-        if not isinstance(item, dict):
-            continue
-        if item.get("type") == "text":
-            text = item.get("text")
-            if text:
-                text_parts.append(str(text))
-    return "\n".join(text_parts)
-
-
-def _strip_image_content(messages) -> list:
-    stripped_messages = []
-    for message in messages:
-        if not isinstance(message, dict):
-            stripped_messages.append(message)
-            continue
-        content = message.get("content")
-        if not _content_has_image(content):
-            stripped_messages.append(message)
-            continue
-        stripped_message = dict(message)
-        stripped_message["content"] = _content_to_text(content)
-        stripped_messages.append(stripped_message)
-    return stripped_messages
 
 
 def _call_service_with_context(
@@ -234,12 +191,12 @@ async def get_ai_response(
     if response is not None:
         return response
 
-    if _messages_have_images(messages):
+    if messages_have_images(messages):
         logging.warning("多模态 AI 调用全部失败，降级为纯文本图片描述重试: %s", last_error)
         if text_fallback_messages is not None:
             text_messages = list(text_fallback_messages)
         else:
-            text_messages = _strip_image_content(messages)
+            text_messages = strip_image_content(messages)
         response, last_error = await _try_ai_services(
             text_messages,
             user_id,
