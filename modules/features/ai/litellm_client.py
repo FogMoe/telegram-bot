@@ -52,6 +52,8 @@ def _sanitize_tool_call_for_provider(
     if provider != "gemini":
         for key in PROVIDER_SPECIFIC_KEYS:
             sanitized.pop(key, None)
+    else:
+        sanitized.pop("id", None)
     return sanitized
 
 
@@ -80,6 +82,8 @@ def _sanitize_message_for_provider(
         and not str(sanitized.get("content") or "").strip()
     ):
         sanitized.pop("content", None)
+    if provider == "gemini" and sanitized.get("role") == "tool":
+        sanitized.pop("tool_call_id", None)
     return sanitized
 
 
@@ -114,6 +118,14 @@ def _openai_compatible_api_base(value: str) -> str:
     return base_url
 
 
+def _gemini_native_api_base(value: str) -> str:
+    base_url = (value or "").rstrip("/")
+    suffix = "/models"
+    if base_url.lower().endswith(suffix):
+        return base_url[: -len(suffix)].rstrip("/")
+    return base_url
+
+
 def _provider_params(provider: str) -> Dict[str, Any]:
     if provider == "openai":
         api_key = config.OPENAI_API_KEY
@@ -134,7 +146,11 @@ def _provider_params(provider: str) -> Dict[str, Any]:
             raise RuntimeError("GEMINI_OPENAI_COMPATIBLE requires GEMINI_API_BASE.")
         params = {"api_key": config.GEMINI_API_KEY}
         if config.GEMINI_API_BASE:
-            params["api_base"] = config.GEMINI_API_BASE
+            params["api_base"] = (
+                _openai_compatible_api_base(config.GEMINI_API_BASE)
+                if config.GEMINI_OPENAI_COMPATIBLE
+                else _gemini_native_api_base(config.GEMINI_API_BASE)
+            )
         return params
 
     if provider == "zai":
