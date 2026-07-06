@@ -50,6 +50,21 @@
 .\.venv\Scripts\python.exe -m pytest
 ```
 
+手动检查当前 `.env` 里的真实 AI API 连通性：
+
+```powershell
+$env:RUN_ENV_API_CONNECTIVITY_TESTS = "1"
+.\.venv\Scripts\python.exe -m pytest tests/test_env_api_connectivity.py -s
+```
+
+默认会按 `AI_CHAT_ORDER` 检查 chat provider。只检查指定 provider 时：
+
+```powershell
+$env:RUN_ENV_API_CONNECTIVITY_TESTS = "1"
+$env:ENV_API_CONNECTIVITY_PROVIDERS = "gemini"
+.\.venv\Scripts\python.exe -m pytest tests/test_env_api_connectivity.py -s
+```
+
 开发依赖安装：
 
 ```powershell
