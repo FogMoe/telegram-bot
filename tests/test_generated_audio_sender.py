@@ -1,6 +1,9 @@
 import asyncio
 import logging
 
+import telegram.error
+
+from core import telegram_utils
 from features.ai import generated_audio_sender
 
 
@@ -37,6 +40,50 @@ def test_send_with_retry_prefers_telegram_voice(monkeypatch, tmp_path):
 
     assert sent is not None
     assert calls == ["voice"]
+
+
+def test_send_with_retry_falls_back_to_audio_after_voice_timeouts(monkeypatch, tmp_path):
+    path = tmp_path / "voice.ogg"
+    path.write_bytes(b"audio")
+    calls = []
+    sleeps = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    async def fake_send_voice_once(**kwargs):
+        calls.append("voice")
+        raise telegram.error.TimedOut("Timed out")
+
+    async def fake_send_audio_once(**kwargs):
+        calls.append("audio")
+        return object()
+
+    async def fake_send_document_once(**kwargs):
+        calls.append("document")
+        return object()
+
+    monkeypatch.setattr(telegram_utils.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(generated_audio_sender, "_send_voice_once", fake_send_voice_once)
+    monkeypatch.setattr(generated_audio_sender, "_send_audio_once", fake_send_audio_once)
+    monkeypatch.setattr(generated_audio_sender, "_send_document_once", fake_send_document_once)
+
+    sent = asyncio.run(
+        generated_audio_sender._send_with_retry(
+            bot=object(),
+            chat_id=123,
+            path=path,
+            filename="hello.ogg",
+            logger=logging.getLogger(__name__),
+        )
+    )
+
+    assert sent is not None
+    assert calls == ["voice", "voice", "voice", "audio"]
+    assert sleeps == [
+        telegram_utils.TELEGRAM_SEND_RETRY_INITIAL_DELAY_SECONDS,
+        telegram_utils.TELEGRAM_SEND_RETRY_INITIAL_DELAY_SECONDS * 2,
+    ]
 
 
 def test_send_generated_audio_from_tool_logs_enforces_total_limit(monkeypatch, tmp_path):

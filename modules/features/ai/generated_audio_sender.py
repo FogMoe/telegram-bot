@@ -1,9 +1,8 @@
-import asyncio
 import logging
 from pathlib import Path
 from typing import Any
 
-import telegram.error
+from core.telegram_utils import retry_telegram_send, telegram_error_summary
 
 from .tools.voice_tools import pop_generated_audio_file
 
@@ -97,78 +96,57 @@ async def _send_with_retry(
 ) -> Any | None:
     last_error: Exception | None = None
 
-    for attempt in range(2):
-        try:
-            return await _send_voice_once(bot=bot, chat_id=chat_id, path=path)
-        except telegram.error.TelegramError as exc:
-            last_error = exc
-            logger.warning(
-                "Failed to send generated audio as voice (attempt %s/2): %s",
-                attempt + 1,
-                exc,
-            )
-            if attempt == 0:
-                await asyncio.sleep(0.5)
-        except Exception as exc:
-            last_error = exc
-            logger.warning(
-                "Failed to send generated audio as voice (attempt %s/2): %s",
-                attempt + 1,
-                exc,
-            )
-            if attempt == 0:
-                await asyncio.sleep(0.5)
+    try:
+        return await retry_telegram_send(
+            lambda: _send_voice_once(bot=bot, chat_id=chat_id, path=path),
+            logger=logger,
+            action="send generated audio as voice",
+        )
+    except Exception as exc:
+        last_error = exc
 
-    logger.warning("Voice send retry failed, trying audio fallback: %s", last_error)
+    logger.warning(
+        "Voice send failed, trying audio fallback: %s",
+        telegram_error_summary(last_error),
+    )
 
-    for attempt in range(2):
-        try:
-            return await _send_audio_once(
+    try:
+        return await retry_telegram_send(
+            lambda: _send_audio_once(
                 bot=bot,
                 chat_id=chat_id,
                 path=path,
                 filename=filename,
-            )
-        except telegram.error.TelegramError as exc:
-            last_error = exc
-            logger.warning(
-                "Failed to send generated audio as audio (attempt %s/2): %s",
-                attempt + 1,
-                exc,
-            )
-            if attempt == 0:
-                await asyncio.sleep(0.5)
-        except Exception as exc:
-            last_error = exc
-            logger.warning(
-                "Failed to send generated audio as audio (attempt %s/2): %s",
-                attempt + 1,
-                exc,
-            )
-            if attempt == 0:
-                await asyncio.sleep(0.5)
+            ),
+            logger=logger,
+            action="send generated audio as audio",
+        )
+    except Exception as exc:
+        last_error = exc
 
-    logger.warning("Audio send retry failed, trying document fallback: %s", last_error)
+    logger.warning(
+        "Audio send failed, trying document fallback: %s",
+        telegram_error_summary(last_error),
+    )
 
-    for attempt in range(2):
-        try:
-            return await _send_document_once(
+    try:
+        return await retry_telegram_send(
+            lambda: _send_document_once(
                 bot=bot,
                 chat_id=chat_id,
                 path=path,
                 filename=filename,
-            )
-        except Exception as exc:
-            last_error = exc
-            logger.warning(
-                "Failed to send generated audio as document (attempt %s/2): %s",
-                attempt + 1,
-                exc,
-            )
-            if attempt == 0:
-                await asyncio.sleep(0.5)
+            ),
+            logger=logger,
+            action="send generated audio as document",
+        )
+    except Exception as exc:
+        last_error = exc
 
-    logger.warning("Generated audio send failed after retry: %s", last_error)
+    logger.warning(
+        "Generated audio send failed after retry: %s",
+        telegram_error_summary(last_error),
+    )
     return None
 
 

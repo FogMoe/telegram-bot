@@ -813,7 +813,10 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
     )
 
     # 异步发送"正在输入"状态
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    try:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    except Exception:
+        logger.debug("Failed to send typing action before AI request")
 
     # 异步获取AI回复
     tool_context = {

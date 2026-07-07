@@ -1,9 +1,8 @@
-import asyncio
 import logging
 from pathlib import Path
 from typing import Any
 
-import telegram.error
+from core.telegram_utils import retry_telegram_send, telegram_error_summary
 
 from .tools.image_tools import pop_generated_image_file
 
@@ -82,49 +81,38 @@ async def _send_with_retry(
 ) -> Any | None:
     last_error: Exception | None = None
 
-    for attempt in range(2):
-        try:
-            return await _send_photo_once(bot=bot, chat_id=chat_id, path=path)
-        except telegram.error.TelegramError as exc:
-            last_error = exc
-            logger.warning(
-                "Failed to send generated image as photo (attempt %s/2): %s",
-                attempt + 1,
-                exc,
-            )
-            if attempt == 0:
-                await asyncio.sleep(0.5)
-        except Exception as exc:
-            last_error = exc
-            logger.warning(
-                "Failed to send generated image as photo (attempt %s/2): %s",
-                attempt + 1,
-                exc,
-            )
-            if attempt == 0:
-                await asyncio.sleep(0.5)
+    try:
+        return await retry_telegram_send(
+            lambda: _send_photo_once(bot=bot, chat_id=chat_id, path=path),
+            logger=logger,
+            action="send generated image as photo",
+        )
+    except Exception as exc:
+        last_error = exc
 
-    logger.warning("Photo send retry failed, trying document fallback: %s", last_error)
+    logger.warning(
+        "Photo send failed, trying document fallback: %s",
+        telegram_error_summary(last_error),
+    )
 
-    for attempt in range(2):
-        try:
-            return await _send_document_once(
+    try:
+        return await retry_telegram_send(
+            lambda: _send_document_once(
                 bot=bot,
                 chat_id=chat_id,
                 path=path,
                 filename=filename,
-            )
-        except Exception as exc:
-            last_error = exc
-            logger.warning(
-                "Failed to send generated image as document (attempt %s/2): %s",
-                attempt + 1,
-                exc,
-            )
-            if attempt == 0:
-                await asyncio.sleep(0.5)
+            ),
+            logger=logger,
+            action="send generated image as document",
+        )
+    except Exception as exc:
+        last_error = exc
 
-    logger.warning("Generated image send failed after retry: %s", last_error)
+    logger.warning(
+        "Generated image send failed after retry: %s",
+        telegram_error_summary(last_error),
+    )
     return None
 
 

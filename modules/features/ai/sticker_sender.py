@@ -5,7 +5,13 @@ from typing import Any, Awaitable, Callable
 
 import telegram.error
 
-from core.telegram_utils import PartialTelegramSendError, safe_send_markdown, split_ai_reply
+from core.telegram_utils import (
+    PartialTelegramSendError,
+    retry_telegram_send,
+    safe_send_markdown,
+    split_ai_reply,
+    telegram_error_summary,
+)
 from .tools.sticker_tools import choose_sticker_file_id, sticker_exists
 
 AsyncSendFunc = Callable[..., Awaitable[Any]]
@@ -146,10 +152,14 @@ async def send_ai_reply_with_stickers(
             send_kwargs["allow_sending_without_reply"] = True
 
         try:
-            sent_message = await bot.send_sticker(
-                chat_id=chat_id,
-                sticker=file_id,
-                **send_kwargs,
+            sent_message = await retry_telegram_send(
+                lambda: bot.send_sticker(
+                    chat_id=chat_id,
+                    sticker=file_id,
+                    **send_kwargs,
+                ),
+                logger=logger,
+                action="send AI sticker",
             )
         except telegram.error.BadRequest as exc:
             if "message to be replied not found" not in str(exc).lower():
@@ -161,10 +171,33 @@ async def send_ai_reply_with_stickers(
                 )
                 await flush_text([emoji])
                 return
-            sent_message = await bot.send_sticker(
-                chat_id=chat_id,
-                sticker=file_id,
+            try:
+                sent_message = await retry_telegram_send(
+                    lambda: bot.send_sticker(
+                        chat_id=chat_id,
+                        sticker=file_id,
+                    ),
+                    logger=logger,
+                    action="send AI sticker without reply",
+                )
+            except Exception as fallback_exc:
+                logger.warning(
+                    "Failed to send sticker without reply pack=%s emoji=%s: %s",
+                    pack_name,
+                    emoji,
+                    telegram_error_summary(fallback_exc),
+                )
+                await flush_text([emoji])
+                return
+        except Exception as exc:
+            logger.warning(
+                "Failed to send sticker pack=%s emoji=%s after retry: %s",
+                pack_name,
+                emoji,
+                telegram_error_summary(exc),
             )
+            await flush_text([emoji])
+            return
 
         sent_messages.append(sent_message)
         sent_content_parts.append(f"[sticker_pack:{pack_name} emoji:{emoji}]")

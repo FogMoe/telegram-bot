@@ -1,7 +1,8 @@
 """Utility helpers for Telegram messages and sending."""
 
+import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from functools import partial
 from typing import Any, Awaitable, Callable, Optional
@@ -17,6 +18,10 @@ except ImportError:  # pragma: no cover
 AsyncSendFunc = Callable[..., Awaitable[Any]]
 
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+TELEGRAM_SEND_RETRY_ATTEMPTS = 3
+TELEGRAM_SEND_RETRY_INITIAL_DELAY_SECONDS = 0.5
+TELEGRAM_SEND_RETRY_MAX_DELAY_SECONDS = 8.0
+TELEGRAM_RETRY_AFTER_PADDING_SECONDS = 0.1
 
 
 class PartialTelegramSendError(Exception):
@@ -29,6 +34,83 @@ class PartialTelegramSendError(Exception):
         super().__init__(message)
         self.sent_messages = list(sent_messages)
         self.sent_text = sent_text
+
+
+def is_retryable_telegram_error(exc: BaseException) -> bool:
+    """Return whether a Telegram send failure is likely transient."""
+    if isinstance(exc, telegram.error.RetryAfter):
+        return True
+    if isinstance(exc, (telegram.error.BadRequest, telegram.error.Forbidden)):
+        return False
+    return isinstance(exc, (telegram.error.TimedOut, telegram.error.NetworkError))
+
+
+def _retry_after_delay_seconds(exc: telegram.error.RetryAfter) -> float:
+    retry_after = getattr(exc, "_retry_after", None)
+    if retry_after is None:
+        retry_after = exc.retry_after
+    if isinstance(retry_after, timedelta):
+        delay = retry_after.total_seconds()
+    else:
+        delay = float(retry_after)
+    return max(0.0, delay) + TELEGRAM_RETRY_AFTER_PADDING_SECONDS
+
+
+def _telegram_retry_delay_seconds(
+    exc: BaseException,
+    *,
+    attempt: int,
+    initial_delay: float,
+    max_delay: float,
+) -> float:
+    if isinstance(exc, telegram.error.RetryAfter):
+        return _retry_after_delay_seconds(exc)
+    delay = initial_delay * (2 ** max(0, attempt - 1))
+    return min(max_delay, delay)
+
+
+def telegram_error_summary(exc: object) -> str:
+    if isinstance(exc, telegram.error.RetryAfter):
+        retry_after = _retry_after_delay_seconds(exc) - TELEGRAM_RETRY_AFTER_PADDING_SECONDS
+        return f"{exc.__class__.__name__}: retry after {retry_after:.1f}s"
+    return f"{exc.__class__.__name__}: {exc}"
+
+
+async def retry_telegram_send(
+    operation: Callable[[], Awaitable[Any]],
+    *,
+    logger: logging.Logger | None,
+    action: str,
+    attempts: int = TELEGRAM_SEND_RETRY_ATTEMPTS,
+    initial_delay: float = TELEGRAM_SEND_RETRY_INITIAL_DELAY_SECONDS,
+    max_delay: float = TELEGRAM_SEND_RETRY_MAX_DELAY_SECONDS,
+) -> Any:
+    """Run a Telegram send operation with retry/backoff for transient errors."""
+    attempts = max(1, attempts)
+    for attempt in range(1, attempts + 1):
+        try:
+            return await operation()
+        except Exception as exc:
+            if not is_retryable_telegram_error(exc) or attempt >= attempts:
+                raise
+            delay = _telegram_retry_delay_seconds(
+                exc,
+                attempt=attempt,
+                initial_delay=initial_delay,
+                max_delay=max_delay,
+            )
+            if logger:
+                logger.warning(
+                    "Telegram %s failed with transient error (attempt %s/%s); "
+                    "retrying in %.1fs: %s",
+                    action,
+                    attempt,
+                    attempts,
+                    delay,
+                    telegram_error_summary(exc),
+                )
+            await asyncio.sleep(delay)
+    raise RuntimeError("unreachable Telegram retry state")
 
 
 def _optional_text(value: Any) -> str | None:
@@ -402,11 +484,15 @@ async def safe_send_markdown(
 
     async def _send_single_chunk(chunk_text: str, chunk_kwargs: dict[str, Any]) -> Any:
         try:
-            return await _attempt_send(
-                send_func,
-                chunk_text,
-                mode=parse_mode,
-                send_kwargs=chunk_kwargs,
+            return await retry_telegram_send(
+                lambda: _attempt_send(
+                    send_func,
+                    chunk_text,
+                    mode=parse_mode,
+                    send_kwargs=chunk_kwargs,
+                ),
+                logger=logger,
+                action="send text message",
             )
         except telegram.error.BadRequest as exc:
             if logger:
@@ -419,11 +505,15 @@ async def safe_send_markdown(
                     max_line_length=None,
                     normalize_whitespace=False,
                 )
-                return await _attempt_send(
-                    send_func,
-                    converted,
-                    mode=ParseMode.MARKDOWN_V2,
-                    send_kwargs=chunk_kwargs,
+                return await retry_telegram_send(
+                    lambda: _attempt_send(
+                        send_func,
+                        converted,
+                        mode=ParseMode.MARKDOWN_V2,
+                        send_kwargs=chunk_kwargs,
+                    ),
+                    logger=logger,
+                    action="send MarkdownV2 text message",
                 )
             except telegram.error.BadRequest as conv_exc:
                 if logger:
@@ -432,11 +522,15 @@ async def safe_send_markdown(
                         conv_exc,
                     )
 
-        return await _attempt_send(
-            send_func,
-            chunk_text,
-            mode=None,
-            send_kwargs=chunk_kwargs,
+        return await retry_telegram_send(
+            lambda: _attempt_send(
+                send_func,
+                chunk_text,
+                mode=None,
+                send_kwargs=chunk_kwargs,
+            ),
+            logger=logger,
+            action="send plain text message",
         )
 
     chunks = _split_text_segments(text)
@@ -482,18 +576,28 @@ async def send_document_bytes(
     if not content:
         return False
 
-    file_obj = BytesIO(content)
-    file_obj.name = filename
-
     try:
-        await bot.send_document(
-            chat_id=chat_id,
-            document=file_obj,
-            filename=filename,
-            caption=caption,
+        async def send_once() -> Any:
+            file_obj = BytesIO(content)
+            file_obj.name = filename
+            return await bot.send_document(
+                chat_id=chat_id,
+                document=file_obj,
+                filename=filename,
+                caption=caption,
+            )
+
+        await retry_telegram_send(
+            send_once,
+            logger=logger,
+            action="send document bytes",
         )
         return True
     except Exception as exc:  # pragma: no cover - defensive logging
         if logger:
-            logger.warning("Failed to send document to %s: %s", chat_id, exc)
+            logger.warning(
+                "Failed to send document to %s: %s",
+                chat_id,
+                telegram_error_summary(exc),
+            )
         return False
