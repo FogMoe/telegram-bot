@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import Dict, Optional
 
 from core import config
@@ -23,6 +24,12 @@ AI_SERVICE_MAP = {
 
 AI_SERVICE_ORDER = config.AI_SERVICE_ORDER
 
+AI_PROVIDER_CIRCUIT_FAILURE_THRESHOLD = 3
+AI_PROVIDER_CIRCUIT_WINDOW_SECONDS = 5 * 60
+AI_PROVIDER_CIRCUIT_COOLDOWN_SECONDS = 30 * 60
+_provider_failure_streaks: dict[str, list[float]] = {}
+_provider_circuit_open_until: dict[str, float] = {}
+
 PARTIAL_AI_RESPONSE_ERROR_MESSAGE = (
     "看起来对话出现了一些小问题呢。"
     "您可以尝试使用 /clear 命令来清空聊天记录，"
@@ -38,6 +45,48 @@ PARTIAL_AI_RESPONSE_ERROR_MESSAGE = (
     "您可以发送给管理员 @ScarletKc 报告此问题。\n"
     "You can report this issue to the admin @ScarletKc."
 )
+
+
+def _provider_circuit_is_open(service_name: str, now: float | None = None) -> bool:
+    current_time = time.monotonic() if now is None else now
+    open_until = _provider_circuit_open_until.get(service_name)
+    if not open_until:
+        return False
+    if current_time < open_until:
+        return True
+
+    _provider_circuit_open_until.pop(service_name, None)
+    _provider_failure_streaks.pop(service_name, None)
+    return False
+
+
+def _record_provider_success(service_name: str) -> None:
+    _provider_failure_streaks.pop(service_name, None)
+    _provider_circuit_open_until.pop(service_name, None)
+
+
+def _record_provider_failure(service_name: str, now: float | None = None) -> None:
+    current_time = time.monotonic() if now is None else now
+    cutoff = current_time - AI_PROVIDER_CIRCUIT_WINDOW_SECONDS
+    recent_failures = [
+        failure_time
+        for failure_time in _provider_failure_streaks.get(service_name, [])
+        if failure_time >= cutoff
+    ]
+    recent_failures.append(current_time)
+    _provider_failure_streaks[service_name] = recent_failures
+
+    if len(recent_failures) >= AI_PROVIDER_CIRCUIT_FAILURE_THRESHOLD:
+        open_until = current_time + AI_PROVIDER_CIRCUIT_COOLDOWN_SECONDS
+        _provider_circuit_open_until[service_name] = open_until
+        _provider_failure_streaks.pop(service_name, None)
+        logging.warning(
+            "%s 熔断 %s 秒：%s 秒内连续失败 %s 次",
+            service_name,
+            AI_PROVIDER_CIRCUIT_COOLDOWN_SECONDS,
+            AI_PROVIDER_CIRCUIT_WINDOW_SECONDS,
+            AI_PROVIDER_CIRCUIT_FAILURE_THRESHOLD,
+        )
 
 
 def _call_service_with_context(
@@ -151,6 +200,10 @@ async def _try_ai_services(
     loop = asyncio.get_running_loop()
 
     for service_name in AI_SERVICE_ORDER:
+        if _provider_circuit_is_open(service_name):
+            logging.warning("%s 当前处于熔断冷却中，跳过调用", service_name)
+            continue
+
         service_messages = _messages_for_service(
             service_name,
             messages,
@@ -167,6 +220,7 @@ async def _try_ai_services(
                     visible_content_handler,
                 ),
             )
+            _record_provider_success(service_name)
             return response, None
         except SafetyBlockError:
             if _visible_content_was_sent(visible_content_handler):
@@ -200,6 +254,7 @@ async def _try_ai_services(
                 )
                 return ("", _visible_content_events(visible_content_handler)), None
             logging.warning("%s 调用失败: %s", service_name, exc)
+            _record_provider_failure(service_name)
             last_error = exc
             continue
 
