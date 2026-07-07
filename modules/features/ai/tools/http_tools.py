@@ -1,6 +1,7 @@
 import logging
 import threading
-from typing import Dict
+from copy import deepcopy
+from typing import Any, Dict
 from urllib.parse import quote
 
 import requests
@@ -19,7 +20,44 @@ def _get_session() -> requests.Session:
     return session
 
 
-def google_search_tool(query: str, detailed: bool = False, **kwargs) -> dict:
+def _clean_search_result(result: dict[str, Any], fallback_rank: int) -> dict[str, Any]:
+    cleaned: dict[str, Any] = {"rank": result.get("position") or fallback_rank}
+
+    field_mapping = {
+        "title": "title",
+        "url": "link",
+        "snippet": "snippet",
+        "source": "source",
+        "date": "date",
+    }
+    for output_key, source_key in field_mapping.items():
+        value = result.get(source_key)
+        if isinstance(value, str):
+            value = value.strip()
+        if value:
+            cleaned[output_key] = value
+
+    return cleaned
+
+
+def _full_search_response(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {"raw_response": data}
+
+    full_response = deepcopy(data)
+    search_parameters = full_response.get("search_parameters")
+    if isinstance(search_parameters, dict):
+        search_parameters.pop("api_key", None)
+    full_response.pop("api_key", None)
+    return full_response
+
+
+def google_search_tool(
+    query: str,
+    detailed: bool = False,
+    show_full_json: bool = False,
+    **kwargs,
+) -> dict:
     """Perform a Google search via SerpApi."""
     if not SERPAPI_API_KEY:
         return {"error": "SerpApi key is not configured."}
@@ -40,10 +78,21 @@ def google_search_tool(query: str, detailed: bool = False, **kwargs) -> dict:
         logging.exception("SerpApi request failed: %s", exc)
         return {"error": f"SerpApi request failed: {exc}"}
 
+    if show_full_json:
+        return _full_search_response(data)
+
+    organic_results = data.get("organic_results", []) or []
+    cleaned_results = [
+        cleaned
+        for index, result in enumerate(organic_results, start=1)
+        if isinstance(result, dict)
+        for cleaned in [_clean_search_result(result, index)]
+        if any(cleaned.get(key) for key in ("title", "url", "snippet"))
+    ]
+
     return {
-        "search_metadata": data.get("search_metadata", {}),
-        "search_parameters": data.get("search_parameters", {}),
-        "organic_results": data.get("organic_results", []) or [],
+        "query": query,
+        "results": cleaned_results,
     }
 
 

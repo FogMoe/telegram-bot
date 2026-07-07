@@ -26,6 +26,13 @@ class GoogleSearchArgs(ToolArguments):
         default=False,
         description="When true, use the standard Google engine instead of the lightweight one",
     )
+    show_full_json: bool | None = Field(
+        default=False,
+        description=(
+            "When true, return the complete untrimmed JSON response "
+            "instead of the trimmed model-focused results"
+        ),
+    )
 
 
 class FetchGroupContextArgs(ToolArguments):
