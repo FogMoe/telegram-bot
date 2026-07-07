@@ -7,7 +7,7 @@ from core import config
 
 from .chat_capabilities import chat_model_for_service, chat_service_supports_vision
 from .message_content import messages_have_images, strip_image_content
-from .tools import clear_tool_request_context, set_tool_request_context
+from .tools import clear_tool_request_context, cleanup_linux_sandbox, set_tool_request_context
 from .errors import SafetyBlockError
 from .providers import azure, gemini, openai, siliconflow, zhipu
 from .runtime import EXECUTOR
@@ -96,7 +96,9 @@ def _call_service_with_context(
     tool_context: Optional[Dict[str, object]],
     visible_content_handler: Optional[VisibleContentHandler],
 ) -> AIResponse:
-    set_tool_request_context(dict(tool_context or {}))
+    request_context = dict(tool_context or {})
+    request_context.setdefault("user_id", user_id)
+    set_tool_request_context(request_context)
     try:
         return AI_SERVICE_MAP[service_name](
             messages,
@@ -105,7 +107,10 @@ def _call_service_with_context(
             visible_content_handler=visible_content_handler,
         )
     finally:
-        clear_tool_request_context()
+        try:
+            cleanup_linux_sandbox()
+        finally:
+            clear_tool_request_context()
 
 
 def _visible_content_was_sent(

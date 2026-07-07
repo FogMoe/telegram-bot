@@ -11,6 +11,7 @@ from .memory_tools import (
     user_diary_tool,
 )
 from .schedule_tools import schedule_ai_message_tool
+from .sandbox_tools import linux_sandbox_tool
 from .models import AI_TOOL_ARG_MODELS
 from .schemas import OPENAI_TOOLS
 from .sticker_tools import list_available_stickers_tool
@@ -24,6 +25,7 @@ AI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
     "kindness_gift": kindness_gift_tool,
     "fetch_url": fetch_url_tool,
     "execute_python_code": execute_python_code_tool,
+    "linux_sandbox": linux_sandbox_tool,
     "generate_image": generate_image_tool,
     "generate_voice": generate_voice_tool,
     "update_impression": update_impression_tool,

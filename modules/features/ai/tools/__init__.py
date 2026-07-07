@@ -9,6 +9,7 @@ from .memory_tools import (
     user_diary_tool,
 )
 from .schedule_tools import schedule_ai_message_tool
+from .sandbox_tools import cleanup_linux_sandbox, linux_sandbox_tool
 from .sticker_tools import list_available_stickers_tool
 from .user_tools import kindness_gift_tool, update_impression_tool
 from .voice_tools import generate_voice_tool
@@ -24,6 +25,8 @@ __all__ = [
     "generate_image_tool",
     "generate_voice_tool",
     "execute_python_code_tool",
+    "linux_sandbox_tool",
+    "cleanup_linux_sandbox",
     "kindness_gift_tool",
     "update_impression_tool",
     "fetch_permanent_summaries_tool",

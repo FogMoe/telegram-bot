@@ -9,3 +9,4 @@ binance-futures-connector
 aiohttp
 telegramify-markdown
 python-dotenv
+e2b

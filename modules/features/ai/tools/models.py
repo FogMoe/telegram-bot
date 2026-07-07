@@ -56,6 +56,25 @@ class ExecutePythonCodeArgs(ToolArguments):
     )
 
 
+class LinuxSandboxArgs(ToolArguments):
+    command: str = Field(
+        min_length=1,
+        max_length=2000,
+        description="Shell command to run in the temporary Linux sandbox",
+    )
+    cwd: str | None = Field(
+        default="/home/user",
+        max_length=500,
+        description="Working directory inside the sandbox",
+    )
+    timeout_seconds: int | None = Field(
+        default=15,
+        ge=1,
+        le=60,
+        description="Command timeout in seconds",
+    )
+
+
 class GenerateImageArgs(ToolArguments):
     prompt: str = Field(
         min_length=1,
@@ -236,6 +255,7 @@ AI_TOOL_ARG_MODELS: dict[str, type[ToolArguments]] = {
     "fetch_group_context": FetchGroupContextArgs,
     "fetch_url": FetchUrlArgs,
     "execute_python_code": ExecutePythonCodeArgs,
+    "linux_sandbox": LinuxSandboxArgs,
     "generate_image": GenerateImageArgs,
     "generate_voice": GenerateVoiceArgs,
     "kindness_gift": KindnessGiftArgs,

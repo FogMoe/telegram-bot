@@ -43,6 +43,16 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
         "Run Python code remotely and return its output",
     ),
     _tool_definition(
+        "linux_sandbox",
+        (
+            "Execute a non-interactive shell command in an isolated temporary "
+            "Linux sandbox. Supports command, cwd, and timeout_seconds. The "
+            "sandbox preserves filesystem state across linux_sandbox calls in "
+            "the same user request, then closes automatically. Maximum lifetime: "
+            "5 minutes."
+        ),
+    ),
+    _tool_definition(
         "generate_image",
         "Generate exactly one image from a text prompt.",
     ),
