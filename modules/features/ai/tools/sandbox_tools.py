@@ -15,11 +15,13 @@ MAX_COMMAND_CHARS = 2000
 MAX_OUTPUT_CHARS = 12_000
 MAX_CALLS_PER_REQUEST = 10
 MAX_SANDBOX_LIFETIME_SECONDS = 300
+USER_SANDBOX_CREATE_COOLDOWN_SECONDS = 300
 
 _SANDBOX_CONTEXT_KEY = "_linux_sandbox"
 _SANDBOX_CALL_COUNT_KEY = "_linux_sandbox_call_count"
 _SANDBOX_USER_ID_KEY = "_linux_sandbox_user_id"
 _ACTIVE_SANDBOX_USER_IDS: dict[str, float] = {}
+_USER_SANDBOX_CREATE_COOLDOWNS: dict[str, float] = {}
 _ACTIVE_SANDBOX_LOCK = threading.Lock()
 
 _BACKGROUND_PROCESS_PATTERN = re.compile(
@@ -125,6 +127,14 @@ def _purge_expired_user_locks(now: float) -> None:
     for user_id in expired_user_ids:
         _ACTIVE_SANDBOX_USER_IDS.pop(user_id, None)
 
+    expired_cooldown_user_ids = [
+        user_id
+        for user_id, cooldown_until in _USER_SANDBOX_CREATE_COOLDOWNS.items()
+        if cooldown_until <= now
+    ]
+    for user_id in expired_cooldown_user_ids:
+        _USER_SANDBOX_CREATE_COOLDOWNS.pop(user_id, None)
+
 
 def _reserve_user_sandbox(context: dict[str, object]) -> None:
     if context.get(_SANDBOX_USER_ID_KEY):
@@ -149,7 +159,17 @@ def _reserve_user_sandbox(context: dict[str, object]) -> None:
                     "user_sandbox_busy",
                 )
             )
+        cooldown_until = _USER_SANDBOX_CREATE_COOLDOWNS.get(user_id)
+        if cooldown_until is not None:
+            retry_after_seconds = max(1, int(cooldown_until - now))
+            result = _blocked_result(
+                f"Linux sandbox creation is rate limited for this user. Try again in {retry_after_seconds} seconds.",
+                "user_rate_limit",
+            )
+            result["retry_after_seconds"] = retry_after_seconds
+            raise _SandboxBlockedError(result)
         _ACTIVE_SANDBOX_USER_IDS[user_id] = now + MAX_SANDBOX_LIFETIME_SECONDS
+        _USER_SANDBOX_CREATE_COOLDOWNS[user_id] = now + USER_SANDBOX_CREATE_COOLDOWN_SECONDS
     context[_SANDBOX_USER_ID_KEY] = user_id
 
 

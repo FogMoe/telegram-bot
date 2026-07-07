@@ -1,6 +1,8 @@
 import sys
 import types
 
+import pytest
+
 from features.ai.tools import sandbox_tools
 from features.ai.tools.context import clear_tool_request_context, set_tool_request_context
 
@@ -53,6 +55,15 @@ def _install_fake_e2b(monkeypatch):
     _FakeSandbox.fail_kill = False
     fake_module = types.SimpleNamespace(Sandbox=_FakeSandbox)
     monkeypatch.setitem(sys.modules, "e2b", fake_module)
+
+
+@pytest.fixture(autouse=True)
+def _clear_sandbox_state():
+    sandbox_tools._ACTIVE_SANDBOX_USER_IDS.clear()
+    sandbox_tools._USER_SANDBOX_CREATE_COOLDOWNS.clear()
+    yield
+    sandbox_tools._ACTIVE_SANDBOX_USER_IDS.clear()
+    sandbox_tools._USER_SANDBOX_CREATE_COOLDOWNS.clear()
 
 
 def test_linux_sandbox_tool_reports_unavailable_without_api_key(monkeypatch):
@@ -229,6 +240,58 @@ def test_linux_sandbox_tool_allows_different_users(monkeypatch):
         clear_tool_request_context()
 
 
+def test_linux_sandbox_tool_rate_limits_user_creations(monkeypatch):
+    _install_fake_e2b(monkeypatch)
+    monkeypatch.setattr(sandbox_tools.config, "E2B_API_KEY", "e2b_test")
+    monkeypatch.setattr(sandbox_tools.time, "monotonic", lambda: 10_000.0)
+    first_context = {"user_id": 123}
+    second_context = {"user_id": 123}
+    try:
+        set_tool_request_context(first_context)
+        first = sandbox_tools.linux_sandbox_tool("echo first")
+        assert first["status"] == "ok"
+        sandbox_tools.cleanup_linux_sandbox()
+
+        set_tool_request_context(second_context)
+        blocked = sandbox_tools.linux_sandbox_tool("echo second")
+
+        assert blocked["status"] == "blocked"
+        assert blocked["blocked_reason"] == "user_rate_limit"
+        assert blocked["retry_after_seconds"] == sandbox_tools.USER_SANDBOX_CREATE_COOLDOWN_SECONDS
+        assert len(_FakeSandbox.created) == 1
+    finally:
+        sandbox_tools._ACTIVE_SANDBOX_USER_IDS.clear()
+        sandbox_tools._USER_SANDBOX_CREATE_COOLDOWNS.clear()
+        clear_tool_request_context()
+
+
+def test_linux_sandbox_tool_allows_user_creation_after_rate_limit_expires(monkeypatch):
+    _install_fake_e2b(monkeypatch)
+    monkeypatch.setattr(sandbox_tools.config, "E2B_API_KEY", "e2b_test")
+    now = 10_000.0
+    monkeypatch.setattr(sandbox_tools.time, "monotonic", lambda: now)
+    first_context = {"user_id": 123}
+    second_context = {"user_id": 123}
+    try:
+        set_tool_request_context(first_context)
+        first = sandbox_tools.linux_sandbox_tool("echo first")
+        assert first["status"] == "ok"
+        sandbox_tools.cleanup_linux_sandbox()
+
+        now += sandbox_tools.USER_SANDBOX_CREATE_COOLDOWN_SECONDS + 1
+
+        set_tool_request_context(second_context)
+        second = sandbox_tools.linux_sandbox_tool("echo second")
+
+        assert second["status"] == "ok"
+        assert len(_FakeSandbox.created) == 2
+    finally:
+        sandbox_tools.cleanup_linux_sandbox()
+        sandbox_tools._ACTIVE_SANDBOX_USER_IDS.clear()
+        sandbox_tools._USER_SANDBOX_CREATE_COOLDOWNS.clear()
+        clear_tool_request_context()
+
+
 def test_cleanup_linux_sandbox_keeps_user_lock_when_kill_fails(monkeypatch):
     _install_fake_e2b(monkeypatch)
     _FakeSandbox.fail_kill = True
@@ -254,4 +317,5 @@ def test_cleanup_linux_sandbox_keeps_user_lock_when_kill_fails(monkeypatch):
         assert len(_FakeSandbox.created) == 1
     finally:
         sandbox_tools._ACTIVE_SANDBOX_USER_IDS.clear()
+        sandbox_tools._USER_SANDBOX_CREATE_COOLDOWNS.clear()
         clear_tool_request_context()
