@@ -4,6 +4,7 @@ from typing import Dict, Optional
 
 from core import config
 
+from .chat_capabilities import chat_model_for_service, chat_service_supports_vision
 from .message_content import messages_have_images, strip_image_content
 from .tools import clear_tool_request_context, set_tool_request_context
 from .errors import SafetyBlockError
@@ -118,22 +119,49 @@ def _visible_content_events(
     ]
 
 
+def _messages_for_service(
+    service_name: str,
+    messages,
+    text_fallback_messages=None,
+):
+    if not messages_have_images(messages):
+        return messages
+    if chat_service_supports_vision(service_name):
+        return messages
+
+    model = chat_model_for_service(service_name)
+    logging.info(
+        "AI chat provider %s model=%s is configured as text-only; using vision text fallback",
+        service_name,
+        model,
+    )
+    if text_fallback_messages is not None:
+        return list(text_fallback_messages)
+    return strip_image_content(messages)
+
+
 async def _try_ai_services(
     messages,
     user_id: int,
     tool_context: Optional[Dict[str, object]] = None,
     visible_content_handler: Optional[VisibleContentHandler] = None,
+    text_fallback_messages=None,
 ) -> tuple[AIResponse | None, Exception | None]:
     last_error = None
     loop = asyncio.get_running_loop()
 
     for service_name in AI_SERVICE_ORDER:
+        service_messages = _messages_for_service(
+            service_name,
+            messages,
+            text_fallback_messages,
+        )
         try:
             response = await loop.run_in_executor(
                 EXECUTOR,
-                lambda s=service_name: _call_service_with_context(
+                lambda s=service_name, m=service_messages: _call_service_with_context(
                     s,
-                    messages.copy(),
+                    m.copy(),
                     user_id,
                     tool_context,
                     visible_content_handler,
@@ -193,6 +221,7 @@ async def get_ai_response(
         user_id,
         tool_context,
         visible_content_handler,
+        text_fallback_messages,
     )
     if response is not None:
         return response

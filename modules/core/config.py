@@ -84,6 +84,7 @@ class AppSettings(BaseSettings):
     AI_CLASSIFIER_PROVIDER: str | None = None
     AI_CLASSIFIER_FALLBACK_PROVIDER: str | None = None
     AI_CHAT_ORDER: str = ""
+    AI_CHAT_TEXT_ONLY_MODELS: str = "deepseek-ai/DeepSeek-V4-Flash"
 
     # Token estimates apply DEFAULT_GUARD_RATIO before comparing these limits.
     CHAT_TOKEN_WARN_LIMIT: int = 114000
@@ -286,3 +287,4 @@ def _parse_csv_value(raw_value: str | None) -> list[str]:
 
 # AI 服务的排序，按照优先级从高到低排序
 AI_SERVICE_ORDER = _parse_csv_value(SETTINGS.AI_CHAT_ORDER)
+AI_CHAT_TEXT_ONLY_MODELS = _parse_csv_value(SETTINGS.AI_CHAT_TEXT_ONLY_MODELS)
