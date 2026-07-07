@@ -175,11 +175,17 @@ venv\Scripts\activate
    docker compose up -d bot
    ```
 4. 查看日志：`docker compose logs -f bot`。如需把日志落盘到宿主机，取消 `docker-compose.yml` 中 `logs` 挂载行的注释。
-5. Git pull 更新后重启容器：
+5. 更新代码并重建/重启容器：
    ```bash
-   git pull
-   docker compose up -d --build bot
+   git pull --ff-only && docker compose up -d --build bot
    ```
+
+   如需同时刷新基础镜像：
+   ```bash
+   git pull --ff-only && docker compose build --pull bot && docker compose up -d bot
+   ```
+
+   如果服务器上的 Docker 需要 root 权限，把 `docker` 改成 `sudo docker` 即可。
 
 > 默认镜像基于 `python:3.11-slim`，入口命令为 `python -u modules/main.py`，仅依赖外部 MySQL。
 
