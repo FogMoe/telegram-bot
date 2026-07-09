@@ -1,4 +1,4 @@
-# 雾萌 - 多功能 Telegram 机器人
+<h1 align="center">雾萌 · 多功能 Telegram 机器人</h1>
 
 <div align="center">
 
@@ -6,47 +6,70 @@
 ![Python](https://img.shields.io/badge/python-3.10+-green.svg)
 ![Telegram Bot](https://img.shields.io/badge/Telegram-Bot-blue.svg)
 
-一个功能丰富、可扩展的 Telegram 机器人，集成 AI 聊天、经济系统、娱乐游戏和群组管理功能。
+集 AI 助手、社区经济、娱乐互动和群组管理于一体的 Telegram 机器人。
+
+[体验机器人](https://t.me/FogMoeBot) · [查看命令说明](resources/telegram_help.md)
 
 </div>
 
 ---
 
-## ✨ 功能特性
+## ✨ 功能亮点
 
-### 🤖 AI 智能聊天
-- **多模型支持**：通过 LiteLLM 集成 OpenAI、Google Gemini、Azure OpenAI、智谱 AI、SiliconFlow
-- **个性化对话**：可爱、中二、傲娇的"雾萌娘"人设
-- **上下文记忆**：支持长期对话记忆和个性化印象
-- **好感度系统**：根据互动调整回复风格
+### 🤖 AI 对话与智能工具
 
-### 💰 经济系统
-- **金币系统**：签到、任务、邀请获取金币
-- **质押机制**：质押金币获得持续收益
-- **卡密充值**：管理员可生成充值卡密
-- **富豪榜**：展示金币排行榜
+- **多模型路由**：通过 LiteLLM 接入 OpenAI、Google Gemini、Azure OpenAI、智谱 AI（Z.ai）和 SiliconFlow，可按优先级自动切换备用服务。
+- **私聊与群聊**：支持文字、图片和贴纸消息；群聊中可结合上下文判断是否参与对话。
+- **个性化互动**：用户可以设置个人信息，机器人会维护好感度、长期印象、对话摘要和个人日记。
+- **多模态能力**：支持图片理解，并可按配置生成图片、语音和贴纸回复。
+- **联网与执行工具**：可按需调用搜索、网页读取、Python 执行和隔离 Linux 沙箱等工具。
+- **定时消息**：支持创建、查看和取消一次性或周期性的 AI 私聊提醒。
 
-### 🎮 娱乐游戏
-- **御神签**：每日抽签预测运势
-- **猜拳游戏**：经典石头剪刀布
-- **赌博系统**：支持多人参与的赌博游戏
-- **骰子游戏**：骰宝游戏
-- **比特币预测**：模拟加密货币合约预测
-- **RPG 文字游戏**：角色扮演冒险游戏
+AI 搜索、代码执行、图片生成和语音生成等扩展能力需要配置对应的第三方服务；未配置时不影响其他基础功能。
+
+### 💰 社区经济
+
+- 每日签到、抽奖、任务和邀请奖励
+- 用户资料、金币赠送、互动奖励和富豪榜
+- 商城、质押收益、卡密充值和人工充值申请
+- 面向群组互动的金币体系，可与 AI 好感度和部分娱乐功能联动
+
+### 🎮 娱乐互动
+
+- 御神签和每日运势
+- 石头剪刀布、多人赌博和骰宝
+- 比特币模拟事件合约
+- RPG 文字冒险
+- 随机图片与音乐搜索
 
 ### 👥 群组管理
-- **新成员验证**：防止机器人和垃圾账号
-- **垃圾消息控制**：智能检测和过滤垃圾内容
-- **举报系统**：用户可举报不当消息给管理员
-- **关键词自动回复**：自定义关键词触发回复
-- **代币图表**：查看加密货币价格图表
 
-### 🛠️ 实用工具
-- **中英互译**：快速翻译功能
-- **音乐搜索**：搜索并获取音乐资源
-- **随机图片**：获取二次元图片
-- **邀请系统**：邀请好友获得奖励
-- **任务系统**：完成任务获得金币
+- 新成员验证，降低机器人和垃圾账号干扰
+- 垃圾消息检测与管制
+- 关键词自动回复
+- 群成员举报与管理员处理
+- 群聊上下文记忆和智能回复触发
+
+### 🧰 实用功能
+
+- 中英互译
+- 加密货币价格图表
+- Web 登录密码设置
+- 管理员运行状态、日志和公告工具
+
+---
+
+## 📖 常用命令
+
+机器人内发送 `/help` 可查看当前部署启用的完整命令。常用入口包括：
+
+- AI 对话：`/fogmoebot`、`/setmyinfo`、`/clear`
+- 个人与经济：`/me`、`/checkin`、`/lottery`、`/task`、`/shop`、`/give`、`/rich`、`/stake`、`/ref`、`/charge`
+- 娱乐：`/omikuji`、`/rps_game`、`/gamble`、`/sicbo`、`/btc_predict`、`/rpg`
+- 群组管理：`/verify`、`/spam`、`/keyword`、`/report`
+- 实用工具：`/tl`、`/music`、`/pic`、`/chart`
+
+部分命令仅适用于群聊、管理员或已配置相应第三方服务的部署。
 
 ---
 
@@ -54,211 +77,180 @@
 
 ### 环境要求
 
-- **Python**: 3.10 或更高版本
-- **MySQL**: 8.0 或更高版本
-- **操作系统**: Linux / macOS / Windows
+- Python 3.10 或更高版本
+- MySQL 8.0 或更高版本
+- Linux、macOS 或 Windows
 
-### 安装依赖
+### 1. 获取代码并安装依赖
+
+<details>
+<summary>Linux / macOS</summary>
+
+<br>
 
 ```bash
-# 克隆项目
-git clone https://github.com/fogmoe/telegram-bot.git
+git clone https://github.com/FogMoe/telegram-bot.git
 cd telegram-bot
-
-# 安装 Python 依赖
-pip3 install -r requirements.txt
-```
-
-### 配置环境变量
-
-```bash
-# 复制环境变量模板
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
 cp .env.example .env
-
-# 编辑 .env 文件，填入你的配置
-nano .env
 ```
 
-AI 调用统一通过 LiteLLM SDK，provider 和模型需要在 `.env` 中显式配置。示例：
+</details>
 
-```env
-AI_CHAT_ORDER=openai,siliconflow,azure,zhipu,gemini
-AI_SUMMARY_PROVIDER=openai
-AI_TRANSLATE_PROVIDER=openai
-AI_VISION_PROVIDER=openai
-AI_CLASSIFIER_PROVIDER=openai
+<details>
+<summary>Windows PowerShell</summary>
+
+<br>
+
+```powershell
+git clone https://github.com/FogMoe/telegram-bot.git
+Set-Location telegram-bot
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-### 数据库设置
+</details>
+
+### 2. 创建数据库
+
+登录 MySQL：
 
 ```bash
-# 登录 MySQL
 mysql -u root -p
-
-# 创建数据库
-CREATE DATABASE fogmoe_telegram_bot_db CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
-
-# 运行迁移（确保 .env 中已配置数据库连接信息）
-alembic upgrade head
 ```
 
-### 启动机器人
+创建使用 `utf8mb4` 的数据库：
+
+```sql
+CREATE DATABASE fogmoe_telegram_bot_db
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_general_ci;
+```
+
+### 3. 配置环境变量
+
+编辑刚刚创建的 `.env`。运行机器人至少需要：
+
+- `TELEGRAM_BOT_TOKEN`：从 [@BotFather](https://t.me/BotFather) 获取
+- `ADMIN_USER_ID`：部署者自己的 Telegram 数字用户 ID
+- `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_USER`、`MYSQL_PASSWORD`、`MYSQL_DATABASE`
+- 至少一套可用的 AI provider API Key 和对应模型
+
+主聊天、摘要、翻译、图片理解和群聊判断可以分别选择 provider。未使用的 provider 应从聊天顺序和任务配置中移除。所有配置项及注释均以 [.env.example](.env.example) 为准。
+
+请勿把包含真实密钥的 `.env` 提交到版本库。
+
+### 4. 初始化数据库并启动
+
+<details>
+<summary>Linux / macOS</summary>
+
+<br>
 
 ```bash
-# 方式一：直接运行
-cd modules
-python3 main.py
+.venv/bin/python -m alembic upgrade head
+.venv/bin/python modules/main.py
+```
 
-# 方式二：使用脚本（Linux/macOS，后台运行）
+</details>
+
+<details>
+<summary>Windows PowerShell</summary>
+
+<br>
+
+```powershell
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe modules/main.py
+```
+
+</details>
+
+启动后，在 Telegram 中向机器人发送 `/start` 或 `/help` 即可开始使用。
+
+### Linux 后台管理脚本
+
+也可以使用仓库中的脚本管理后台进程：
+
+```bash
 chmod +x runBot.sh
-./runBot.sh
-```
-
-### 停止机器人
-
-```bash
-# 查找进程
-ps -ef | grep python3
-
-# 终止进程
-kill <PID>
-
-# 或使用脚本（Linux/macOS）
+./runBot.sh init
+# 配置 .env，并按照前文完成数据库迁移
+./runBot.sh start
+./runBot.sh status
+./runBot.sh restart
 ./runBot.sh stop
 ```
 
+脚本会自行管理 `venv/` 虚拟环境，因此它与前面的 `.venv` 手动安装方式二选一即可。
+
 ---
 
-## 📦 部署指南
+## 🐳 Docker 部署
 
-### 使用虚拟环境（推荐）
+当前 Docker 镜像只运行机器人，**不包含 MySQL，也不会自动执行数据库迁移**。请先准备外部 MySQL、填写 `.env`，并在宿主机完成 Alembic 迁移。
 
 ```bash
-# 创建虚拟环境
-python3 -m venv venv
-
-# 激活虚拟环境
-# Linux/macOS:
-source venv/bin/activate
-# Windows:
-venv\Scripts\activate
+docker compose build bot
+docker compose up -d bot
+docker compose logs -f bot
 ```
 
----
+更新代码后重建：
 
-## ⚙️ 配置说明
+```bash
+git pull --ff-only
+docker compose up -d --build bot
+```
 
-### 必需配置
-
-#### 获取必要的 API 密钥
-在 `.env` 文件中配置必需项。
-
----
-
-## 📖 使用说明
-
-可参考 [@FogMoeBot](https://t.me/FogMoeBot) 或配置文件中的说明进行使用。
-
-
-## 🐳 Docker 部署（仅 Python，外部 MySQL）
-
-无需在容器内运行 MySQL，只容器化机器人。
-
-1. 复制 `.env.example` 为 `.env`，填好 Telegram/AI/MySQL 配置；`MYSQL_HOST` 设为外部数据库地址（宿主机 MySQL 可用 `host.docker.internal` 或宿主机 IP）。  
-2. 构建镜像：
-   ```bash
-   docker compose build bot
-   ```
-3. 后台运行：
-   ```bash
-   docker compose up -d bot
-   ```
-4. 查看日志：`docker compose logs -f bot`。如需把日志落盘到宿主机，取消 `docker-compose.yml` 中 `logs` 挂载行的注释。
-5. 更新代码并重建/重启容器：
-   ```bash
-   git pull --ff-only && docker compose up -d --build bot
-   ```
-
-   如需同时刷新基础镜像：
-   ```bash
-   git pull --ff-only && docker compose build --pull bot && docker compose up -d bot
-   ```
-
-   如果服务器上的 Docker 需要 root 权限，把 `docker` 改成 `sudo docker` 即可。
-
-> 默认镜像基于 `python:3.11-slim`，入口命令为 `python -u modules/main.py`，仅依赖外部 MySQL。
-
-
-### 使用的主要技术
-
-- [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) - Telegram Bot API 封装
-- [LiteLLM](https://github.com/BerriAI/litellm) - 统一 AI provider 调用层
-- [OpenAI](https://openai.com/) - AI 服务
-- [Google Gemini](https://ai.google.dev/) - AI 聊天模型
-- [Azure OpenAI](https://azure.microsoft.com/en-us/products/ai-services/openai-service) - AI 服务
-- [智谱 AI](https://open.bigmodel.cn/) - 中文 AI 模型
-- [SiliconFlow](https://siliconflow.cn/) - AI 模型服务
-- [MySQL](https://www.mysql.com/) - 数据库
+如果 MySQL 位于 Docker 宿主机，`MYSQL_HOST` 必须填写容器能够访问的地址。Docker Desktop 通常可使用 `host.docker.internal`；Linux 服务器请使用实际可访问的主机名或 IP。
 
 ---
 
-## 🤝 贡献指南
+## 🧱 技术栈
 
-我们欢迎所有形式的贡献！
-如果发现 Bug 或有功能建议，请报告问题。
+- [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot)：Telegram Bot API
+- [LiteLLM](https://github.com/BerriAI/litellm)：统一 AI provider 调用与 fallback
+- [SQLAlchemy](https://www.sqlalchemy.org/) + [asyncmy](https://github.com/long2ice/asyncmy)：异步数据库访问
+- [Alembic](https://alembic.sqlalchemy.org/)：数据库迁移
+- [MySQL](https://www.mysql.com/)：业务数据存储
+- Docker Compose：容器化运行
 
 ---
 
-## 📄 许可证
+## 🤝 开发与贡献
 
-### AGPL-3.0 License
+欢迎提交 Bug 报告、功能建议和代码贡献。开发依赖位于 `requirements-dev.txt`，测试使用 `pytest`。
 
-本项目采用 **GNU Affero General Public License v3.0** 开源协议。
-
-**这意味着：**
-
-⚠️ **您必须：**
-- **开源您的修改**：如果您修改了本软件并通过网络提供服务，您必须公开源代码
-- **保持相同许可证**：衍生作品必须使用相同的 AGPL-3.0 许可证
-- **声明更改**：明确标注您所做的修改
-- **提供源代码访问**：向所有通过网络与软件交互的用户提供源代码
-
-🔴 **重要提示：**
-- 如果您在服务器上运行修改版本的本软件，并通过网络向用户提供服务（例如作为 Telegram Bot），您**必须**向这些用户提供完整的源代码
-- 这是 AGPL 覆盖网络使用场景的主要要求
-
-详细许可证内容请查看 [LICENSE](LICENSE) 文件。
-
-### 第三方许可证
-
-本项目使用的第三方库遵循各自的许可证：
-- 依赖库请查看 `requirements.txt`
+测试范围、编写约定、AI provider 的配置与路由设计和运行方式见文档 [docs](docs)。 
 
 ---
 
 ## 🔒 安全与隐私
 
-### 数据安全
-- 所有敏感配置使用环境变量管理
-
-### 隐私保护
-- 根据启用的功能存储用户标识、聊天记录及相关业务数据
-- 聊天记录用于提供对话和记忆功能
+- 不要提交 `.env`、数据库备份、运行日志或任何真实 API Key。
+- 根据启用的功能，数据库可能保存 Telegram 用户标识、群聊上下文、对话记录和业务数据。
+- 启用外部 AI、搜索、代码执行、图片或语音服务前，请审查对应服务的数据与隐私政策。
+- 生产环境建议使用权限受限的数据库账号，并定期备份数据库。
 
 ---
 
-## 📊 项目统计
+## 📄 许可证
 
-![GitHub stars](https://img.shields.io/github/stars/fogmoe/telegram-bot?style=social)
-![GitHub forks](https://img.shields.io/github/forks/fogmoe/telegram-bot?style=social)
-![GitHub issues](https://img.shields.io/github/issues/fogmoe/telegram-bot)
-![GitHub pull requests](https://img.shields.io/github/issues-pr/fogmoe/telegram-bot)
+本项目采用 [GNU Affero General Public License v3.0](LICENSE)。修改并通过网络提供服务时，请遵守 AGPL-3.0 对源代码提供、许可证保留和变更声明的相关要求。
+
+第三方依赖分别遵循其自身许可证。
 
 ---
 
 <div align="center">
 
-**如果这个项目对您有帮助，请给个 ⭐ Star！**
+![GitHub stars](https://img.shields.io/github/stars/FogMoe/telegram-bot?style=social)
+![GitHub forks](https://img.shields.io/github/forks/FogMoe/telegram-bot?style=social)
+
+如果这个项目对你有帮助，欢迎点亮 ⭐ Star。
 
 Made with ❤️ by FOGMOE
 
