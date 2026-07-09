@@ -11,12 +11,12 @@ def test_generate_image_timeout_schema_is_optional_and_bounded():
     timeout_schema = schema["properties"]["timeout_seconds"]
 
     assert "timeout_seconds" not in schema.get("required", [])
-    assert timeout_schema["default"] == 30
+    assert timeout_schema["default"] == 45
     assert timeout_schema["minimum"] == 15
-    assert timeout_schema["maximum"] == 60
+    assert timeout_schema["maximum"] == 75
 
 
-@pytest.mark.parametrize("timeout_seconds", [14, 61])
+@pytest.mark.parametrize("timeout_seconds", [14, 76])
 def test_generate_image_timeout_validation_rejects_out_of_range_values(timeout_seconds):
     with pytest.raises(ValidationError):
         GenerateImageArgs.model_validate(
@@ -40,12 +40,12 @@ def test_generate_image_tool_passes_model_timeout(monkeypatch):
 def test_generate_image_tool_uses_config_default_timeout(monkeypatch):
     recorded_request = {}
     _prepare_successful_image_tool(monkeypatch, recorded_request)
-    monkeypatch.setattr(image_tools.config, "IMAGE_GEN_TIMEOUT", 30)
+    monkeypatch.setattr(image_tools.config, "IMAGE_GEN_TIMEOUT", 45)
 
     result = image_tools.generate_image_tool(prompt="draw a cat")
 
     assert result["status"] == "generated"
-    assert recorded_request["timeout"] == 30
+    assert recorded_request["timeout"] == 45
 
 
 def test_generate_image_tool_clamps_direct_timeout(monkeypatch):
@@ -58,7 +58,7 @@ def test_generate_image_tool_clamps_direct_timeout(monkeypatch):
     )
 
     assert result["status"] == "generated"
-    assert recorded_request["timeout"] == 60
+    assert recorded_request["timeout"] == 75
 
 
 def _prepare_successful_image_tool(monkeypatch, recorded_request):

@@ -97,7 +97,7 @@ class AppSettings(BaseSettings):
 
     IMAGE_GEN_API_URL: str = ""
     IMAGE_GEN_API_TOKEN: str = ""
-    IMAGE_GEN_TIMEOUT: int = 30
+    IMAGE_GEN_TIMEOUT: int = 45
 
     FISH_AUDIO_API_KEY: str | None = None
     FISH_AUDIO_MODEL: str = "s2.1-pro-free"
