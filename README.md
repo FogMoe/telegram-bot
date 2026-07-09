@@ -1,4 +1,4 @@
-# 雾萌娘 - 多功能 Telegram 机器人
+# 雾萌 - 多功能 Telegram 机器人
 
 <div align="center">
 
@@ -15,7 +15,7 @@
 ## ✨ 功能特性
 
 ### 🤖 AI 智能聊天
-- **多模型支持**：通过 LiteLLM 集成 OpenAI、Google Gemini、Azure OpenAI、智谱 AI
+- **多模型支持**：通过 LiteLLM 集成 OpenAI、Google Gemini、Azure OpenAI、智谱 AI、SiliconFlow
 - **个性化对话**：可爱、中二、傲娇的"雾萌娘"人设
 - **上下文记忆**：支持长期对话记忆和个性化印象
 - **好感度系统**：根据互动调整回复风格
@@ -109,7 +109,7 @@ alembic upgrade head
 cd modules
 python3 main.py
 
-# 方式二：使用脚本（后台运行）
+# 方式二：使用脚本（Linux/macOS，后台运行）
 chmod +x runBot.sh
 ./runBot.sh
 ```
@@ -123,8 +123,8 @@ ps -ef | grep python3
 # 终止进程
 kill <PID>
 
-# 或使用脚本
-# 编辑 runBot.sh 查看命令
+# 或使用脚本（Linux/macOS）
+./runBot.sh stop
 ```
 
 ---
@@ -151,7 +151,7 @@ venv\Scripts\activate
 ### 必需配置
 
 #### 获取必要的 API 密钥
-在 `.env` `config.py` 文件中配置必需项。
+在 `.env` 文件中配置必需项。
 
 ---
 
@@ -197,6 +197,7 @@ venv\Scripts\activate
 - [Google Gemini](https://ai.google.dev/) - AI 聊天模型
 - [Azure OpenAI](https://azure.microsoft.com/en-us/products/ai-services/openai-service) - AI 服务
 - [智谱 AI](https://open.bigmodel.cn/) - 中文 AI 模型
+- [SiliconFlow](https://siliconflow.cn/) - AI 模型服务
 - [MySQL](https://www.mysql.com/) - 数据库
 
 ---
@@ -239,13 +240,10 @@ venv\Scripts\activate
 
 ### 数据安全
 - 所有敏感配置使用环境变量管理
-- 数据库密码不会硬编码在代码中
-- 支持加密存储用户数据
 
 ### 隐私保护
-- 仅存储必要的用户信息（用户ID、用户名）
-- 聊天记录用于提供服务，不会被滥用
-- 遵守 Telegram 服务条款和隐私政策
+- 根据启用的功能存储用户标识、聊天记录及相关业务数据
+- 聊天记录用于提供对话和记忆功能
 
 ---
 
