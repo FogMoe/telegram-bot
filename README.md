@@ -5,6 +5,7 @@
 ![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.10+-green.svg)
 ![Telegram Bot](https://img.shields.io/badge/Telegram-Bot-blue.svg)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/FogMoe/telegram-bot)
 
 集 AI 助手、社区经济、娱乐互动和群组管理于一体的 Telegram 机器人。
 
