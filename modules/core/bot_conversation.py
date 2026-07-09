@@ -360,6 +360,38 @@ def _sync_should_trigger_ai_response(message_text: str) -> bool:
         return False
 
 
+def _message_trigger_text(message) -> str:
+    parts = []
+    text = getattr(message, "text", None)
+    caption = getattr(message, "caption", None)
+    if text:
+        parts.append(str(text))
+    if caption:
+        parts.append(str(caption))
+    return "\n".join(parts)
+
+
+def _direct_trigger_phrases() -> list[str]:
+    trigger_phrases = [
+        str(trigger).strip().lower()
+        for trigger in config.AI_DIRECT_TRIGGER_PHRASES
+        if str(trigger).strip()
+    ]
+    bot_username = (_BOT_USERNAME or "FogMoeBot").strip().lower()
+    if bot_username:
+        trigger_phrases.append(f"@{bot_username}")
+    return trigger_phrases
+
+
+def _message_contains_direct_ai_trigger(message) -> bool:
+    message_text = _message_trigger_text(message)
+    if not message_text:
+        return False
+
+    normalized_text = message_text.lower()
+    return any(trigger in normalized_text for trigger in _direct_trigger_phrases())
+
+
 def _message_batch_key(update: Update) -> tuple[int, int] | None:
     chat = update.effective_chat
     user = update.effective_user
@@ -474,15 +506,7 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
                 should_process_group_batch = True
                 continue
 
-            text = message.text if message.text else ""
-            if (
-                "/fogmoebot" in text
-                or "@FogMoeBot" in text
-                or "雾萌" in text
-                or "fog moe" in text.lower()
-                or "萌娘" in text
-                or "fogmoe" in text.lower()
-            ):
+            if _message_contains_direct_ai_trigger(message):
                 should_process_group_batch = True
 
         if not should_process_group_batch:

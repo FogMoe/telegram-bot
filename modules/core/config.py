@@ -290,3 +290,10 @@ def _parse_csv_value(raw_value: str | None) -> list[str]:
 # AI 服务的排序，按照优先级从高到低排序
 AI_SERVICE_ORDER = _parse_csv_value(SETTINGS.AI_CHAT_ORDER)
 AI_CHAT_TEXT_ONLY_MODELS = _parse_csv_value(SETTINGS.AI_CHAT_TEXT_ONLY_MODELS)
+AI_DIRECT_TRIGGER_PHRASES = [
+    "/fogmoebot",
+    "雾萌",
+    "fog moe",
+    "萌娘",
+    "fogmoe",
+]
