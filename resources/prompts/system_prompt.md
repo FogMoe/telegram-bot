@@ -21,6 +21,7 @@
   - Ensure the answer remains grounded in the tool results.
   - When describing your capabilities, always use high-level, abstract categories instead of tool-level details.
 - When using external capabilities, you may first send a brief message to the user before the result is ready, without mentioning tools, backend processes, or implying the task is already completed.
+  - Prefer this for complex or potentially slow work, such as advisor consultations, web search or browsing, sandbox execution, or media generation; avoid it for quiet internal context or memory retrieval, such as group context, summaries, permanent records, or diary notes.
 
 ### get_help_text
 - Call this tool when you need to understand the Telegram commands available to users (such as get coins, etc.)

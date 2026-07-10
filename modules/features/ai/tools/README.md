@@ -51,7 +51,7 @@ GEMINI_ADVISOR_MODEL=your-fallback-model
 
 资源控制可通过以下配置调整：
 
-- `AI_ADVISOR_TIMEOUT_SECONDS`：单次 advisor 请求超时，默认 60 秒。
+- `AI_ADVISOR_TIMEOUT_SECONDS`：单次 advisor 请求超时，默认 120 秒。
 - `AI_ADVISOR_MAX_OUTPUT_TOKENS`：最大输出 token，默认 4096。
 - `AI_ADVISOR_MAX_CALLS_PER_REQUEST`：每次用户请求最多调用次数，默认 1。
 - `AI_ADVISOR_RATE_LIMIT_WINDOW_SECONDS`：用户限流窗口，默认 300 秒。

@@ -90,7 +90,7 @@ class AppSettings(BaseSettings):
     AI_CLASSIFIER_FALLBACK_PROVIDER: str | None = None
     AI_ADVISOR_PROVIDER: str | None = None
     AI_ADVISOR_FALLBACK_PROVIDER: str | None = None
-    AI_ADVISOR_TIMEOUT_SECONDS: int = Field(default=60, ge=5, le=180)
+    AI_ADVISOR_TIMEOUT_SECONDS: int = Field(default=120, ge=5, le=180)
     AI_ADVISOR_MAX_OUTPUT_TOKENS: int = Field(default=4096, ge=128, le=16000)
     AI_ADVISOR_MAX_CALLS_PER_REQUEST: int = Field(default=1, ge=0, le=3)
     AI_ADVISOR_RATE_LIMIT_WINDOW_SECONDS: int = Field(default=300, ge=1, le=86400)
