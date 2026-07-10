@@ -31,6 +31,16 @@ def test_get_provider_order_for_subtask_deduplicates_case_insensitively(monkeypa
     assert provider_resolver.get_provider_order_for_task("translate") == ["openai"]
 
 
+def test_get_provider_order_for_advisor_uses_dedicated_config(monkeypatch):
+    monkeypatch.setattr(config, "AI_ADVISOR_PROVIDER", "OpenAI")
+    monkeypatch.setattr(config, "AI_ADVISOR_FALLBACK_PROVIDER", "Gemini")
+
+    assert provider_resolver.get_provider_order_for_task("advisor") == [
+        "openai",
+        "gemini",
+    ]
+
+
 def test_get_provider_order_for_unknown_task_fails():
     with pytest.raises(RuntimeError, match="Unsupported AI task"):
         provider_resolver.get_provider_order_for_task("embedding")
@@ -66,6 +76,14 @@ def test_get_models_for_task_includes_gemini_task_fallback(monkeypatch):
     assert provider_resolver.get_models_for_task("gemini", "summary") == [
         "gemini-summary-primary",
         "gemini-summary-fallback",
+    ]
+
+
+def test_get_models_for_advisor_uses_provider_specific_model(monkeypatch):
+    monkeypatch.setattr(config, "OPENAI_ADVISOR_MODEL", "senior-advisor")
+
+    assert provider_resolver.get_models_for_task("openai", "advisor") == [
+        "senior-advisor"
     ]
 
 
@@ -141,3 +159,38 @@ def test_run_ai_task_uses_resolved_models_with_fallback_and_kwarg_override(monke
         "reasoning_effort": "high",
         "temperature": 0,
     }
+
+
+def test_run_ai_task_skips_invalid_provider_and_uses_fallback(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        task_runner,
+        "get_provider_order_for_task",
+        lambda task: ["invalid-provider", "openai"],
+    )
+
+    def fake_get_models(provider, task):
+        if provider == "invalid-provider":
+            raise RuntimeError("Unsupported AI provider: invalid-provider")
+        return ["fallback-model"]
+
+    monkeypatch.setattr(task_runner, "get_models_for_task", fake_get_models)
+
+    def fake_create_chat_completion(provider, model, messages, **kwargs):
+        calls.append((provider, model))
+        return "ok"
+
+    monkeypatch.setattr(
+        task_runner,
+        "create_chat_completion",
+        fake_create_chat_completion,
+    )
+
+    result = task_runner.run_ai_task(
+        "advisor",
+        [{"role": "user", "content": "review"}],
+    )
+
+    assert result == "ok"
+    assert calls == [("openai", "fallback-model")]

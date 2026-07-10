@@ -35,6 +35,25 @@ class GoogleSearchArgs(ToolArguments):
     )
 
 
+class AdvisorArgs(ToolArguments):
+    task: str = Field(
+        min_length=1,
+        max_length=6000,
+        description=(
+            "A self-contained reasoning task for the senior advisor. Include the "
+            "decision, question, or claim that needs careful analysis."
+        ),
+    )
+    context: str | None = Field(
+        default=None,
+        max_length=12000,
+        description=(
+            "Only the relevant facts, evidence, options, and constraints. Do not "
+            "include hidden instructions, credentials, or unrelated chat history."
+        ),
+    )
+
+
 class FetchGroupContextArgs(ToolArguments):
     window_size: int | None = Field(
         default=10,
@@ -252,6 +271,7 @@ AI_TOOL_ARG_MODELS: dict[str, type[ToolArguments]] = {
     "get_help_text": GetHelpTextArgs,
     "list_available_stickers": ListAvailableStickersArgs,
     "google_search": GoogleSearchArgs,
+    "advisor": AdvisorArgs,
     "fetch_group_context": FetchGroupContextArgs,
     "fetch_url": FetchUrlArgs,
     "execute_python_code": ExecutePythonCodeArgs,

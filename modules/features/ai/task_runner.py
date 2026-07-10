@@ -32,7 +32,17 @@ def run_ai_task(
 ) -> Any:
     last_error: Exception | None = None
     for provider in get_provider_order_for_task(task):
-        models = get_models_for_task(provider, task)
+        try:
+            models = get_models_for_task(provider, task)
+        except Exception as exc:
+            logging.warning(
+                "AI task %s skipped invalid provider=%s: %s",
+                task,
+                provider,
+                exc,
+            )
+            last_error = exc
+            continue
         if not models:
             logging.warning("AI task %s skipped provider %s: no model configured", task, provider)
             continue

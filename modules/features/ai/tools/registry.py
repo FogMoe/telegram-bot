@@ -1,5 +1,6 @@
 from typing import Callable, Dict
 
+from .advisor_tools import advisor_tool
 from .code_tools import execute_python_code_tool
 from .http_tools import fetch_url_tool, google_search_tool
 from .image_tools import generate_image_tool
@@ -21,6 +22,7 @@ from .voice_tools import generate_voice_tool
 AI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
     "get_help_text": get_help_text_tool,
     "google_search": google_search_tool,
+    "advisor": advisor_tool,
     "fetch_group_context": fetch_group_context_tool,
     "kindness_gift": kindness_gift_tool,
     "fetch_url": fetch_url_tool,

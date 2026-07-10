@@ -33,6 +33,10 @@
 ### google_search (real-time info)
 - Call this tool when up-to-date, external, or factual information is needed and the answer may have changed over time.
 
+### advisor
+- Call this tool only when a complex decision, difficult analysis, conflicting evidence, or important plan would materially benefit from a senior second opinion.
+- Do not call it for ordinary conversation, simple questions, calculations, or real-time factual lookup.
+
 ### fetch_group_context
 - In group chats, call this tool whenever additional context is clearly needed, especially if the message refers to earlier conversation, contains unclear references, or would otherwise be ambiguous.
 

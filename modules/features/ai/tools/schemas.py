@@ -31,6 +31,18 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
         "Use Google search engine to obtain the latest information and answers",
     ),
     _tool_definition(
+        "advisor",
+        (
+            "Submit a self-contained reasoning task to a read-only senior advisor. "
+            "Pass the question or decision in task and only its relevant facts, "
+            "evidence, options, and constraints in context. Each call is a single-turn "
+            "consultation: the advisor cannot receive follow-up messages, so include "
+            "everything needed in one request. The advisor cannot use tools, verify "
+            "current external facts, contact users, or take actions. Its response is "
+            "advisory material for you to evaluate and synthesize."
+        ),
+    ),
+    _tool_definition(
         "fetch_group_context",
         "Fetch message history from group chat (group chats only)",
     ),

@@ -4,13 +4,14 @@ from core import config
 from core.litellm_models import normalize_provider
 
 
-TASKS = {"chat", "summary", "translate", "vision", "classifier"}
+TASKS = {"chat", "summary", "translate", "vision", "classifier", "advisor"}
 
 TASK_PROVIDER_CONFIG_PREFIXES = {
     "summary": "AI_SUMMARY",
     "translate": "AI_TRANSLATE",
     "vision": "AI_VISION",
     "classifier": "AI_CLASSIFIER",
+    "advisor": "AI_ADVISOR",
 }
 
 PROVIDER_MODEL_CONFIG_PATTERNS = {
