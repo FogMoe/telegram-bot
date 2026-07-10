@@ -5,6 +5,8 @@ from typing import Any, Dict, Iterable, List, NamedTuple, Optional
 
 from pydantic import ValidationError
 
+from core import config
+
 from .tools import OPENAI_TOOLS, AI_TOOL_ARG_MODELS, AI_TOOL_HANDLERS
 from .prompts import compose_system_prompt
 from .litellm_client import create_chat_completion
@@ -454,6 +456,7 @@ def run_tool_loop(
     tool_choice: str | Dict[str, object] = "auto",
     max_tokens: int = 4096,
     max_iterations: int = 10,
+    completion_timeout: int | None = None,
     skip_tools: Optional[Iterable[str]] = None,
     completion_kwargs: Optional[Dict[str, Any]] = None,
     visible_content_handler: Optional[VisibleContentHandler] = None,
@@ -472,11 +475,20 @@ def run_tool_loop(
 
     tool_logs: List[ToolLog] = []
     skip_set = set(skip_tools or [])
+    request_timeout = (
+        config.AI_CHAT_COMPLETION_TIMEOUT_SECONDS
+        if completion_timeout is None
+        else completion_timeout
+    )
 
     for iteration in range(max_iterations):
         request_tool_choice = tool_choice
         try:
-            request_kwargs = {"max_tokens": max_tokens, **(completion_kwargs or {})}
+            request_kwargs = {
+                "max_tokens": max_tokens,
+                **(completion_kwargs or {}),
+                "timeout": request_timeout,
+            }
             response = create_chat_completion(
                 provider,
                 model,
@@ -652,7 +664,11 @@ def run_tool_loop(
 
     logging.warning("%s 工具调用次数超限（%s轮）", provider_name, max_iterations)
     try:
-        request_kwargs = {"max_tokens": max_tokens, **(completion_kwargs or {})}
+        request_kwargs = {
+            "max_tokens": max_tokens,
+            **(completion_kwargs or {}),
+            "timeout": request_timeout,
+        }
         response = create_chat_completion(
             provider,
             model,

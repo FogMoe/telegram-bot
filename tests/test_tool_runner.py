@@ -1,4 +1,15 @@
+import pytest
+
 from features.ai import tool_runner
+
+
+@pytest.fixture(autouse=True)
+def _fixed_chat_completion_timeout(monkeypatch):
+    monkeypatch.setattr(
+        tool_runner.config,
+        "AI_CHAT_COMPLETION_TIMEOUT_SECONDS",
+        300,
+    )
 
 
 class _Message:
@@ -37,7 +48,10 @@ def test_run_tool_loop_does_not_synthesize_tool_result_reply(monkeypatch):
         _Response(_Message("", None)),
     ]
 
+    calls = []
+
     def fake_create_chat_completion(*args, **kwargs):
+        calls.append(kwargs)
         return responses.pop(0)
 
     monkeypatch.setattr(
@@ -72,6 +86,7 @@ def test_run_tool_loop_does_not_synthesize_tool_result_reply(monkeypatch):
         and log.get("tool_name") == "google_search"
         for log in tool_logs
     )
+    assert [call["timeout"] for call in calls] == [300, 300]
 
 
 def test_run_tool_loop_generates_final_reply_after_tool_limit(monkeypatch):
@@ -133,6 +148,8 @@ def test_run_tool_loop_generates_final_reply_after_tool_limit(monkeypatch):
     assert "tool_choice" in calls[0]
     assert "tools" not in calls[1]
     assert "tool_choice" not in calls[1]
+    assert calls[0]["timeout"] == 300
+    assert calls[1]["timeout"] == 300
     assert "Tool calling has reached the maximum allowed iterations" not in calls[1]["messages"][0]["content"]
     assert "at most 10 tool-calling rounds" in calls[1]["messages"][0]["content"]
     assert any(message["role"] == "tool" for message in calls[1]["messages"])
@@ -140,6 +157,57 @@ def test_run_tool_loop_generates_final_reply_after_tool_limit(monkeypatch):
         log.get("type") == "tool_result"
         and log.get("tool_name") == "google_search"
         for log in tool_logs
+    )
+
+
+def test_run_tool_loop_raises_partial_response_when_followup_times_out(monkeypatch):
+    first_response = _Response(
+        _Message(
+            "",
+            [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "google_search",
+                        "arguments": '{"query": "example"}',
+                    },
+                }
+            ],
+        )
+    )
+    calls = []
+
+    def fake_create_chat_completion(*args, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return first_response
+        raise TimeoutError("chat completion timed out")
+
+    monkeypatch.setattr(
+        tool_runner,
+        "create_chat_completion",
+        fake_create_chat_completion,
+    )
+    monkeypatch.setitem(
+        tool_runner.AI_TOOL_HANDLERS,
+        "google_search",
+        lambda **kwargs: {"organic_results": []},
+    )
+
+    with pytest.raises(tool_runner.PartialAIResponseError) as exc_info:
+        tool_runner.run_tool_loop(
+            "test_provider",
+            "test_model",
+            [{"role": "user", "content": "search example"}],
+            provider_name="Test",
+        )
+
+    assert [call["timeout"] for call in calls] == [300, 300]
+    assert any(
+        log.get("type") == "tool_result"
+        and log.get("tool_name") == "google_search"
+        for log in exc_info.value.tool_logs
     )
 
 
