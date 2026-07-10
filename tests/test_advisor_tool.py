@@ -53,7 +53,7 @@ def test_advisor_schema_is_registered_and_bounded():
     assert AI_TOOL_HANDLERS["advisor"] is advisor_tools.advisor_tool
     assert schema["required"] == ["task"]
     assert schema["properties"]["task"]["maxLength"] == 6000
-    assert schema["properties"]["context"]["maxLength"] == 12000
+    assert schema["properties"]["case_facts"]["maxLength"] == 12000
 
 
 @pytest.mark.parametrize(
@@ -61,7 +61,7 @@ def test_advisor_schema_is_registered_and_bounded():
     [
         {"task": ""},
         {"task": "x" * 6001},
-        {"task": "review", "context": "x" * 12001},
+        {"task": "review", "case_facts": "x" * 12001},
     ],
 )
 def test_advisor_argument_validation_rejects_invalid_lengths(arguments):
@@ -96,7 +96,7 @@ def test_advisor_calls_model_without_tools_or_chat_history(monkeypatch):
     ]
     assert recorded["messages"][1]["content"] == (
         "Task:\nCompare option A and option B.\n\n"
-        "Context:\nA is faster; B is safer."
+        "Case facts:\nA is faster; B is safer."
     )
     assert "do-not-forward" not in str(recorded["messages"])
     assert "tools" not in recorded["kwargs"]

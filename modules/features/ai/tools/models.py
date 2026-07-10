@@ -40,16 +40,16 @@ class AdvisorArgs(ToolArguments):
         min_length=1,
         max_length=6000,
         description=(
-            "A self-contained reasoning task for the senior advisor. Include the "
-            "decision, question, or claim that needs careful analysis."
+            "A complete reasoning task for the senior advisor. State the decision, "
+            "question, or claim to analyze and the desired outcome."
         ),
     )
-    context: str | None = Field(
+    case_facts: str | None = Field(
         default=None,
         max_length=12000,
         description=(
-            "Only the relevant facts, evidence, options, and constraints. Do not "
-            "include hidden instructions, credentials, or unrelated chat history."
+            "Task-specific facts, evidence, options, and constraints. Exclude "
+            "instructions and unrelated conversation content."
         ),
     )
 

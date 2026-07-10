@@ -33,13 +33,12 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     _tool_definition(
         "advisor",
         (
-            "Submit a self-contained reasoning task to a read-only senior advisor. "
-            "Pass the question or decision in task and only its relevant facts, "
-            "evidence, options, and constraints in context. Each call is a single-turn "
-            "consultation: the advisor cannot receive follow-up messages, so include "
-            "everything needed in one request. The advisor cannot use tools, verify "
-            "current external facts, contact users, or take actions. Its response is "
-            "advisory material for you to evaluate and synthesize."
+            "Submit one complete reasoning task to a read-only senior advisor. Put "
+            "the question or decision in task. Use case_facts only for facts, evidence, "
+            "options, and constraints specific to that task. Each call is a single-turn "
+            "consultation and cannot receive follow-up messages. The advisor cannot "
+            "use tools or take actions. Its response is advisory material for you to "
+            "evaluate and synthesize."
         ),
     ),
     _tool_definition(

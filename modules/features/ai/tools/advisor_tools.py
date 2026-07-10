@@ -72,10 +72,10 @@ def _reserve_user_rate_limit(user_id: object) -> tuple[bool, int | None]:
         return True, None
 
 
-def _advisor_messages(task: str, context: str | None) -> list[dict[str, str]]:
+def _advisor_messages(task: str, case_facts: str | None) -> list[dict[str, str]]:
     user_content = f"Task:\n{task.strip()}"
-    if context and context.strip():
-        user_content += f"\n\nContext:\n{context.strip()}"
+    if case_facts and case_facts.strip():
+        user_content += f"\n\nCase facts:\n{case_facts.strip()}"
     return [
         {"role": "system", "content": config.ADVISOR_SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
@@ -97,7 +97,7 @@ def _usage_total_tokens(response: Any) -> object:
     return getattr(usage, "total_tokens", None)
 
 
-def advisor_tool(task: str, context: str | None = None) -> dict[str, Any]:
+def advisor_tool(task: str, case_facts: str | None = None) -> dict[str, Any]:
     if not task or not task.strip():
         return {
             "status": "error",
@@ -144,7 +144,7 @@ def advisor_tool(task: str, context: str | None = None) -> dict[str, Any]:
         started_at = time.monotonic()
         response = run_ai_task(
             "advisor",
-            messages=_advisor_messages(task.strip(), context),
+            messages=_advisor_messages(task.strip(), case_facts),
             max_tokens=config.AI_ADVISOR_MAX_OUTPUT_TOKENS,
             timeout=config.AI_ADVISOR_TIMEOUT_SECONDS,
         )

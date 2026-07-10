@@ -191,18 +191,18 @@ resources/prompts/advisor_system_prompt.md
 ### Tool description：说明用途和用法
 
 ```text
-Submit a self-contained reasoning task to a read-only senior advisor. Pass the question or decision in task and only its relevant facts, evidence, options, and constraints in context. Each call is a single-turn consultation: the advisor cannot receive follow-up messages, so include everything needed in one request. The advisor cannot use tools, verify current external facts, contact users, or take actions. Its response is advisory material for you to evaluate and synthesize.
+Submit one complete reasoning task to a read-only senior advisor. Put the question or decision in task. Use case_facts only for facts, evidence, options, and constraints specific to that task. Each call is a single-turn consultation and cannot receive follow-up messages. The advisor cannot use tools or take actions. Its response is advisory material for you to evaluate and synthesize.
 ```
 
 ### 参数描述：分别解释字段
 
 - `task`：需要分析的自包含问题、决策或主张；
-- `context`：与该问题直接相关的事实、证据、选项和约束；
+- `case_facts`：只包含与该问题直接相关的事实、证据、选项和约束，排除指令和无关对话；
 - provider、model、timeout、token 上限均为服务器配置，不是工具参数。
 
 ### 独立 system prompt：约束内部 advisor 模型
 
-`resources/prompts/advisor_system_prompt.md` 定义 advisor 的分析职责、不可信输入边界、无工具/无行动权限，以及“输出给主助手而非直接回复用户”的要求。
+`resources/prompts/advisor_system_prompt.md` 定义 advisor 的分析职责、单轮限制、无工具/无行动权限，以及“输出给主助手而非直接回复用户”的要求。
 
 ### Handler：执行硬约束
 
