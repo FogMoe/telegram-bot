@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from features.ai import router
+from features.ai.types import PartialAIResponseError
 
 
 @pytest.fixture(autouse=True)
@@ -240,3 +241,34 @@ def test_open_provider_circuit_skips_to_next_service(monkeypatch):
 
     assert response == ("ok", [])
     assert calls == ["siliconflow"]
+
+
+def test_partial_timeout_logs_warning_without_traceback(monkeypatch, caplog):
+    def timed_out_service(
+        messages,
+        user_id,
+        tool_context=None,
+        visible_content_handler=None,
+    ):
+        try:
+            raise TimeoutError("chat completion timed out")
+        except TimeoutError as exc:
+            raise PartialAIResponseError(
+                "chat completion timed out",
+                [{"type": "tool_result", "tool_name": "advisor"}],
+            ) from exc
+
+    monkeypatch.setattr(router, "AI_SERVICE_ORDER", ["gemini"])
+    monkeypatch.setattr(router, "AI_SERVICE_MAP", {"gemini": timed_out_service})
+
+    with caplog.at_level("WARNING"):
+        response = asyncio.run(router.get_ai_response([], user_id=123))
+
+    timeout_records = [
+        record
+        for record in caplog.records
+        if "timed out after partial AI response" in record.getMessage()
+    ]
+    assert response[0] == router.PARTIAL_AI_RESPONSE_ERROR_MESSAGE
+    assert len(timeout_records) == 1
+    assert timeout_records[0].exc_info is None

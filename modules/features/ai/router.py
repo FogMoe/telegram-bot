@@ -8,7 +8,7 @@ from core import config
 from .chat_capabilities import chat_model_for_service, chat_service_supports_vision
 from .message_content import messages_have_images, strip_image_content
 from .tools import clear_tool_request_context, cleanup_linux_sandbox, set_tool_request_context
-from .errors import SafetyBlockError
+from .errors import SafetyBlockError, is_timeout_error
 from .providers import azure, gemini, openai, siliconflow, zhipu
 from .runtime import EXECUTOR
 from .types import AIResponse, PartialAIResponseError, VisibleContentHandler
@@ -240,23 +240,35 @@ async def _try_ai_services(
                 continue
             raise
         except PartialAIResponseError as exc:
-            logging.error(
-                "%s failed after partial AI response; not retrying: %s",
-                service_name,
-                exc,
-                exc_info=True,
-            )
+            if is_timeout_error(exc):
+                logging.warning(
+                    "%s timed out after partial AI response; not retrying",
+                    service_name,
+                )
+            else:
+                logging.error(
+                    "%s failed after partial AI response; not retrying: %s",
+                    service_name,
+                    exc,
+                    exc_info=True,
+                )
             if _visible_content_was_sent(visible_content_handler):
                 return ("", exc.tool_logs), None
             return (PARTIAL_AI_RESPONSE_ERROR_MESSAGE, exc.tool_logs), None
         except Exception as exc:
             if _visible_content_was_sent(visible_content_handler):
-                logging.error(
-                    "%s failed after sending visible content; not retrying: %s",
-                    service_name,
-                    exc,
-                    exc_info=True,
-                )
+                if is_timeout_error(exc):
+                    logging.warning(
+                        "%s timed out after sending visible content; not retrying",
+                        service_name,
+                    )
+                else:
+                    logging.error(
+                        "%s failed after sending visible content; not retrying: %s",
+                        service_name,
+                        exc,
+                        exc_info=True,
+                    )
                 return ("", _visible_content_events(visible_content_handler)), None
             logging.warning("%s 调用失败: %s", service_name, exc)
             _record_provider_failure(service_name)

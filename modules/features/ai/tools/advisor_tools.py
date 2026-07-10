@@ -6,6 +6,7 @@ from typing import Any
 
 from core import config
 
+from ..errors import is_timeout_error
 from ..provider_resolver import get_models_for_task, get_provider_order_for_task
 from ..task_runner import run_ai_task
 from .context import get_tool_request_context
@@ -164,7 +165,13 @@ def advisor_tool(task: str, case_facts: str | None = None) -> dict[str, Any]:
         )
         return {"status": "ok", "advice": advice}
     except Exception as exc:
-        logging.exception("Advisor failed: %s", exc)
+        if is_timeout_error(exc):
+            logging.warning(
+                "Advisor timed out after %s seconds; all configured providers failed",
+                config.AI_ADVISOR_TIMEOUT_SECONDS,
+            )
+        else:
+            logging.exception("Advisor failed: %s", exc)
         return {
             "status": "error",
             "error": "The reasoning advisor is temporarily unavailable. Continue without it.",

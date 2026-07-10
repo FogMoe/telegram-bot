@@ -1,6 +1,8 @@
+import logging
 from types import SimpleNamespace
 
 import pytest
+from litellm.exceptions import Timeout as LiteLLMTimeout
 from pydantic import ValidationError
 
 from features.ai.tools import advisor_tools
@@ -208,3 +210,31 @@ def test_advisor_returns_sanitized_error(monkeypatch):
         "error": "The reasoning advisor is temporarily unavailable. Continue without it.",
     }
     assert "secret" not in str(result)
+
+
+def test_advisor_timeout_logs_warning_without_traceback(monkeypatch, caplog):
+    _prepare_advisor(monkeypatch)
+    monkeypatch.setattr(advisor_tools.config, "AI_ADVISOR_TIMEOUT_SECONDS", 120)
+    set_tool_request_context({"user_id": 123})
+
+    def fail(*args, **kwargs):
+        timeout = LiteLLMTimeout(
+            "Request timed out",
+            model="advisor-model",
+            llm_provider="openai",
+        )
+        raise RuntimeError("All providers failed for AI task: advisor") from timeout
+
+    monkeypatch.setattr(advisor_tools, "run_ai_task", fail)
+
+    with caplog.at_level(logging.WARNING):
+        result = advisor_tools.advisor_tool("Review this")
+
+    timeout_records = [
+        record
+        for record in caplog.records
+        if "Advisor timed out after 120 seconds" in record.getMessage()
+    ]
+    assert result["status"] == "error"
+    assert len(timeout_records) == 1
+    assert timeout_records[0].exc_info is None
