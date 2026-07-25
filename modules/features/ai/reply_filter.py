@@ -1,3 +1,6 @@
+import re
+
+
 NO_RESPONSE_SENTINELS = {
     "[no_response]",
 }
@@ -5,6 +8,8 @@ NO_RESPONSE_SENTINELS = {
 
 def normalize_ai_reply_text(value: object) -> str:
     text = str(value or "")
-    if text.strip().lower() in NO_RESPONSE_SENTINELS:
+    for sentinel in NO_RESPONSE_SENTINELS:
+        text = re.sub(re.escape(sentinel), "", text, flags=re.IGNORECASE)
+    if not text.strip():
         return ""
     return text

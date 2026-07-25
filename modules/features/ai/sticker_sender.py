@@ -18,7 +18,7 @@ AsyncSendFunc = Callable[..., Awaitable[Any]]
 MAX_STICKERS_PER_REPLY = 10
 
 _STICKER_DIRECTIVE_RE = re.compile(
-    r"^\[sticker_pack:(?P<pack>[A-Za-z0-9_]+)\s+emoji:(?P<emoji>[^\]]+)\]$"
+    r"\[sticker_pack:(?P<pack>[A-Za-z0-9_]+)\s+emoji:(?P<emoji>[^\]\r\n]+)\]"
 )
 
 
@@ -34,15 +34,8 @@ class PartialAIReplySendError(Exception):
         self.sent_content = sent_content
 
 
-def _parse_sticker_directive(line: str) -> tuple[str, str] | None:
-    match = _STICKER_DIRECTIVE_RE.match(line.strip())
-    if not match:
-        return None
-    pack_name = match.group("pack").strip()
-    emoji = match.group("emoji").strip()
-    if not pack_name or not emoji:
-        return None
-    return pack_name, emoji
+def _sticker_directive_from_match(match: re.Match[str]) -> tuple[str, str]:
+    return match.group("pack").strip(), match.group("emoji").strip()
 
 
 async def normalize_sticker_directives(
@@ -50,7 +43,7 @@ async def normalize_sticker_directives(
     *,
     logger: logging.Logger,
 ) -> str:
-    """Downgrade invalid sticker directives to their plain emoji text."""
+    """Downgrade invalid sticker directives outside code blocks to plain emoji."""
     normalized_segments: list[str] = []
 
     for segment in split_ai_reply(str(text)):
@@ -64,24 +57,29 @@ async def normalize_sticker_directives(
                 normalized_lines.append(line)
                 continue
 
-            directive = None if in_code_block else _parse_sticker_directive(stripped)
-            if directive is None:
+            if in_code_block:
                 normalized_lines.append(line)
                 continue
 
-            pack_name, emoji = directive
-            exists = await asyncio.to_thread(sticker_exists, pack_name, emoji)
-            if exists:
-                normalized_lines.append(line)
-                continue
-
-            if logger:
-                logger.info(
-                    "Invalid sticker directive downgraded to emoji: pack=%s emoji=%s",
-                    pack_name,
-                    emoji,
-                )
-            normalized_lines.append(emoji)
+            normalized_parts: list[str] = []
+            last_end = 0
+            for match in _STICKER_DIRECTIVE_RE.finditer(line):
+                normalized_parts.append(line[last_end:match.start()])
+                pack_name, emoji = _sticker_directive_from_match(match)
+                exists = await asyncio.to_thread(sticker_exists, pack_name, emoji)
+                if exists:
+                    normalized_parts.append(match.group(0))
+                else:
+                    if logger:
+                        logger.info(
+                            "Invalid sticker directive downgraded to emoji: pack=%s emoji=%s",
+                            pack_name,
+                            emoji,
+                        )
+                    normalized_parts.append(emoji)
+                last_end = match.end()
+            normalized_parts.append(line[last_end:])
+            normalized_lines.append("".join(normalized_parts))
 
         normalized_segments.append("\n".join(normalized_lines).strip())
 
@@ -216,13 +214,17 @@ async def send_ai_reply_with_stickers(
                     buffer.append(line)
                     continue
 
-                directive = None if in_code_block else _parse_sticker_directive(stripped)
-                if directive is None:
+                if in_code_block:
                     buffer.append(line)
                     continue
 
-                await flush_text(buffer)
-                await send_sticker(*directive)
+                last_end = 0
+                for match in _STICKER_DIRECTIVE_RE.finditer(line):
+                    buffer.append(line[last_end:match.start()])
+                    await flush_text(buffer)
+                    await send_sticker(*_sticker_directive_from_match(match))
+                    last_end = match.end()
+                buffer.append(line[last_end:])
 
             await flush_text(buffer)
     except Exception as exc:
