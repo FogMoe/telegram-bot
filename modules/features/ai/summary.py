@@ -208,18 +208,23 @@ def _format_history_for_summary(snapshot_text: str) -> str:
     return "\n\n".join(lines)
 
 
-def _trim_summary_to_tokens(summary: str, max_tokens: int) -> str:
+def _trim_summary_to_tokens(
+    summary: str,
+    max_tokens: int,
+    *,
+    model: str | None = None,
+) -> str:
     if not summary:
         return summary
 
-    if estimate_tokens(summary, guard_ratio=1.0) <= max_tokens:
+    if estimate_tokens(summary, guard_ratio=1.0, model=model) <= max_tokens:
         return summary
 
     low, high = 0, len(summary)
     while low < high:
         mid = (low + high) // 2
         candidate = summary[:mid]
-        if estimate_tokens(candidate, guard_ratio=1.0) <= max_tokens:
+        if estimate_tokens(candidate, guard_ratio=1.0, model=model) <= max_tokens:
             low = mid + 1
         else:
             high = mid
@@ -252,7 +257,12 @@ def _generate_summary(user_id: int, snapshot_text: str) -> Optional[str]:
             )
             summary = (response.choices[0].message.content or "").strip()
             if summary:
-                summary = _trim_summary_to_tokens(summary, SUMMARY_MAX_TOKENS)
+                response_model = getattr(response, "model", None)
+                summary = _trim_summary_to_tokens(
+                    summary,
+                    SUMMARY_MAX_TOKENS,
+                    model=str(response_model) if response_model else None,
+                )
                 if attempt > 1:
                     logging.info(
                         "Summary generated successfully for user %s (attempt %s)",
