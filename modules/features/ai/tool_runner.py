@@ -1,16 +1,20 @@
 import base64
 import json
 import logging
+import time
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional
 
 from pydantic import ValidationError
 
 from core import config
 
+from .errors import is_retryable_completion_error
 from .tools import OPENAI_TOOLS, AI_TOOL_ARG_MODELS, AI_TOOL_HANDLERS
 from .prompts import compose_system_prompt
 from .litellm_client import create_chat_completion
 from .types import AIResponse, PartialAIResponseError, ToolLog, VisibleContentHandler
+
+POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS = (1.0, 3.0)
 
 
 def _json_safe(value: Any) -> Any:
@@ -38,6 +42,62 @@ def _json_safe(value: Any) -> Any:
 
 def _drop_none_items(value: Dict[str, Any]) -> Dict[str, Any]:
     return {key: item for key, item in value.items() if item is not None}
+
+
+def _has_tool_result(tool_logs: List[ToolLog]) -> bool:
+    return any(log.get("type") == "tool_result" for log in tool_logs)
+
+
+def _create_chat_completion_with_post_tool_retries(
+    provider: str,
+    model: str,
+    *,
+    messages: List[Dict[str, Any]],
+    request_kwargs: Dict[str, Any],
+    provider_name: str,
+    tool_logs: List[ToolLog],
+    tools: Optional[List[Dict[str, Any]]] = None,
+    tool_choice: str | Dict[str, object] | None = None,
+):
+    call_kwargs = dict(request_kwargs)
+    if tools is not None:
+        call_kwargs["tools"] = tools
+    if tool_choice is not None:
+        call_kwargs["tool_choice"] = tool_choice
+
+    retry_delays = (
+        POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS
+        if _has_tool_result(tool_logs)
+        else ()
+    )
+    retry_index = 0
+
+    while True:
+        try:
+            return create_chat_completion(
+                provider,
+                model,
+                messages=messages,
+                **call_kwargs,
+            )
+        except Exception as exc:
+            if (
+                retry_index >= len(retry_delays)
+                or not is_retryable_completion_error(exc)
+            ):
+                raise
+
+            delay = retry_delays[retry_index]
+            retry_index += 1
+            logging.warning(
+                "%s 工具执行后的回复生成遇到临时错误，%.1f 秒后进行第 %s/%s 次重试: %s",
+                provider_name,
+                delay,
+                retry_index,
+                len(retry_delays),
+                exc,
+            )
+            time.sleep(delay)
 
 
 def _format_validation_errors(exc: ValidationError) -> list[dict[str, str]]:
@@ -489,13 +549,15 @@ def run_tool_loop(
                 **(completion_kwargs or {}),
                 "timeout": request_timeout,
             }
-            response = create_chat_completion(
+            response = _create_chat_completion_with_post_tool_retries(
                 provider,
                 model,
                 messages=filtered_messages,
+                request_kwargs=request_kwargs,
+                provider_name=provider_name,
+                tool_logs=tool_logs,
                 tools=tools,
                 tool_choice=request_tool_choice,
-                **request_kwargs,
             )
         except Exception as exc:
             if tool_logs:
@@ -669,11 +731,13 @@ def run_tool_loop(
             **(completion_kwargs or {}),
             "timeout": request_timeout,
         }
-        response = create_chat_completion(
+        response = _create_chat_completion_with_post_tool_retries(
             provider,
             model,
             messages=filtered_messages,
-            **request_kwargs,
+            request_kwargs=request_kwargs,
+            provider_name=provider_name,
+            tool_logs=tool_logs,
         )
     except Exception as exc:
         if tool_logs:

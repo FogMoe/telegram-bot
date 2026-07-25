@@ -177,6 +177,7 @@ def test_run_tool_loop_raises_partial_response_when_followup_times_out(monkeypat
         )
     )
     calls = []
+    sleeps = []
 
     def fake_create_chat_completion(*args, **kwargs):
         calls.append(kwargs)
@@ -189,6 +190,7 @@ def test_run_tool_loop_raises_partial_response_when_followup_times_out(monkeypat
         "create_chat_completion",
         fake_create_chat_completion,
     )
+    monkeypatch.setattr(tool_runner.time, "sleep", sleeps.append)
     monkeypatch.setitem(
         tool_runner.AI_TOOL_HANDLERS,
         "google_search",
@@ -203,12 +205,123 @@ def test_run_tool_loop_raises_partial_response_when_followup_times_out(monkeypat
             provider_name="Test",
         )
 
-    assert [call["timeout"] for call in calls] == [300, 300]
+    assert [call["timeout"] for call in calls] == [300, 300, 300, 300]
+    assert sleeps == list(tool_runner.POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS)
     assert any(
         log.get("type") == "tool_result"
         and log.get("tool_name") == "google_search"
         for log in exc_info.value.tool_logs
     )
+
+
+def test_run_tool_loop_retries_transient_followup_without_reexecuting_tool(monkeypatch):
+    first_response = _Response(
+        _Message(
+            "",
+            [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "google_search",
+                        "arguments": '{"query": "example"}',
+                    },
+                }
+            ],
+        )
+    )
+    final_response = _Response(_Message("done", None))
+    calls = []
+    sleeps = []
+    tool_calls = []
+
+    class ServiceUnavailableError(Exception):
+        status_code = 503
+
+    def fake_create_chat_completion(*args, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return first_response
+        if len(calls) == 2:
+            raise ServiceUnavailableError("no available accounts")
+        return final_response
+
+    monkeypatch.setattr(
+        tool_runner,
+        "create_chat_completion",
+        fake_create_chat_completion,
+    )
+    monkeypatch.setattr(tool_runner.time, "sleep", sleeps.append)
+    monkeypatch.setitem(
+        tool_runner.AI_TOOL_HANDLERS,
+        "google_search",
+        lambda **kwargs: tool_calls.append(kwargs) or {"organic_results": []},
+    )
+
+    message, tool_logs = tool_runner.run_tool_loop(
+        "test_provider",
+        "test_model",
+        [{"role": "user", "content": "search example"}],
+        provider_name="Test",
+    )
+
+    assert message == "done"
+    assert len(calls) == 3
+    assert sleeps == [tool_runner.POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS[0]]
+    assert tool_calls == [{"query": "example"}]
+    assert sum(log.get("type") == "tool_result" for log in tool_logs) == 1
+
+
+def test_run_tool_loop_does_not_retry_non_transient_followup_error(monkeypatch):
+    first_response = _Response(
+        _Message(
+            "",
+            [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "google_search",
+                        "arguments": '{"query": "example"}',
+                    },
+                }
+            ],
+        )
+    )
+    calls = []
+    sleeps = []
+
+    class BadRequestError(Exception):
+        status_code = 400
+
+    def fake_create_chat_completion(*args, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return first_response
+        raise BadRequestError("invalid request")
+
+    monkeypatch.setattr(
+        tool_runner,
+        "create_chat_completion",
+        fake_create_chat_completion,
+    )
+    monkeypatch.setattr(tool_runner.time, "sleep", sleeps.append)
+    monkeypatch.setitem(
+        tool_runner.AI_TOOL_HANDLERS,
+        "google_search",
+        lambda **kwargs: {"organic_results": []},
+    )
+
+    with pytest.raises(tool_runner.PartialAIResponseError):
+        tool_runner.run_tool_loop(
+            "test_provider",
+            "test_model",
+            [{"role": "user", "content": "search example"}],
+            provider_name="Test",
+        )
+
+    assert len(calls) == 2
+    assert sleeps == []
 
 
 def test_run_tool_loop_sends_generated_voice_immediately(monkeypatch):

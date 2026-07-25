@@ -1,6 +1,11 @@
 # TODO
 
 - Add fuzzy search support for `search_permanent_records` (mode + min_score, optional dependency like rapidfuzz).
+- Add safe cross-provider continuation after post-tool reply generation fails:
+  1) Carry the accumulated provider-neutral messages, tool logs, and visible-send state in an explicit continuation object.
+  2) Resume the next provider from that continuation state instead of restarting from the original user messages.
+  3) Preserve tool-call/result pairing and sanitize provider-specific fields before handoff.
+  4) Prove with tests that already completed tools, especially side-effectful tools, are never executed twice.
 - Add AI document database tool (action: search | list | read):
   1) Confirm DB schema and access rules (table name, fields, ownership scope, redaction).
   2) Add Alembic migration for documents table and indexes (consider FULLTEXT on title/content).
