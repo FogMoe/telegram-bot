@@ -8,6 +8,42 @@ from .context import get_tool_request_context
 
 MAX_USER_DIARY_PAGE_CHARS = 10000
 MAX_USER_DIARY_PAGES = 100
+MAX_USER_DIARY_TITLE_CHARS = 60
+MAX_USER_DIARY_SUMMARY_CHARS = 120
+USER_DIARY_INDEX_PREVIEW_CHARS = 500
+
+
+def _diary_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return str(value)
+
+
+def _diary_timestamp(value: object) -> str | None:
+    if value is None:
+        return None
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return isoformat(sep=" ")
+    return str(value)
+
+
+def _diary_page_metadata(
+    page_no: int,
+    title: object,
+    summary: object,
+    preview_content: object,
+) -> dict:
+    stored_title = _diary_text(title).strip()
+    stored_summary = _diary_text(summary).strip()
+    preview = re.sub(r"\s+", " ", _diary_text(preview_content)).strip()
+    return {
+        "title": stored_title or f"Untitled page {page_no}",
+        "summary": stored_summary or preview[:MAX_USER_DIARY_SUMMARY_CHARS],
+        "metadata_complete": bool(stored_title and stored_summary),
+    }
 
 
 def get_help_text_tool() -> dict:
@@ -318,6 +354,8 @@ def user_diary_tool(
     end_line: Optional[int] = None,
     line_numbers: Optional[bool] = None,
     page: Optional[int] = None,
+    title: Optional[str] = None,
+    summary: Optional[str] = None,
     **kwargs,
 ) -> dict:
     """Read or update the internal diary for the current user."""
@@ -327,7 +365,9 @@ def user_diary_tool(
         return {"user_id": None, "error": "Missing user information, cannot access diary"}
 
     action_value = (action or "read").strip().lower()
-    if action_value in {"read", "view", "get"}:
+    if action_value in {"index", "list", "catalog", "toc"}:
+        action_value = "index"
+    elif action_value in {"read", "view", "get"}:
         action_value = "read"
     elif action_value in {"append", "add", "increment"}:
         action_value = "append"
@@ -337,6 +377,68 @@ def user_diary_tool(
         action_value = "overwrite"
     else:
         return {"user_id": user_id, "error": f"Unknown action: {action}"}
+
+    if action_value == "index":
+        rows = mysql_connection.run_sync(
+            mysql_connection.fetch_all(
+                "SELECT page_no, title, summary, CHAR_LENGTH(content), "
+                "created_at, updated_at, LEFT(content, %s) "
+                "FROM ai_user_diary_pages WHERE user_id = %s ORDER BY page_no ASC",
+                (USER_DIARY_INDEX_PREVIEW_CHARS, user_id),
+            )
+        )
+        pages = []
+        max_page = 0
+        for row in rows:
+            (
+                page_no,
+                stored_title,
+                stored_summary,
+                content_length,
+                created_at,
+                updated_at,
+                preview_content,
+            ) = row
+            page_no = int(page_no)
+            max_page = max(max_page, page_no)
+            pages.append(
+                {
+                    "page": page_no,
+                    **_diary_page_metadata(
+                        page_no,
+                        stored_title,
+                        stored_summary,
+                        preview_content,
+                    ),
+                    "length": int(content_length or 0),
+                    "created_at": _diary_timestamp(created_at),
+                    "updated_at": _diary_timestamp(updated_at),
+                }
+            )
+
+        response = {
+            "user_id": user_id,
+            "action": "index",
+            "total_pages": max_page,
+            "next_page": max_page + 1 if max_page < MAX_USER_DIARY_PAGES else None,
+            "pages": pages,
+        }
+        ignored_fields = []
+        if page is not None:
+            ignored_fields.append("page")
+        if content is not None:
+            ignored_fields.append("content")
+        if start_line is not None or end_line is not None:
+            ignored_fields.append("line range")
+        if line_numbers is not None:
+            ignored_fields.append("line_numbers")
+        if title is not None:
+            ignored_fields.append("title")
+        if summary is not None:
+            ignored_fields.append("summary")
+        if ignored_fields:
+            response["warning"] = f"{', '.join(ignored_fields)} ignored for index action"
+        return response
 
     try:
         page_value = int(page) if page is not None else 1
@@ -355,25 +457,32 @@ def user_diary_tool(
 
     row = mysql_connection.run_sync(
         mysql_connection.fetch_one(
-            "SELECT content, created_at, updated_at FROM ai_user_diary_pages "
+            "SELECT content, title, summary, created_at, updated_at FROM ai_user_diary_pages "
             "WHERE user_id = %s AND page_no = %s",
             (user_id, page_value),
         )
     )
 
     diary_content = ""
+    stored_title = ""
+    stored_summary = ""
     created_at = None
     updated_at = None
     page_exists = False
     if row:
         page_exists = True
-        diary_content, created_at, updated_at = row
-        if isinstance(diary_content, bytes):
-            diary_content = diary_content.decode("utf-8")
+        diary_content, stored_title, stored_summary, created_at, updated_at = row
+        diary_content = _diary_text(diary_content)
+        stored_title = _diary_text(stored_title).strip()
+        stored_summary = _diary_text(stored_summary).strip()
 
     warnings: list[str] = []
     if action_value == "read" and content is not None:
         warnings.append("content ignored for read action")
+    if action_value == "read" and title is not None:
+        warnings.append("title ignored for read action")
+    if action_value == "read" and summary is not None:
+        warnings.append("summary ignored for read action")
     if action_value in {"append", "overwrite"} and (start_line is not None or end_line is not None):
         warnings.append("line range ignored for append/overwrite action")
 
@@ -387,6 +496,12 @@ def user_diary_tool(
         lines = diary_content.splitlines()
         total_lines = len(lines)
         content_length = len(diary_content)
+        metadata = _diary_page_metadata(
+            page_value,
+            stored_title,
+            stored_summary,
+            diary_content,
+        )
 
         if start_line is None and end_line is None:
             response = {
@@ -394,11 +509,12 @@ def user_diary_tool(
                 "action": "read",
                 "page": page_value,
                 "total_pages": max_page,
+                **metadata,
                 "total_lines": total_lines,
                 "length": content_length,
                 "content": diary_content,
-                "created_at": created_at.isoformat(sep=" ") if created_at else None,
-                "updated_at": updated_at.isoformat(sep=" ") if updated_at else None,
+                "created_at": _diary_timestamp(created_at),
+                "updated_at": _diary_timestamp(updated_at),
             }
             if line_numbers_value:
                 response["lines"] = [
@@ -421,12 +537,13 @@ def user_diary_tool(
                 "action": "read",
                 "page": page_value,
                 "total_pages": max_page,
+                **metadata,
                 "total_lines": 0,
                 "length": 0,
                 "range": {"start_line": 0, "end_line": 0},
                 "content": "",
-                "created_at": created_at.isoformat(sep=" ") if created_at else None,
-                "updated_at": updated_at.isoformat(sep=" ") if updated_at else None,
+                "created_at": _diary_timestamp(created_at),
+                "updated_at": _diary_timestamp(updated_at),
             }
             if line_numbers_value:
                 response["lines"] = []
@@ -447,12 +564,13 @@ def user_diary_tool(
             "action": "read",
             "page": page_value,
             "total_pages": max_page,
+            **metadata,
             "total_lines": total_lines,
             "length": content_length,
             "range": {"start_line": start_value, "end_line": end_value},
             "content": "\n".join(selected_lines),
-            "created_at": created_at.isoformat(sep=" ") if created_at else None,
-            "updated_at": updated_at.isoformat(sep=" ") if updated_at else None,
+            "created_at": _diary_timestamp(created_at),
+            "updated_at": _diary_timestamp(updated_at),
         }
         if line_numbers_value:
             response["lines"] = [
@@ -474,6 +592,30 @@ def user_diary_tool(
 
     if content is None:
         return {"user_id": user_id, "error": "Missing content for diary update"}
+
+    title_value = _diary_text(title).strip()
+    summary_value = _diary_text(summary).strip()
+    if len(title_value) > MAX_USER_DIARY_TITLE_CHARS:
+        return {
+            "user_id": user_id,
+            "error": f"Diary page title is too long (max={MAX_USER_DIARY_TITLE_CHARS})",
+        }
+    if len(summary_value) > MAX_USER_DIARY_SUMMARY_CHARS:
+        return {
+            "user_id": user_id,
+            "error": f"Diary page summary is too long (max={MAX_USER_DIARY_SUMMARY_CHARS})",
+        }
+    if not summary_value:
+        return {
+            "user_id": user_id,
+            "error": f"Missing summary for diary page {page_value}; summarize the updated page",
+        }
+    if not title_value and not stored_title:
+        return {
+            "user_id": user_id,
+            "error": f"Missing title for diary page {page_value}; add a stable topic title",
+        }
+    effective_title = title_value or stored_title
 
     content_value = content if isinstance(content, str) else str(content)
     if action_value == "patch":
@@ -513,11 +655,15 @@ def user_diary_tool(
     mysql_connection.run_sync(
         mysql_connection.execute(
             """
-            INSERT INTO ai_user_diary_pages (user_id, page_no, content)
-            VALUES (%s, %s, %s)
-            ON DUPLICATE KEY UPDATE content = VALUES(content), updated_at = CURRENT_TIMESTAMP
+            INSERT INTO ai_user_diary_pages (user_id, page_no, title, summary, content)
+            VALUES (%s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                title = VALUES(title),
+                summary = VALUES(summary),
+                content = VALUES(content),
+                updated_at = CURRENT_TIMESTAMP
             """,
-            (user_id, page_value, merged_content),
+            (user_id, page_value, effective_title, summary_value, merged_content),
         )
     )
 
@@ -528,6 +674,9 @@ def user_diary_tool(
         "action": action_value,
         "page": page_value,
         "total_pages": updated_total_pages,
+        "title": effective_title,
+        "summary": summary_value,
+        "metadata_complete": True,
         "total_lines": total_lines,
         "length": len(merged_content),
         "truncated": truncated,

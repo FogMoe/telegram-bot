@@ -18,7 +18,7 @@ def test_system_prompt_resource_preserves_markdown_line_breaks():
         "# Character Profile of FOGMOE\n## Core Identity\n- "
     )
     assert "\n# Tool Calling\n## Calling Rules\n- " in config.SYSTEM_PROMPT
-    assert "\n# Runtime Context\n## Time\n- " in config.SYSTEM_PROMPT
+    assert "\n# Runtime Context\n## Message Format\n" in config.SYSTEM_PROMPT
     assert config.SYSTEM_PROMPT.endswith("\n")
 
 

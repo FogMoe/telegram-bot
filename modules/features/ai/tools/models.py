@@ -247,8 +247,8 @@ class ScheduleAIMessageArgs(ToolArguments):
 class UserDiaryArgs(ToolArguments):
     action: str | None = Field(
         default="read",
-        description="read | append | overwrite | patch",
-        json_schema_extra={"enum": ["read", "append", "overwrite", "patch"]},
+        description="index | read | append | overwrite | patch",
+        json_schema_extra={"enum": ["index", "read", "append", "overwrite", "patch"]},
     )
     page: int | None = Field(
         default=1,
@@ -260,6 +260,18 @@ class UserDiaryArgs(ToolArguments):
         default=None,
         max_length=10000,
         description="Diary content for append/overwrite/patch actions",
+    )
+    title: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=60,
+        description="Stable topic title; required when creating a page or repairing an untitled page",
+    )
+    summary: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=120,
+        description="Current page summary; required whenever diary content is updated",
     )
     start_line: int | None = Field(
         default=None,
@@ -298,16 +310,17 @@ AI_TOOL_ARG_MODELS: dict[str, type[ToolArguments]] = {
 }
 
 
-def _clean_json_schema(value: Any) -> Any:
+def _clean_json_schema(value: Any, *, preserve_title_key: bool = False) -> Any:
     if isinstance(value, list):
         return [_clean_json_schema(item) for item in value]
     if not isinstance(value, dict):
         return value
 
     cleaned = {
-        key: _clean_json_schema(item)
+        key: _clean_json_schema(item, preserve_title_key=key == "properties")
         for key, item in value.items()
-        if key != "title" and not (key == "default" and item is None)
+        if (key != "title" or preserve_title_key)
+        and not (key == "default" and item is None)
     }
 
     any_of = cleaned.get("anyOf")

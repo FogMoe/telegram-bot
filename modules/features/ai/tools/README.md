@@ -5,14 +5,21 @@
 ## 目录结构
 
 - `context.py`：每次请求的上下文存储（用户/群组/消息元信息）
-- `advisor_tools.py`：只读高级推理顾问工具（无工具权限，不自动携带聊天历史）
+- `models.py`：工具参数模型与 JSON Schema 生成（`AI_TOOL_ARG_MODELS`）
 - `schemas.py`：工具 schema 定义（OpenAI JSON Schema）
 - `registry.py`：工具注册中心（名称 -> 处理函数）
+- `advisor_tools.py`：只读高级推理顾问工具（无工具权限，不自动携带聊天历史）
 - `http_tools.py`：外部 HTTP 工具（SerpApi、Jina Reader）
 - `image_tools.py`：图片生成工具（可配置接口，保存生成图片供发送层使用）
+- `voice_tools.py`：语音生成工具（保存生成音频供发送层使用）
 - `code_tools.py`：Judge0 执行工具
+- `sandbox_tools.py`：临时 Linux 沙箱工具
 - `user_tools.py`：用户/金币/好感/印象相关工具
-- `memory_tools.py`：群聊上下文与永久摘要工具
+- `memory_tools.py`：群聊上下文、永久摘要与用户日记工具
+- `schedule_tools.py`：定时私聊消息的创建/查询/取消
+- `sticker_tools.py`：贴纸包与可用 emoji 查询
+- `doc_tools.py`：内部参考文档查阅（`resources/docs/*.md`）
+- `filename_utils.py`：文件名清理辅助函数（非工具）
 
 ## 添加新工具
 
@@ -20,9 +27,10 @@
 [`docs/ai-tool-prompt-guidelines.md`](../../../../docs/ai-tool-prompt-guidelines.md)。
 
 1) 在合适模块里实现工具函数（必要时新建模块）。
-2) 在 `schemas.py` 添加对应 schema。
-3) 在 `registry.py` 注册工具处理函数。
-4) 只有在其他模块需要直接调用时，才在 `__init__.py` 里导出。
+2) 在 `models.py` 定义参数模型并登记到 `AI_TOOL_ARG_MODELS`。`schemas.py` 会按工具名查这张表，缺失会直接 KeyError。
+3) 在 `schemas.py` 添加对应 schema。
+4) 在 `registry.py` 注册工具处理函数。
+5) 只有在其他模块需要直接调用时，才在 `__init__.py` 里导出。
 
 ## 注意事项
 

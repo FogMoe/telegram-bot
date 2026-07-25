@@ -25,6 +25,8 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
             "Read an internal reference document about how this bot's own features "
             "work. Omit topic to list every available document with a one-line "
             "summary, then call again with a topic to read that one in full. "
+            "Each fact is documented in exactly one topic and the others defer to "
+            "it, so follow a cross-reference rather than infer what it omits. "
             "Overly long documents are truncated."
         ),
     ),
@@ -126,11 +128,12 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     _tool_definition(
         "user_diary",
         (
-            "Read or update the internal diary for the current user. "
-            "Actions: read (optionally by line range), append, overwrite, patch. "
-            "Use patch with start_line/end_line to replace those lines; append adds "
-            "content at the end. When a page exceeds its size limit, the oldest "
-            "content is truncated."
+            "Read or update the internal diary for the current user. For existing "
+            "pages, start with index to see compact titles and summaries, then read "
+            "relevant pages. Use patch with start_line/end_line to replace those lines; "
+            "append adds content at the end. Every content update requires a current "
+            "summary, and new or previously untitled pages also require a title. When "
+            "a page exceeds its size limit, the oldest content is truncated."
         ),
     ),
 ]
