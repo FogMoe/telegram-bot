@@ -15,10 +15,10 @@ def test_text_resources_are_loaded_verbatim():
 
 def test_system_prompt_resource_preserves_markdown_line_breaks():
     assert config.SYSTEM_PROMPT.startswith(
-        "# Character Profile of FogMoeBot\n## Core Identity\n- "
+        "# Character Profile of FOGMOE\n## Core Identity\n- "
     )
     assert "\n# Tool Calling\n## Calling Rules\n- " in config.SYSTEM_PROMPT
-    assert config.SYSTEM_PROMPT.endswith("by themselves\n")
+    assert config.SYSTEM_PROMPT.endswith("wrote about themselves.\n")
 
 
 def test_env_example_documents_advisor_settings():

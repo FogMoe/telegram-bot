@@ -51,7 +51,10 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     ),
     _tool_definition(
         "execute_python_code",
-        "Run Python code remotely and return its output",
+        (
+            "Run Python code remotely and return its output. All results must be "
+            "printed with print(), otherwise they will not appear in the output."
+        ),
     ),
     _tool_definition(
         "linux_sandbox",
@@ -65,11 +68,17 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     ),
     _tool_definition(
         "generate_image",
-        "Generate exactly one image from a text prompt.",
+        (
+            "Generate exactly one image from a text prompt. The image is sent to "
+            "Telegram immediately after the call succeeds."
+        ),
     ),
     _tool_definition(
         "generate_voice",
-        "Generate exactly one spoken audio clip from text.",
+        (
+            "Generate exactly one spoken audio clip from text. The audio is sent to "
+            "Telegram immediately after the call succeeds."
+        ),
     ),
     _tool_definition(
         "kindness_gift",
