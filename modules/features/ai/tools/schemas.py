@@ -20,6 +20,15 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
         "Returns a list of available Telegram commands and features for users",
     ),
     _tool_definition(
+        "read_doc",
+        (
+            "Read an internal reference document about how this bot's own features "
+            "work. Omit topic to list every available document with a one-line "
+            "summary, then call again with a topic to read that one in full. "
+            "Overly long documents are truncated."
+        ),
+    ),
+    _tool_definition(
         "list_available_stickers",
         (
             "List configured Telegram sticker packs, their summaries, and currently "
@@ -62,7 +71,9 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
             "Execute a non-interactive shell command in an isolated temporary "
             "Linux sandbox. The sandbox preserves filesystem state across "
             "linux_sandbox calls in the same user request, then closes "
-            "automatically. Maximum lifetime: 5 minutes."
+            "automatically. It lives at most 5 minutes and accepts at most 10 "
+            "calls per request. Once it closes, the same user cannot open "
+            "another sandbox for 5 minutes."
         ),
     ),
     _tool_definition(

@@ -311,6 +311,26 @@ ADVISOR_SYSTEM_PROMPT = _read_text_resource(
     "resources/prompts/advisor_system_prompt.md"
 )
 
+# AI 可按主题查阅的内部文档库，文件名（不含扩展名）即主题名
+INTERNAL_DOCS_DIR = BASE_DIR / "resources" / "docs"
+
+
+def _load_internal_docs() -> dict[str, str]:
+    if not INTERNAL_DOCS_DIR.is_dir():
+        return {}
+    docs: dict[str, str] = {}
+    for path in sorted(INTERNAL_DOCS_DIR.glob("*.md")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if text.strip():
+            docs[path.stem] = text
+    return docs
+
+
+INTERNAL_DOCS: dict[str, str] = _load_internal_docs()
+
 def _parse_csv_value(raw_value: str | None) -> list[str]:
     if not raw_value:
         return []

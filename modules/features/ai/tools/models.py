@@ -18,6 +18,16 @@ class ListAvailableStickersArgs(ToolArguments):
     )
 
 
+class ReadDocArgs(ToolArguments):
+    topic: str | None = Field(
+        default=None,
+        description=(
+            "Topic of the document to read in full. Omit to list every available "
+            "document with its summary."
+        ),
+    )
+
+
 class GoogleSearchArgs(ToolArguments):
     query: str = Field(
         description="Search query string. Can be keywords, phrases, or complete questions",
@@ -269,6 +279,7 @@ class UserDiaryArgs(ToolArguments):
 
 AI_TOOL_ARG_MODELS: dict[str, type[ToolArguments]] = {
     "get_help_text": GetHelpTextArgs,
+    "read_doc": ReadDocArgs,
     "list_available_stickers": ListAvailableStickersArgs,
     "google_search": GoogleSearchArgs,
     "advisor": AdvisorArgs,
