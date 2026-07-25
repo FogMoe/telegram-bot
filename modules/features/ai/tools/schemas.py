@@ -60,10 +60,9 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
         "linux_sandbox",
         (
             "Execute a non-interactive shell command in an isolated temporary "
-            "Linux sandbox. Supports command, cwd, and timeout_seconds. The "
-            "sandbox preserves filesystem state across linux_sandbox calls in "
-            "the same user request, then closes automatically. Maximum lifetime: "
-            "5 minutes."
+            "Linux sandbox. The sandbox preserves filesystem state across "
+            "linux_sandbox calls in the same user request, then closes "
+            "automatically. Maximum lifetime: 5 minutes."
         ),
     ),
     _tool_definition(
@@ -82,11 +81,20 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     ),
     _tool_definition(
         "kindness_gift",
-        "Gift a certain amount of coins to the user",
+        (
+            "Gift coins to the user. Each user can receive one gift per 24 hours; "
+            "calling again inside that window gifts nothing and returns a cooldown "
+            "status. Omit amount to let the system pick one at random."
+        ),
     ),
     _tool_definition(
         "update_impression",
-        "Update permanent impression of the user",
+        (
+            "Replace the stored impression of the user. This overwrites the previous "
+            "impression entirely instead of appending to it, so carry over everything "
+            "still worth keeping; the current text is visible as <impression> in the "
+            "user profile."
+        ),
     ),
     _tool_definition(
         "fetch_permanent_summaries",
@@ -108,10 +116,10 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
         "user_diary",
         (
             "Read or update the internal diary for the current user. "
-            "Actions: read (optionally by line range), append, overwrite, patch (replace line range). "
-            "Use patch with start_line/end_line to replace lines; append adds content at the end. "
-            "Up to 100 pages (1-based). Max 10,000 chars per page (older content truncated). "
-            "Use the page parameter to select the page."
+            "Actions: read (optionally by line range), append, overwrite, patch. "
+            "Use patch with start_line/end_line to replace those lines; append adds "
+            "content at the end. When a page exceeds its size limit, the oldest "
+            "content is truncated."
         ),
     ),
 ]
