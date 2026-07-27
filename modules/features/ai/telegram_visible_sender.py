@@ -4,6 +4,7 @@ from typing import Any, Awaitable, Callable
 
 from .generated_audio_sender import send_generated_audio_from_tool_result
 from .generated_image_sender import send_generated_images_from_tool_result
+from .reply_filter import normalize_ai_reply_text
 from .sticker_sender import (
     PartialAIReplySendError,
     normalize_sticker_directives,
@@ -38,8 +39,12 @@ class TelegramVisibleContentHandler:
         self.attempted_count = 0
 
     async def _send(self, content: str) -> str:
+        reply_text = normalize_ai_reply_text(content)
+        if not reply_text.strip():
+            return ""
+
         normalized = await normalize_sticker_directives(
-            str(content),
+            reply_text,
             logger=self.logger,
         )
         if not normalized.strip():
