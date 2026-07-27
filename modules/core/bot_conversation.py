@@ -3,7 +3,7 @@ import base64
 import json
 import logging
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 
 import telegram
@@ -51,6 +51,11 @@ class _MessageBatch:
 
 _MESSAGE_BATCHES: dict[tuple[int, int], _MessageBatch] = {}
 _MESSAGE_BATCHES_LOCK = asyncio.Lock()
+_MESSAGE_CONTENT_FINGERPRINT_LIMIT = 4096
+_MESSAGE_CONTENT_FINGERPRINTS: OrderedDict[
+    tuple[int, int],
+    tuple[str, str, tuple[str, ...], str, str],
+] = OrderedDict()
 
 
 def _consume_batch_future_exception(future: asyncio.Future) -> None:
@@ -112,6 +117,53 @@ _classifier_allowance = RateLimiter(max_calls=10, time_window=60.0)
 def get_effective_message(update: Update):
     """获取有效的消息对象，无论是普通消息还是编辑后的消息"""
     return update.message or update.edited_message
+
+
+def _media_file_identifier(value) -> str:
+    if value is None:
+        return ""
+    return str(
+        getattr(value, "file_unique_id", None)
+        or getattr(value, "file_id", None)
+        or ""
+    )
+
+
+def _message_content_fingerprint(message) -> tuple[str, str, tuple[str, ...], str, str]:
+    photo_ids = tuple(
+        _media_file_identifier(photo)
+        for photo in (getattr(message, "photo", None) or ())
+    )
+    sticker = getattr(message, "sticker", None)
+    return (
+        str(getattr(message, "text", None) or ""),
+        str(getattr(message, "caption", None) or ""),
+        photo_ids,
+        _media_file_identifier(sticker),
+        str(getattr(sticker, "emoji", None) or ""),
+    )
+
+
+def _record_message_content_and_check_unchanged_edit(update: Update) -> bool:
+    message = get_effective_message(update)
+    chat = update.effective_chat
+    message_id = getattr(message, "message_id", None) if message else None
+    if not message or not chat or message_id is None:
+        return False
+
+    key = (chat.id, message_id)
+    fingerprint = _message_content_fingerprint(message)
+    previous_fingerprint = _MESSAGE_CONTENT_FINGERPRINTS.get(key)
+    _MESSAGE_CONTENT_FINGERPRINTS[key] = fingerprint
+    _MESSAGE_CONTENT_FINGERPRINTS.move_to_end(key)
+    while len(_MESSAGE_CONTENT_FINGERPRINTS) > _MESSAGE_CONTENT_FINGERPRINT_LIMIT:
+        _MESSAGE_CONTENT_FINGERPRINTS.popitem(last=False)
+
+    return (
+        update.edited_message is message
+        and previous_fingerprint is not None
+        and previous_fingerprint == fingerprint
+    )
 
 
 def _format_message_timestamp(value) -> str | None:
@@ -410,6 +462,15 @@ def _batch_item_sort_key(item_and_message) -> tuple[float, int, int]:
 
 
 async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if _record_message_content_and_check_unchanged_edit(update):
+        logger.debug(
+            "Ignoring edited message with unchanged AI-visible content: chat_id=%s message_id=%s update_id=%s",
+            getattr(update.effective_chat, "id", None),
+            getattr(update.edited_message, "message_id", None),
+            getattr(update, "update_id", None),
+        )
+        return
+
     batch_key = _message_batch_key(update)
     if not batch_key:
         await _reply_unlocked(update, context)
