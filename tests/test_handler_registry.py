@@ -112,6 +112,13 @@ def test_register_handlers_preserves_handler_and_job_registration_order():
         ("CommandHandler", 0, "admin_announce", "admin_announce"),
         ("CommandHandler", 0, "setmyinfo", "setmyinfo_command"),
         ("CommandHandler", 0, "give", "give_command"),
+        ("CommandHandler", 0, "fogmoe", "fogmoe_account_command"),
+        (
+            "CallbackQueryHandler",
+            0,
+            "^fogmoe:unbind$",
+            "fogmoe_account_unbind_callback",
+        ),
         ("CommandHandler", 0, "start_test_monitor", "start_monitor"),
         ("CommandHandler", 0, "stop_test_monitor", "stop_monitor"),
         ("CommandHandler", 0, "gamble", "gamble_command"),

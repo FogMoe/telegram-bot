@@ -23,6 +23,7 @@ from core.bot_commands import (
 )
 from core.bot_conversation import reply
 from core.bot_monitoring import start_monitor, stop_monitor
+from features.account import fogmoe_account
 from features.admin import developer
 from features.ai import scheduler
 from features.crypto import chart, crypto_predict, swap_fogmoe_solana_token
@@ -68,6 +69,7 @@ def register_core_command_handlers(application) -> None:
     application.add_handler(CommandHandler("admin_announce", admin_announce))
     application.add_handler(CommandHandler("setmyinfo", setmyinfo_command))
     application.add_handler(CommandHandler("give", give_command))
+    fogmoe_account.setup_fogmoe_account_handlers(application)
     bribe.setup_bribe_command(application)
 
 
