@@ -1,6 +1,11 @@
 # TODO
 
 - Add fuzzy search support for `search_permanent_records` (mode + min_score, optional dependency like rapidfuzz).
+- Add bidirectional AI reaction support:
+  1) Give the AI a tool to add a reaction to a target Telegram message authored by either the user or the AI, with validation for supported reactions and bot permissions.
+  2) Subscribe to user reaction updates for messages authored by either the AI or the reacting user, and turn reaction additions/removals into explicit conversation events that can prompt the AI.
+  3) Deduplicate reaction updates and make retries safe so the AI is not prompted twice and tool calls do not repeat side effects.
+  4) Add focused tests for AI-added reactions to user and AI messages, user reactions to AI messages and their own messages, reaction removal, unrelated-message filtering, and duplicate updates.
 - Add safe cross-provider continuation after post-tool reply generation fails:
   1) Carry the accumulated provider-neutral messages, tool logs, and visible-send state in an explicit continuation object.
   2) Resume the next provider from that continuation state instead of restarting from the original user messages.
