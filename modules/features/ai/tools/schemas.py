@@ -25,6 +25,18 @@ IDLE_RECAP_READ_DIARY_TOOL = _tool_definition(
 )
 
 
+# This schema is injected only into the summary agent. Keeping it outside
+# OPENAI_TOOLS prevents the main assistant from seeing the archive-search tool.
+SUMMARY_SEARCH_PRIOR_CONTEXT_TOOL = _tool_definition(
+    "search_prior_context",
+    (
+        "Search up to 20 earlier archived summaries with lightweight BM25 "
+        "ranking and a small recency boost. Use concrete terms from the current "
+        "snapshot to resolve older references or continuity."
+    ),
+)
+
+
 OPENAI_TOOLS: list[dict[str, Any]] = [
     _tool_definition(
         "get_help_text",
@@ -158,4 +170,8 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     ),
 ]
 
-__all__ = ["IDLE_RECAP_READ_DIARY_TOOL", "OPENAI_TOOLS"]
+__all__ = [
+    "IDLE_RECAP_READ_DIARY_TOOL",
+    "OPENAI_TOOLS",
+    "SUMMARY_SEARCH_PRIOR_CONTEXT_TOOL",
+]

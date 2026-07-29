@@ -210,6 +210,23 @@ class SearchPermanentRecordsArgs(ToolArguments):
     )
 
 
+class SummarySearchPriorContextArgs(ToolArguments):
+    query: str = Field(
+        min_length=1,
+        max_length=200,
+        description=(
+            "Concrete names, terms, or surrounding keywords from the current "
+            "snapshot; do not query bare pronouns"
+        ),
+    )
+    limit: int | None = Field(
+        default=3,
+        ge=1,
+        le=3,
+        description="Maximum number of prior-context matches to return",
+    )
+
+
 class ReadDiaryPageArgs(ToolArguments):
     page: int = Field(
         ge=1,
@@ -326,6 +343,7 @@ AI_TOOL_ARG_MODELS: dict[str, type[ToolArguments]] = {
     "update_impression": UpdateImpressionArgs,
     "fetch_permanent_summaries": FetchPermanentSummariesArgs,
     "search_permanent_records": SearchPermanentRecordsArgs,
+    "search_prior_context": SummarySearchPriorContextArgs,
     "read_diary_page": ReadDiaryPageArgs,
     "schedule_ai_message": ScheduleAIMessageArgs,
     "user_diary": UserDiaryArgs,

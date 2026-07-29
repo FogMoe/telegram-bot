@@ -14,6 +14,12 @@ def test_text_resources_are_loaded_verbatim():
     assert config.SUMMARY_SYSTEM_PROMPT == (
         config.BASE_DIR / "resources" / "prompts" / "summary_system_prompt.md"
     ).read_text(encoding="utf-8")
+    assert "尚未履行的承诺或待办" in config.SUMMARY_SYSTEM_PROMPT
+    assert "代词、简称等需要延续的具体指代" in config.SUMMARY_SYSTEM_PROMPT
+    assert "用户当前明确表现出的情绪背景" in config.SUMMARY_SYSTEM_PROMPT
+    assert "下一段对话必须保留的上下文" in config.SUMMARY_SYSTEM_PROMPT
+    assert "PREVIOUS_SUMMARY" in config.SUMMARY_SYSTEM_PROMPT
+    assert "search_prior_context" in config.SUMMARY_SYSTEM_PROMPT
     assert config.IDLE_RECAP_SYSTEM_PROMPT == (
         config.BASE_DIR / "resources" / "prompts" / "idle_recap_system_prompt.md"
     ).read_text(encoding="utf-8")

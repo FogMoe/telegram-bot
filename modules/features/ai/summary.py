@@ -9,10 +9,22 @@ from typing import Optional, Tuple
 
 from core import config, mysql_connection
 from core.token_estimator import estimate_tokens
-from .task_runner import run_ai_task
+
+from .provider_resolver import (
+    completion_kwargs_for_task,
+    get_models_for_task,
+    get_provider_order_for_task,
+)
+from .tool_runner import run_tool_loop
+from .tools.context import clear_tool_request_context, set_tool_request_context
+from .tools.schemas import SUMMARY_SEARCH_PRIOR_CONTEXT_TOOL
+from .tools.summary_tools import search_prior_context_tool
 
 SUMMARY_MAX_TOKENS = 2500
 SUMMARY_RETRY_LIMIT = 3
+SUMMARY_TOOL_MAX_ITERATIONS = 4
+SUMMARY_TOOLS = [SUMMARY_SEARCH_PRIOR_CONTEXT_TOOL]
+SUMMARY_TOOL_HANDLERS = {"search_prior_context": search_prior_context_tool}
 
 _SUMMARY_EXECUTOR = ThreadPoolExecutor(max_workers=2)
 
@@ -31,7 +43,13 @@ def _generate_and_store_summary(user_id: int) -> Optional[str]:
         return None
 
     record_id, snapshot_text = record
-    summary_text = _generate_summary(user_id, snapshot_text)
+    previous_summary = _fetch_previous_summary(user_id, record_id)
+    summary_text = _generate_summary(
+        user_id,
+        record_id,
+        snapshot_text,
+        previous_summary,
+    )
     if summary_text is None:
         logging.warning("Conversation summary generation failed for user %s after retries.", user_id)
         return None
@@ -83,6 +101,25 @@ def _fetch_pending_snapshot(user_id: int) -> Optional[Tuple[int, str]]:
         snapshot = json.dumps(snapshot, ensure_ascii=False)
 
     return row[0], snapshot
+
+
+def _fetch_previous_summary(user_id: int, record_id: int) -> str:
+    row = mysql_connection.run_sync(
+        mysql_connection.fetch_one(
+            "SELECT summary FROM permanent_chat_records "
+            "WHERE user_id = %s AND id < %s "
+            "AND summary IS NOT NULL AND summary <> '' "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (user_id, record_id),
+        )
+    )
+    if not row or row[0] is None:
+        return ""
+    value = row[0]
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    previous_summary = str(value).strip()
+    return "" if previous_summary == "暂无摘要" else previous_summary
 
 
 def _format_history_for_summary(snapshot_text: str) -> str:
@@ -283,36 +320,93 @@ def _trim_summary_to_tokens(
     return summary[: max(low - 1, 0)].rstrip()
 
 
-def _generate_summary(user_id: int, snapshot_text: str) -> Optional[str]:
+def _run_summary_agent(
+    messages: list[dict],
+    user_id: int,
+    record_id: int,
+) -> tuple[str, str]:
+    last_error: Exception | None = None
+    tool_context = {
+        "user_id": user_id,
+        "summary_record_id": record_id,
+    }
+    set_tool_request_context(tool_context)
+    try:
+        for provider in get_provider_order_for_task("summary"):
+            try:
+                models = get_models_for_task(provider, "summary")
+            except Exception as exc:
+                logging.warning(
+                    "Summary skipped invalid provider=%s: %s",
+                    provider,
+                    exc,
+                )
+                last_error = exc
+                continue
+
+            for model in models:
+                try:
+                    content, _tool_logs = run_tool_loop(
+                        provider,
+                        model,
+                        messages,
+                        tool_context,
+                        provider_name="Summary",
+                        max_tokens=SUMMARY_MAX_TOKENS,
+                        max_iterations=SUMMARY_TOOL_MAX_ITERATIONS,
+                        completion_kwargs=completion_kwargs_for_task(
+                            provider,
+                            "summary",
+                        ),
+                        tool_definitions=SUMMARY_TOOLS,
+                        tool_handlers=SUMMARY_TOOL_HANDLERS,
+                        system_prompt_override=config.SUMMARY_SYSTEM_PROMPT,
+                    )
+                    summary_text = str(content or "").strip()
+                    if not summary_text:
+                        raise ValueError("summary model returned empty content")
+                    return summary_text, str(model)
+                except Exception as exc:
+                    logging.warning(
+                        "Summary failed via provider=%s model=%s: %s",
+                        provider,
+                        model,
+                        exc,
+                    )
+                    last_error = exc
+    finally:
+        clear_tool_request_context()
+
+    raise RuntimeError("All providers failed for summary generation") from last_error
+
+
+def _generate_summary(
+    user_id: int,
+    record_id: int,
+    snapshot_text: str,
+    previous_summary: str,
+) -> Optional[str]:
     transcript = _format_history_for_summary(snapshot_text)
     prompt = (
-        "你是一名聊天记录整理助手。接下来是一段雾萌娘与用户的对话转录"
-        "（包含 USER/ASSISTANT/TOOL 记录）。请提炼要点，提供一份概述，"
-        "控制在2500 tokens以内，可以分段或列举重点。"
-        "请覆盖：对话背景、重要事件或需求、情绪氛围、需要跟进的事项。"
-        "如果内容无有效对话，请返回\"暂无摘要\"。\n\n"
-        f"对话内容：\n{transcript}"
+        "请按照系统要求总结 CURRENT_TRANSCRIPT。PREVIOUS_SUMMARY 是上一份"
+        "有效归档摘要，只用于理解跨段连续性。\n\n"
+        f"PREVIOUS_SUMMARY:\n{previous_summary or '无'}\n\n"
+        f"CURRENT_TRANSCRIPT:\n{transcript}"
     )
-
-    messages = [
-        {"role": "system", "content": config.SUMMARY_SYSTEM_PROMPT},
-        {"role": "user", "content": prompt},
-    ]
+    messages = [{"role": "user", "content": prompt}]
 
     for attempt in range(1, SUMMARY_RETRY_LIMIT + 1):
         try:
-            response = run_ai_task(
-                "summary",
-                messages=messages,
-                max_tokens=SUMMARY_MAX_TOKENS,
+            summary, response_model = _run_summary_agent(
+                messages,
+                user_id,
+                record_id,
             )
-            summary = (response.choices[0].message.content or "").strip()
             if summary:
-                response_model = getattr(response, "model", None)
                 summary = _trim_summary_to_tokens(
                     summary,
                     SUMMARY_MAX_TOKENS,
-                    model=str(response_model) if response_model else None,
+                    model=response_model,
                 )
                 if attempt > 1:
                     logging.info(

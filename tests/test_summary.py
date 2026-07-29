@@ -1,26 +1,23 @@
 import json
-from types import SimpleNamespace
 
 from features.ai import summary
+from features.ai.tools.context import get_tool_request_context
+from features.ai.tools.schemas import OPENAI_TOOLS
 
 
 def test_generate_summary_counts_with_response_model(monkeypatch):
-    response = SimpleNamespace(
-        model="openai/gpt-4o-mini",
-        choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(content="generated summary"),
-            )
-        ],
-    )
     recorded = {}
-    task_call = {}
+    agent_call = {}
 
-    def fake_run_ai_task(*args, **kwargs):
-        task_call.update(args=args, kwargs=kwargs)
-        return response
+    def fake_run_summary_agent(messages, user_id, record_id):
+        agent_call.update(
+            messages=messages,
+            user_id=user_id,
+            record_id=record_id,
+        )
+        return "generated summary", "openai/gpt-4o-mini"
 
-    monkeypatch.setattr(summary, "run_ai_task", fake_run_ai_task)
+    monkeypatch.setattr(summary, "_run_summary_agent", fake_run_summary_agent)
 
     def fake_trim(value, max_tokens, *, model=None):
         recorded.update(
@@ -32,16 +29,19 @@ def test_generate_summary_counts_with_response_model(monkeypatch):
 
     monkeypatch.setattr(summary, "_trim_summary_to_tokens", fake_trim)
 
-    assert summary._generate_summary(123, "[]") == "generated summary"
+    assert summary._generate_summary(123, 456, "[]", "previous summary") == (
+        "generated summary"
+    )
     assert recorded == {
         "value": "generated summary",
         "max_tokens": summary.SUMMARY_MAX_TOKENS,
         "model": "openai/gpt-4o-mini",
     }
-    assert task_call["kwargs"]["messages"][0] == {
-        "role": "system",
-        "content": summary.config.SUMMARY_SYSTEM_PROMPT,
-    }
+    assert agent_call["user_id"] == 123
+    assert agent_call["record_id"] == 456
+    assert agent_call["messages"][0]["role"] == "user"
+    assert "PREVIOUS_SUMMARY:\nprevious summary" in agent_call["messages"][0]["content"]
+    assert "CURRENT_TRANSCRIPT:" in agent_call["messages"][0]["content"]
 
 
 def test_trim_summary_passes_model_to_token_estimator(monkeypatch):
@@ -65,26 +65,84 @@ def test_trim_summary_passes_model_to_token_estimator(monkeypatch):
     assert set(recorded_models) == {"gemini/gemini-2.5-flash"}
 
 
-def test_generate_summary_falls_back_when_response_has_no_model(monkeypatch):
-    response = SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(content="generated summary"),
-            )
-        ],
+def test_fetch_previous_summary_uses_only_earlier_valid_record(monkeypatch):
+    captured = {}
+
+    def fake_fetch_one(sql, params):
+        captured.update(sql=sql, params=params)
+        return (b" previous summary ",)
+
+    monkeypatch.setattr(summary.mysql_connection, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(summary.mysql_connection, "run_sync", lambda value: value)
+
+    assert summary._fetch_previous_summary(123, 456) == "previous summary"
+    assert captured["params"] == (123, 456)
+    assert "id < %s" in captured["sql"]
+    assert "summary IS NOT NULL" in captured["sql"]
+
+
+def test_run_summary_agent_exposes_only_summary_search_tool(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        summary,
+        "get_provider_order_for_task",
+        lambda task: ["gemini"],
     )
-    recorded = {}
+    monkeypatch.setattr(
+        summary,
+        "get_models_for_task",
+        lambda provider, task: ["summary-model"],
+    )
+    monkeypatch.setattr(
+        summary,
+        "completion_kwargs_for_task",
+        lambda provider, task: {"reasoning_effort": "high"},
+    )
 
-    monkeypatch.setattr(summary, "run_ai_task", lambda *args, **kwargs: response)
+    def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
+        captured.update(
+            provider=provider,
+            model=model,
+            messages=messages,
+            tool_context=tool_context,
+            kwargs=kwargs,
+            active_context=get_tool_request_context(),
+        )
+        return "generated summary", []
 
-    def fake_trim(value, max_tokens, *, model=None):
-        recorded["model"] = model
-        return value
+    monkeypatch.setattr(summary, "run_tool_loop", fake_run_tool_loop)
 
-    monkeypatch.setattr(summary, "_trim_summary_to_tokens", fake_trim)
+    result = summary._run_summary_agent(
+        [{"role": "user", "content": "summarize"}],
+        123,
+        456,
+    )
 
-    assert summary._generate_summary(123, "[]") == "generated summary"
-    assert recorded["model"] is None
+    tool_names = {
+        tool["function"]["name"]
+        for tool in captured["kwargs"]["tool_definitions"]
+    }
+    assert result == ("generated summary", "summary-model")
+    assert captured["provider"] == "gemini"
+    assert captured["active_context"] == {
+        "user_id": 123,
+        "summary_record_id": 456,
+    }
+    assert tool_names == {"search_prior_context"}
+    assert set(captured["kwargs"]["tool_handlers"]) == tool_names
+    assert "search_prior_context" not in {
+        tool["function"]["name"] for tool in OPENAI_TOOLS
+    }
+    assert captured["kwargs"]["system_prompt_override"] == (
+        summary.config.SUMMARY_SYSTEM_PROMPT
+    )
+    assert captured["kwargs"]["max_tokens"] == 2500
+    assert captured["kwargs"]["max_iterations"] == 4
+    assert captured["kwargs"]["completion_kwargs"] == {
+        "reasoning_effort": "high"
+    }
+    assert get_tool_request_context() == {}
 
 
 def test_format_history_labels_bot_event_as_observed_runtime_state():
