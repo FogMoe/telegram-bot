@@ -3,9 +3,9 @@ import logging
 from telegram.ext import ApplicationBuilder
 
 from core import config
-from core.bot_conversation import post_init
 
 from .handler_registry import register_handlers
+from .lifecycle import post_init, post_shutdown
 
 
 def create_application():
@@ -22,6 +22,7 @@ def create_application():
         .get_updates_pool_timeout(config.TELEGRAM_GET_UPDATES_POOL_TIMEOUT)
         .concurrent_updates(True)
         .post_init(post_init)
+        .post_shutdown(post_shutdown)
         .build()
     )
 

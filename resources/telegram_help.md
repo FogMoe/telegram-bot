@@ -1,6 +1,7 @@
 ***指令列表：***
 /start - 开始使用
 /help - 查看帮助文档
+/fogmoe - 绑定、解绑或更换 FOGMOE Account
 /ref - 查看邀请信息或绑定邀请人
 /tl - 中英互译功能
 /music - 搜索音乐
@@ -28,7 +29,6 @@
 /stake - 质押经济系统
 /charge - 使用卡密充值金币
 /recharge - 联系管理员充值
-/webpassword - 设置Web登录密码
 
 ***娱乐相关：***
 /omikuji - 抽取御神签预测运势

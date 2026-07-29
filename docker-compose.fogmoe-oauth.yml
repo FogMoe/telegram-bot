@@ -1,0 +1,6 @@
+services:
+  bot:
+    environment:
+      FOGMOE_OAUTH_LISTEN_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:${FOGMOE_OAUTH_LISTEN_PORT:-18765}:${FOGMOE_OAUTH_LISTEN_PORT:-18765}"

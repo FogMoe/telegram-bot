@@ -16,5 +16,7 @@ COPY modules ./modules
 COPY resources ./resources
 COPY .env.example ./.env.example
 
-# Expose no ports; the bot connects out to Telegram
+# FOGMOE OAuth callback server
+EXPOSE 18765
+
 CMD ["python", "-u", "modules/main.py"]

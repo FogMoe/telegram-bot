@@ -32,6 +32,7 @@ AI 搜索、代码执行、图片生成和语音生成等扩展能力需要配�
 
 - 每日签到、每日奖励、任务和邀请奖励
 - 用户资料、虚拟金币赠送、互动奖励和排行榜
+- FOGMOE Account OAuth 绑定与一次性绑定奖励
 - 虚拟商城、金币锁定奖励、兑换码和管理员积分服务
 - 面向群组互动的虚拟积分体系，可与 AI 好感度和部分娱乐功能联动
 
@@ -67,7 +68,7 @@ AI 搜索、代码执行、图片生成和语音生成等扩展能力需要配�
 机器人内发送 `/help` 可查看当前部署启用的完整命令。常用入口包括：
 
 - AI 对话：`/fogmoebot`、`/setmyinfo`、`/clear`
-- 个人与积分：`/me`、`/checkin`、`/lottery`、`/task`、`/shop`、`/give`、`/rich`、`/stake`、`/ref`、`/charge`
+- 个人与积分：`/me`、`/fogmoe`、`/checkin`、`/lottery`、`/task`、`/shop`、`/give`、`/rich`、`/stake`、`/ref`、`/charge`
 - 娱乐：`/omikuji`、`/rps_game`、`/gamble`、`/sicbo`、`/btc_predict`、`/rpg`
 - 群组管理：`/verify`、`/spam`、`/keyword`、`/report`
 - 实用工具：`/tl`、`/music`、`/pic`、`/chart`
@@ -207,6 +208,7 @@ docker compose up -d --build bot
 ```
 
 如果 MySQL 位于 Docker 宿主机，`MYSQL_HOST` 必须填写容器能够访问的地址。Docker Desktop 通常可使用 `host.docker.internal`；Linux 服务器请使用实际可访问的主机名或 IP。
+启用 FOGMOE OAuth 时，需按 [FOGMOE Account 绑定部署](docs/fogmoe-account-binding.md)加载专用 Compose override；关闭时基础 Compose 不会占用 OAuth 回调端口。
 
 ---
 
