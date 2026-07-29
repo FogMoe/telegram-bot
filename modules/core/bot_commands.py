@@ -19,7 +19,7 @@ from core.telegram_history import (
     telegram_history_scope,
 )
 from core.telegram_utils import partial_send, safe_send_markdown
-from features.ai import ai_chat, summary
+from features.ai import ai_chat, idle_followup, summary
 from features.economy import ref
 
 logger = logging.getLogger(__name__)
@@ -356,6 +356,8 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     snapshot_created = False
     archived_records: list[dict] = []
+
+    await idle_followup.cancel_idle_followup(user_id)
 
     async with mysql_connection.transaction() as connection:
         snapshot_row = await mysql_connection.fetch_one(

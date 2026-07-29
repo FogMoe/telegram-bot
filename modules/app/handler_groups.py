@@ -27,7 +27,7 @@ from core.bot_conversation import reply
 from core.bot_monitoring import start_monitor, stop_monitor
 from core.telegram_history import prepare_update_history
 from features.admin import developer
-from features.ai import scheduler
+from features.ai import idle_followup, scheduler
 from features.crypto import chart, crypto_predict, swap_fogmoe_solana_token
 from features.economy import (
     bribe,
@@ -171,4 +171,9 @@ def register_ai_jobs(application) -> None:
         scheduler.run_ai_schedule_job,
         interval=scheduler.SCHEDULE_POLL_INTERVAL,
         first=5,
+    )
+    application.job_queue.run_repeating(
+        idle_followup.run_idle_followup_job,
+        interval=idle_followup.IDLE_FOLLOWUP_POLL_INTERVAL,
+        first=15,
     )

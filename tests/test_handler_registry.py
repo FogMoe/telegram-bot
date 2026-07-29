@@ -174,4 +174,5 @@ def test_register_handlers_preserves_handler_and_job_registration_order():
         ("<lambda>", 3600, 1800),
         ("clean_expired_requests_job", 300, 10),
         ("run_ai_schedule_job", 60, 5),
+        ("run_idle_followup_job", 60, 15),
     ]

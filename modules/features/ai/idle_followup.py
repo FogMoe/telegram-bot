@@ -1,0 +1,641 @@
+"""Idle private-chat recap and one-shot follow-up handling."""
+
+from __future__ import annotations
+
+import asyncio
+import html
+import json
+import logging
+import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from statistics import median
+from typing import Any, Iterable
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from telegram.ext import ContextTypes
+
+from core import config, mysql_connection
+from core.archive_utils import send_permanent_records_archive
+from core.prompt_utils import format_metadata_attrs, xml_escape
+from core.telegram_history import suppress_telegram_history
+from core.telegram_utils import partial_send
+from features.ai import ai_chat, summary
+from features.ai.conversation_locks import get_conversation_lock
+from features.ai.generated_audio_sender import send_generated_audio_from_tool_logs
+from features.ai.generated_image_sender import send_generated_images_from_tool_logs
+from features.ai.reply_filter import normalize_ai_reply_text
+from features.ai.router import runtime_error_cause
+from features.ai.runtime import EXECUTOR
+from features.ai.sticker_sender import (
+    PartialAIReplySendError,
+    normalize_sticker_directives,
+    send_ai_reply_with_stickers,
+)
+from features.ai.task_runner import run_ai_task
+from features.ai.tool_history import tool_logs_to_record_entries
+from features.ai.user_state import build_user_state_prompt
+
+logger = logging.getLogger(__name__)
+
+IDLE_FOLLOWUP_POLL_INTERVAL = 60
+IDLE_FOLLOWUP_BATCH_SIZE = 3
+IDLE_FOLLOWUP_SAMPLE_SIZE = 5
+IDLE_FOLLOWUP_ENABLED = True
+IDLE_FOLLOWUP_DEFAULT_MINUTES = 10
+IDLE_FOLLOWUP_MIN_MINUTES = 2
+IDLE_FOLLOWUP_MAX_MINUTES = 60
+IDLE_FOLLOWUP_CLAIM_MINUTES = 15
+IDLE_FOLLOWUP_RETRY_MINUTES = 15
+IDLE_FOLLOWUP_MAX_RETRIES = 3
+IDLE_RECAP_MAX_DIALOGUE_MESSAGES = 20
+IDLE_RECAP_MAX_TOKENS = 1000
+IDLE_RECAP_RETRY_LIMIT = 2
+IDLE_RECAP_TIMEOUT_SECONDS = 120
+
+_idle_followup_job_lock = asyncio.Lock()
+_MESSAGE_TAG_RE = re.compile(r"<message>(.*?)</message>", re.DOTALL)
+_MEDIA_DESCRIPTION_RE = re.compile(r"<description>(.*?)</description>", re.DOTALL)
+
+
+class IdleRecapOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    recap: str = Field(max_length=2000)
+    open_loops: str = Field(max_length=2000)
+    suggested_follow_up: str = Field(max_length=2000)
+
+@dataclass(frozen=True)
+class IdleFollowupClaim:
+    user_id: int
+    activity_version: int
+    retry_count: int
+
+
+def calculate_ttl_seconds(
+    intervals: Iterable[int | float],
+    *,
+    default_minutes: int | None = None,
+    minimum_minutes: int | None = None,
+    maximum_minutes: int | None = None,
+) -> int:
+    """Return a median-based TTL clamped to the configured bounds."""
+
+    configured_minimum = int(
+        minimum_minutes if minimum_minutes is not None else IDLE_FOLLOWUP_MIN_MINUTES
+    )
+    configured_maximum = int(
+        maximum_minutes if maximum_minutes is not None else IDLE_FOLLOWUP_MAX_MINUTES
+    )
+    lower_minutes = min(configured_minimum, configured_maximum)
+    upper_minutes = max(configured_minimum, configured_maximum)
+    lower_seconds = max(60, lower_minutes * 60)
+    upper_seconds = max(lower_seconds, upper_minutes * 60)
+
+    samples: list[int] = []
+    for value in intervals:
+        try:
+            seconds = int(value)
+        except (TypeError, ValueError):
+            continue
+        if seconds > 0:
+            samples.append(seconds)
+
+    if samples:
+        ttl_seconds = int(median(samples))
+    else:
+        fallback_minutes = int(
+            default_minutes
+            if default_minutes is not None
+            else IDLE_FOLLOWUP_DEFAULT_MINUTES
+        )
+        ttl_seconds = fallback_minutes * 60
+
+    return max(lower_seconds, min(ttl_seconds, upper_seconds))
+
+
+def _decode_recent_intervals(value: Any) -> list[int]:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+    if not isinstance(value, list):
+        return []
+
+    intervals: list[int] = []
+    for item in value:
+        try:
+            seconds = int(item)
+        except (TypeError, ValueError):
+            continue
+        if seconds > 0:
+            intervals.append(seconds)
+    return intervals[-IDLE_FOLLOWUP_SAMPLE_SIZE:]
+
+
+def _extract_recent_dialogue(messages: list[dict]) -> list[dict[str, str]]:
+    dialogue: list[dict[str, str]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+
+        if role == "user":
+            if 'origin="idle_recap"' in content:
+                continue
+            if 'event="command"' in content:
+                continue
+            message_match = _MESSAGE_TAG_RE.search(content)
+            if message_match:
+                text = html.unescape(message_match.group(1)).strip()
+                media_match = _MEDIA_DESCRIPTION_RE.search(content)
+                if media_match:
+                    description = html.unescape(media_match.group(1)).strip()
+                    if description:
+                        text = f"{text}\n[媒体描述] {description}".strip()
+            elif "<metadata" in content:
+                continue
+            else:
+                text = content.strip()
+            if text:
+                dialogue.append({"role": "user", "content": text})
+            continue
+
+        if role == "assistant":
+            dialogue.append({"role": "assistant", "content": content.strip()})
+
+    return dialogue[-IDLE_RECAP_MAX_DIALOGUE_MESSAGES:]
+
+
+def _parse_recap_response(value: object) -> dict[str, str]:
+    text = str(value or "").strip()
+    try:
+        parsed = IdleRecapOutput.model_validate_json(text)
+    except ValidationError as exc:
+        raise ValueError("idle recap response failed the required JSON schema") from exc
+
+    result = {
+        field: re.sub(r"\s+", " ", value).strip()
+        for field, value in parsed.model_dump().items()
+    }
+
+    if not any(result.values()):
+        raise ValueError("idle recap response contains no usable content")
+    return result
+
+
+def _generate_recap_sync(dialogue: list[dict[str, str]]) -> dict[str, str]:
+    transcript = json.dumps(dialogue, ensure_ascii=False)
+    prompt = (
+        "根据下面近期对话生成一次短期回顾。"
+        "recap 是已发生内容的简短概括；"
+        "open_loops 是尚未完成或值得稍后确认的事项，没有则为空字符串；"
+        "suggested_follow_up 是适合自然跟进的方向，没有则为空字符串。"
+        "不要把建议写成用户已经提出的要求。\n\n"
+        f"近期对话：{transcript}"
+    )
+    messages = [
+        {"role": "system", "content": config.IDLE_RECAP_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
+
+    last_error: Exception | None = None
+    for attempt in range(1, IDLE_RECAP_RETRY_LIMIT + 1):
+        try:
+            response = run_ai_task(
+                "recap",
+                messages=messages,
+                max_tokens=IDLE_RECAP_MAX_TOKENS,
+                timeout=IDLE_RECAP_TIMEOUT_SECONDS,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "idle_recap",
+                        "strict": True,
+                        "schema": IdleRecapOutput.model_json_schema(),
+                    },
+                },
+                drop_params=False,
+            )
+            content = response.choices[0].message.content
+            return _parse_recap_response(content)
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "Idle recap generation attempt %s/%s failed: %s",
+                attempt,
+                IDLE_RECAP_RETRY_LIMIT,
+                exc,
+            )
+    raise RuntimeError("Idle recap generation failed after retries") from last_error
+
+
+async def _generate_recap(dialogue: list[dict[str, str]]) -> dict[str, str]:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(EXECUTOR, _generate_recap_sync, dialogue)
+
+
+def _format_idle_recap_event(
+    recap: dict[str, str],
+    *,
+    timestamp: datetime,
+) -> str:
+    if timestamp.tzinfo is not None:
+        timestamp = timestamp.astimezone(timezone.utc).replace(tzinfo=None)
+    attrs = [
+        ("type", "idle_followup"),
+        ("timestamp", timestamp.strftime("%Y-%m-%d %H:%M:%S")),
+        ("origin", "idle_recap"),
+    ]
+    lines = [f"<metadata {format_metadata_attrs(attrs)}>"]
+    if recap.get("recap"):
+        lines.append(f"  <recap>{xml_escape(recap['recap'])}</recap>")
+    if recap.get("open_loops"):
+        lines.append(f"  <open_loops>{xml_escape(recap['open_loops'])}</open_loops>")
+    if recap.get("suggested_follow_up"):
+        lines.append(
+            "  <suggested_follow_up>"
+            f"{xml_escape(recap['suggested_follow_up'])}"
+            "</suggested_follow_up>"
+        )
+    lines.append("</metadata>")
+    return "\n".join(lines)
+
+
+async def note_incoming_private_message(user_id: int) -> None:
+    """Invalidate an in-flight follow-up before the conversation lock is acquired."""
+
+    if not IDLE_FOLLOWUP_ENABLED:
+        return
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    try:
+        await mysql_connection.execute(
+            "UPDATE ai_idle_followups "
+            "SET last_activity_at = %s, "
+            "next_run_at = DATE_ADD(%s, INTERVAL typical_interval_seconds SECOND), "
+            "activity_version = activity_version + 1, status = 'fired', "
+            "claim_until = NULL, retry_count = 0, last_error = NULL "
+            "WHERE user_id = %s",
+            (now, now, user_id),
+        )
+    except Exception:
+        logger.exception("Failed to refresh idle follow-up activity: user_id=%s", user_id)
+
+
+async def arm_from_private_turn(user_id: int) -> None:
+    """Record one accepted private AI turn and arm its one-shot idle follow-up."""
+
+    if not IDLE_FOLLOWUP_ENABLED:
+        return
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    try:
+        async with mysql_connection.transaction() as connection:
+            row = await mysql_connection.fetch_one(
+                "SELECT last_turn_at, recent_intervals "
+                "FROM ai_idle_followups WHERE user_id = %s FOR UPDATE",
+                (user_id,),
+                connection=connection,
+            )
+            intervals: list[int] = []
+            if row:
+                last_turn_at = row[0]
+                intervals = _decode_recent_intervals(row[1])
+                if last_turn_at:
+                    gap_seconds = int((now - last_turn_at).total_seconds())
+                    if gap_seconds > 0:
+                        intervals.append(gap_seconds)
+                        intervals = intervals[-IDLE_FOLLOWUP_SAMPLE_SIZE:]
+
+            ttl_seconds = calculate_ttl_seconds(intervals)
+            next_run_at = now + timedelta(seconds=ttl_seconds)
+            intervals_json = json.dumps(intervals, ensure_ascii=False)
+            if row:
+                await connection.exec_driver_sql(
+                    "UPDATE ai_idle_followups "
+                    "SET last_activity_at = %s, last_turn_at = %s, next_run_at = %s, "
+                    "typical_interval_seconds = %s, recent_intervals = %s, "
+                    "activity_version = activity_version + 1, status = 'armed', "
+                    "claim_until = NULL, retry_count = 0, last_error = NULL "
+                    "WHERE user_id = %s",
+                    (
+                        now,
+                        now,
+                        next_run_at,
+                        ttl_seconds,
+                        intervals_json,
+                        user_id,
+                    ),
+                )
+            else:
+                await connection.exec_driver_sql(
+                    "INSERT INTO ai_idle_followups "
+                    "(user_id, last_activity_at, last_turn_at, next_run_at, "
+                    "typical_interval_seconds, recent_intervals, activity_version, status) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, 1, 'armed')",
+                    (
+                        user_id,
+                        now,
+                        now,
+                        next_run_at,
+                        ttl_seconds,
+                        intervals_json,
+                    ),
+                )
+    except Exception:
+        logger.exception("Failed to arm idle follow-up: user_id=%s", user_id)
+
+
+async def cancel_idle_followup(user_id: int) -> None:
+    if not IDLE_FOLLOWUP_ENABLED:
+        return
+    try:
+        await mysql_connection.execute(
+            "DELETE FROM ai_idle_followups WHERE user_id = %s",
+            (user_id,),
+        )
+    except Exception:
+        logger.exception("Failed to cancel idle follow-up: user_id=%s", user_id)
+
+
+async def _claim_due_followups(
+    limit: int = IDLE_FOLLOWUP_BATCH_SIZE,
+) -> list[IdleFollowupClaim]:
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    claim_until = now + timedelta(minutes=IDLE_FOLLOWUP_CLAIM_MINUTES)
+    async with mysql_connection.transaction() as connection:
+        rows = await mysql_connection.fetch_all(
+            "SELECT user_id, activity_version, retry_count "
+            "FROM ai_idle_followups "
+            "WHERE (status = 'armed' AND next_run_at <= %s) "
+            "OR (status = 'executing' AND claim_until IS NOT NULL AND claim_until <= %s) "
+            "ORDER BY next_run_at ASC, user_id ASC LIMIT %s FOR UPDATE",
+            (now, now, limit),
+            connection=connection,
+        )
+        claims = [
+            IdleFollowupClaim(
+                user_id=int(row[0]),
+                activity_version=int(row[1]),
+                retry_count=int(row[2] or 0),
+            )
+            for row in rows
+        ]
+        for claim in claims:
+            await connection.exec_driver_sql(
+                "UPDATE ai_idle_followups SET status = 'executing', claim_until = %s "
+                "WHERE user_id = %s AND activity_version = %s",
+                (claim_until, claim.user_id, claim.activity_version),
+            )
+    return claims
+
+
+async def _claim_is_current(claim: IdleFollowupClaim) -> bool:
+    row = await mysql_connection.fetch_one(
+        "SELECT 1 FROM ai_idle_followups "
+        "WHERE user_id = %s AND activity_version = %s AND status = 'executing'",
+        (claim.user_id, claim.activity_version),
+    )
+    return bool(row)
+
+
+async def _mark_claim_fired(claim: IdleFollowupClaim) -> None:
+    await mysql_connection.execute(
+        "UPDATE ai_idle_followups "
+        "SET status = 'fired', claim_until = NULL, last_fired_at = UTC_TIMESTAMP(), "
+        "last_error = NULL "
+        "WHERE user_id = %s AND activity_version = %s AND status = 'executing'",
+        (claim.user_id, claim.activity_version),
+    )
+
+
+async def _record_claim_failure(claim: IdleFollowupClaim, exc: Exception) -> None:
+    error_text = re.sub(r"\s+", " ", str(exc)).strip() or type(exc).__name__
+    error_text = error_text[:500]
+    next_retry_count = claim.retry_count + 1
+    if next_retry_count >= IDLE_FOLLOWUP_MAX_RETRIES:
+        await mysql_connection.execute(
+            "UPDATE ai_idle_followups "
+            "SET status = 'fired', claim_until = NULL, retry_count = %s, "
+            "last_fired_at = UTC_TIMESTAMP(), last_error = %s "
+            "WHERE user_id = %s AND activity_version = %s AND status = 'executing'",
+            (
+                next_retry_count,
+                error_text,
+                claim.user_id,
+                claim.activity_version,
+            ),
+        )
+        return
+
+    next_run_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(
+        minutes=IDLE_FOLLOWUP_RETRY_MINUTES
+    )
+    await mysql_connection.execute(
+        "UPDATE ai_idle_followups "
+        "SET status = 'armed', next_run_at = %s, claim_until = NULL, "
+        "retry_count = %s, last_error = %s "
+        "WHERE user_id = %s AND activity_version = %s AND status = 'executing'",
+        (
+            next_run_at,
+            next_retry_count,
+            error_text,
+            claim.user_id,
+            claim.activity_version,
+        ),
+    )
+
+
+async def _persist_completed_turn(
+    claim: IdleFollowupClaim,
+    recap_event: str,
+    assistant_message: str,
+    tool_logs: list[dict],
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    records = [("user", recap_event)]
+    records.extend(tool_logs_to_record_entries(tool_logs))
+    if assistant_message:
+        records.append(("assistant", assistant_message))
+    snapshot_created, _, archived_records = await mysql_connection.async_insert_chat_records(
+        claim.user_id,
+        records,
+    )
+    await _mark_claim_fired(claim)
+    if snapshot_created:
+        summary.schedule_summary_generation(claim.user_id)
+    if archived_records:
+        await send_permanent_records_archive(
+            context.bot,
+            claim.user_id,
+            archived_records,
+            logger=logger,
+        )
+
+
+async def _send_followup_outputs(
+    user_id: int,
+    assistant_message: str,
+    tool_logs: list[dict],
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if assistant_message:
+        try:
+            await context.bot.send_chat_action(chat_id=user_id, action="typing")
+        except Exception:
+            logger.debug("Failed to send typing action for idle follow-up: user_id=%s", user_id)
+
+        send_func = partial_send(context.bot.send_message, user_id)
+        try:
+            with suppress_telegram_history():
+                await send_ai_reply_with_stickers(
+                    bot=context.bot,
+                    chat_id=user_id,
+                    text=assistant_message,
+                    first_text_send=send_func,
+                    fallback_send=send_func,
+                    logger=logger,
+                )
+        except PartialAIReplySendError as exc:
+            logger.warning(
+                "Idle follow-up was only partially sent: user_id=%s sent_messages=%s error=%s",
+                user_id,
+                len(exc.sent_messages),
+                exc,
+            )
+        except Exception:
+            logger.exception("Failed to send idle follow-up reply: user_id=%s", user_id)
+
+    try:
+        with suppress_telegram_history():
+            await send_generated_audio_from_tool_logs(
+                bot=context.bot,
+                chat_id=user_id,
+                tool_logs=tool_logs,
+                logger=logger,
+            )
+            await send_generated_images_from_tool_logs(
+                bot=context.bot,
+                chat_id=user_id,
+                tool_logs=tool_logs,
+                logger=logger,
+            )
+    except Exception:
+        logger.exception("Failed to send idle follow-up tool media: user_id=%s", user_id)
+
+
+async def _process_claim(
+    claim: IdleFollowupClaim,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    try:
+        async with get_conversation_lock(claim.user_id):
+            if not await _claim_is_current(claim):
+                return
+
+            chat_history = await mysql_connection.async_get_chat_history(claim.user_id)
+            dialogue = _extract_recent_dialogue(chat_history)
+            if not dialogue:
+                await _mark_claim_fired(claim)
+                return
+
+            recap = await _generate_recap(dialogue)
+            if not await _claim_is_current(claim):
+                return
+
+            recap_event = _format_idle_recap_event(
+                recap,
+                timestamp=datetime.now(timezone.utc),
+            )
+            user_state_prompt = await build_user_state_prompt(claim.user_id)
+            if user_state_prompt is None:
+                await _mark_claim_fired(claim)
+                return
+
+            ai_messages = list(chat_history)
+            ai_messages.append({"role": "user", "content": recap_event})
+            assistant_message, tool_logs = await ai_chat.get_ai_response(
+                ai_messages,
+                claim.user_id,
+                tool_context={
+                    "is_group": False,
+                    "group_id": None,
+                    "message_id": None,
+                    "user_id": claim.user_id,
+                    "user_state_prompt": user_state_prompt,
+                },
+            )
+            assistant_message = normalize_ai_reply_text(assistant_message)
+            failure_cause = runtime_error_cause(assistant_message)
+            if failure_cause:
+                if not tool_logs:
+                    raise RuntimeError(
+                        f"main AI failed during idle follow-up: {failure_cause}"
+                    )
+                logger.warning(
+                    "Idle follow-up main AI failed after tool execution: user_id=%s cause=%s",
+                    claim.user_id,
+                    failure_cause,
+                )
+                assistant_message = ""
+            if assistant_message:
+                assistant_message = await normalize_sticker_directives(
+                    assistant_message,
+                    logger=logger,
+                )
+
+            if not await _claim_is_current(claim) and not tool_logs:
+                return
+
+            await _persist_completed_turn(
+                claim,
+                recap_event,
+                assistant_message,
+                tool_logs,
+                context,
+            )
+            await _send_followup_outputs(
+                claim.user_id,
+                assistant_message,
+                tool_logs,
+                context,
+            )
+    except Exception as exc:
+        logger.exception(
+            "Idle follow-up failed: user_id=%s activity_version=%s",
+            claim.user_id,
+            claim.activity_version,
+        )
+        try:
+            await _record_claim_failure(claim, exc)
+        except Exception:
+            logger.exception(
+                "Failed to record idle follow-up failure: user_id=%s activity_version=%s",
+                claim.user_id,
+                claim.activity_version,
+            )
+
+
+async def run_idle_followup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not IDLE_FOLLOWUP_ENABLED or _idle_followup_job_lock.locked():
+        return
+
+    async with _idle_followup_job_lock:
+        claims = await _claim_due_followups()
+        if claims:
+            await asyncio.gather(*(_process_claim(claim, context) for claim in claims))
+
+
+__all__ = [
+    "IDLE_FOLLOWUP_POLL_INTERVAL",
+    "arm_from_private_turn",
+    "calculate_ttl_seconds",
+    "cancel_idle_followup",
+    "note_incoming_private_message",
+    "run_idle_followup_job",
+]

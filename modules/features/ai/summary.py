@@ -194,6 +194,14 @@ def _format_history_for_summary(snapshot_text: str) -> str:
         if role == "user":
             if content:
                 if isinstance(content, str):
+                    if 'origin="idle_recap"' in content:
+                        attrs = _extract_metadata_attrs(content)
+                        timestamp = attrs.get("timestamp")
+                        line = "IDLE_FOLLOWUP_TRIGGER"
+                        if timestamp:
+                            line = f"{line}: timestamp={timestamp}"
+                        lines.append(line)
+                        continue
                     runtime_event_line = _format_runtime_event(content)
                     if runtime_event_line is not None:
                         lines.append(runtime_event_line)

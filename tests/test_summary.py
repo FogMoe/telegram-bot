@@ -125,3 +125,34 @@ def test_format_history_labels_callback_as_user_action():
     assert result.startswith("USER_ACTION:")
     assert "callback_data=shop_buy_1" in result
     assert "callback_label=购买" in result
+
+
+def test_format_history_replaces_idle_recap_with_trigger_marker():
+    snapshot = json.dumps(
+        [
+            {
+                "role": "user",
+                "content": (
+                    '<metadata type="idle_followup" timestamp="2026-07-29 12:00:00" '
+                    'origin="idle_recap">'
+                    "<recap>model note</recap>"
+                    "<open_loops>unfinished item</open_loops>"
+                    "<suggested_follow_up>ask about it</suggested_follow_up>"
+                    "</metadata>"
+                ),
+            },
+            {"role": "assistant", "content": "最近准备得怎么样啦？"},
+        ],
+        ensure_ascii=False,
+    )
+
+    result = summary._format_history_for_summary(snapshot)
+
+    assert result == (
+        "IDLE_FOLLOWUP_TRIGGER: timestamp=2026-07-29 12:00:00\n\n"
+        "ASSISTANT: 最近准备得怎么样啦？"
+    )
+    assert "model note" not in result
+    assert "unfinished item" not in result
+    assert "ask about it" not in result
+    assert "USER:" not in result

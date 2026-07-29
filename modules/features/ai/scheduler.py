@@ -5,9 +5,9 @@ from typing import Optional
 
 from telegram.ext import ContextTypes
 
-from core import mysql_connection, process_user
+from core import mysql_connection
 from core.archive_utils import send_permanent_records_archive
-from core.prompt_utils import format_metadata_attrs, format_user_state_prompt, xml_escape
+from core.prompt_utils import format_metadata_attrs, xml_escape
 from core.telegram_history import suppress_telegram_history, telegram_history_scope
 from core.telegram_utils import partial_send
 from features.ai import ai_chat, summary
@@ -18,6 +18,7 @@ from features.ai.reply_filter import normalize_ai_reply_text
 from features.ai.sticker_sender import normalize_sticker_directives, send_ai_reply_with_stickers
 from features.ai.telegram_visible_sender import TelegramVisibleContentHandler
 from features.ai.tool_history import tool_logs_to_record_entries
+from features.ai.user_state import build_user_state_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -91,51 +92,6 @@ def _format_scheduled_message(
     lines.append(f"  <instruction>{xml_escape(instruction)}</instruction>")
     lines.append("</metadata>")
     return "\n".join(lines)
-
-
-async def _build_user_state_prompt(user_id: int) -> Optional[str]:
-    row = await mysql_connection.fetch_one(
-        "SELECT permission, coins, coins_paid, info FROM user WHERE id = %s",
-        (user_id,),
-    )
-    if not row:
-        return None
-
-    user_permission = row[0]
-    user_coins_free = row[1] or 0
-    user_coins_paid = row[2] or 0
-    user_info_raw = row[3] if len(row) > 3 else ""
-    user_coins = user_coins_free + user_coins_paid
-    user_plan = process_user.resolve_user_plan(user_id, user_coins_paid)
-
-    user_impression_raw = await process_user.async_get_user_impression(user_id)
-
-    impression_display = (user_impression_raw or "").strip()
-    if impression_display:
-        impression_display = impression_display.replace("\r", " ").replace("\n", " ")
-        if len(impression_display) > 500:
-            impression_display = impression_display[:497] + "..."
-    else:
-        impression_display = "Not recorded"
-
-    personal_info_display = (user_info_raw or "").strip()
-    if personal_info_display and len(personal_info_display) > 500:
-        personal_info_display = personal_info_display[:500]
-
-    diary_row = await mysql_connection.fetch_one(
-        "SELECT 1 FROM ai_user_diary_pages WHERE user_id = %s AND content != '' LIMIT 1",
-        (user_id,),
-    )
-    diary_exists = bool(diary_row)
-
-    return format_user_state_prompt(
-        user_coins=user_coins,
-        user_plan=user_plan,
-        user_permission=user_permission,
-        impression=impression_display,
-        personal_info=personal_info_display,
-        diary_exists=diary_exists,
-    )
 
 
 async def _handle_overflow_summary(conversation_id: int, level: Optional[str]) -> None:
@@ -282,7 +238,7 @@ async def _process_schedule_task_locked(
         recurrence_interval = 1
 
     try:
-        user_state_prompt = await _build_user_state_prompt(user_id)
+        user_state_prompt = await build_user_state_prompt(user_id)
         if user_state_prompt is None:
             await _mark_schedule_status(
                 schedule_id,

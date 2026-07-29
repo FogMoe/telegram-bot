@@ -41,6 +41,16 @@ def test_get_provider_order_for_advisor_uses_dedicated_config(monkeypatch):
     ]
 
 
+def test_get_provider_order_for_recap_uses_dedicated_config(monkeypatch):
+    monkeypatch.setattr(config, "AI_RECAP_PROVIDER", "Gemini")
+    monkeypatch.setattr(config, "AI_RECAP_FALLBACK_PROVIDER", "OpenAI")
+
+    assert provider_resolver.get_provider_order_for_task("recap") == [
+        "gemini",
+        "openai",
+    ]
+
+
 def test_get_provider_order_for_unknown_task_fails():
     with pytest.raises(RuntimeError, match="Unsupported AI task"):
         provider_resolver.get_provider_order_for_task("embedding")

@@ -280,7 +280,10 @@ def search_permanent_records_tool(
                     continue
                 if not isinstance(content, str):
                     content = json.dumps(content, ensure_ascii=False)
-                if role == "user" and 'origin="history_state"' in content:
+                if role == "user" and (
+                    'origin="history_state"' in content
+                    or 'origin="idle_recap"' in content
+                ):
                     continue
                 filtered_messages.append(
                     {

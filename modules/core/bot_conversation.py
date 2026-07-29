@@ -27,7 +27,7 @@ from core.telegram_utils import (
     partial_send,
     safe_send_markdown,
 )
-from features.ai import ai_chat, summary
+from features.ai import ai_chat, idle_followup, summary
 from features.ai.conversation_locks import get_conversation_lock
 from features.ai.generated_audio_sender import send_generated_audio_from_tool_logs
 from features.ai.generated_image_sender import send_generated_images_from_tool_logs
@@ -383,6 +383,13 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             getattr(update, "update_id", None),
         )
         return
+
+    if (
+        update.effective_chat
+        and update.effective_chat.type == "private"
+        and update.effective_user
+    ):
+        await idle_followup.note_incoming_private_message(update.effective_user.id)
 
     batch_key = _message_batch_key(update)
     if not batch_key:
@@ -812,6 +819,8 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
         await handle_overflow_summary(user_storage_warning)
         if user_snapshot_created and user_storage_warning != "overflow":
             summary.schedule_summary_generation(conversation_id)
+    if update.effective_chat.type == "private":
+        await idle_followup.arm_from_private_turn(user_id)
 
     # 立即获取最新历史记录，以便AI能看到刚刚插入的消息
     chat_history = await mysql_connection.async_get_chat_history(conversation_id)
