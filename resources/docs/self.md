@@ -54,7 +54,7 @@
 
 **关系**
 `kindness_gift` 送硬币，`schedule_ai_message` 安排未来某刻主动私聊对方。
-后者是她少数能主动发起联系的方式。
+后者是她少数能主动发起联系的方式，完整规则见 schedule 文档。
 
 **其他**
 `fetch_group_context` 在群聊中取回上下文；`advisor` 把一个难题交给另一个更资深的模型，

@@ -5,7 +5,7 @@ from typing import Optional
 
 from telegram.ext import ContextTypes
 
-from core import mysql_connection
+from core import mysql_connection, process_user
 from core.archive_utils import send_permanent_records_archive
 from core.prompt_utils import format_metadata_attrs, xml_escape
 from core.telegram_history import suppress_telegram_history, telegram_history_scope
@@ -15,6 +15,10 @@ from features.ai.conversation_locks import get_conversation_lock
 from features.ai.generated_audio_sender import send_generated_audio_from_tool_logs
 from features.ai.generated_image_sender import send_generated_images_from_tool_logs
 from features.ai.reply_filter import normalize_ai_reply_text
+from features.ai.schedule_limits import (
+    DAILY_SCHEDULE_TRIGGER_LIMIT,
+    reserve_daily_schedule_trigger,
+)
 from features.ai.sticker_sender import normalize_sticker_directives, send_ai_reply_with_stickers
 from features.ai.telegram_visible_sender import TelegramVisibleContentHandler
 from features.ai.tool_history import tool_logs_to_record_entries
@@ -175,13 +179,19 @@ async def _persist_tool_logs(
 async def _claim_due_schedules(limit: int = SCHEDULE_BATCH_SIZE) -> list[tuple]:
     async with mysql_connection.transaction() as connection:
         rows = await mysql_connection.fetch_all(
-            "SELECT id, user_id, run_at, created_at, trigger_reason, context, prompt, "
-            "recurrence_unit, recurrence_interval "
-            "FROM ai_schedules "
-            "WHERE status = 'pending' AND run_at <= UTC_TIMESTAMP() "
-            "ORDER BY run_at ASC, id ASC "
+            "SELECT s.id, s.user_id, s.run_at, s.created_at, s.trigger_reason, "
+            "s.context, s.prompt, s.recurrence_unit, s.recurrence_interval "
+            "FROM ai_schedules AS s "
+            "LEFT JOIN user AS u ON u.id = s.user_id "
+            "WHERE s.status = 'pending' AND s.run_at <= UTC_TIMESTAMP() "
+            "AND (u.id IS NULL OR "
+            "COALESCE(u.coins, 0) + COALESCE(u.coins_paid, 0) > 0) "
+            "AND (u.id IS NULL OR u.ai_schedule_trigger_date IS NULL "
+            "OR u.ai_schedule_trigger_date <> UTC_DATE() "
+            "OR u.ai_schedule_trigger_count < %s) "
+            "ORDER BY s.run_at ASC, s.id ASC "
             "LIMIT %s FOR UPDATE",
-            (limit,),
+            (DAILY_SCHEDULE_TRIGGER_LIMIT, limit),
             connection=connection,
         )
         if not rows:
@@ -244,6 +254,25 @@ async def _process_schedule_task_locked(
                 schedule_id,
                 "failed",
                 error="user not found",
+            )
+            return
+
+        if await process_user.async_get_user_coins(user_id) < 1:
+            await _mark_schedule_status(schedule_id, "pending")
+            logger.info(
+                "Scheduled task paused until coins are available: user_id=%s schedule_id=%s",
+                user_id,
+                schedule_id,
+            )
+            return
+
+        if not await reserve_daily_schedule_trigger(user_id):
+            await _mark_schedule_status(schedule_id, "pending")
+            logger.info(
+                "Scheduled task paused at daily trigger limit: user_id=%s schedule_id=%s limit=%s",
+                user_id,
+                schedule_id,
+                DAILY_SCHEDULE_TRIGGER_LIMIT,
             )
             return
 

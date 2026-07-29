@@ -516,11 +516,15 @@ async def _claim_due_followups(
     claim_until = now + timedelta(minutes=IDLE_FOLLOWUP_CLAIM_MINUTES)
     async with mysql_connection.transaction() as connection:
         rows = await mysql_connection.fetch_all(
-            "SELECT user_id, activity_version, retry_count "
-            "FROM ai_idle_followups "
-            "WHERE (status = 'armed' AND next_run_at <= %s) "
-            "OR (status = 'executing' AND claim_until IS NOT NULL AND claim_until <= %s) "
-            "ORDER BY next_run_at ASC, user_id ASC LIMIT %s FOR UPDATE",
+            "SELECT f.user_id, f.activity_version, f.retry_count "
+            "FROM ai_idle_followups AS f "
+            "LEFT JOIN user AS u ON u.id = f.user_id "
+            "WHERE ((f.status = 'armed' AND f.next_run_at <= %s) "
+            "OR (f.status = 'executing' AND f.claim_until IS NOT NULL "
+            "AND f.claim_until <= %s)) "
+            "AND (u.id IS NULL OR "
+            "COALESCE(u.coins, 0) + COALESCE(u.coins_paid, 0) > 0) "
+            "ORDER BY f.next_run_at ASC, f.user_id ASC LIMIT %s FOR UPDATE",
             (now, now, limit),
             connection=connection,
         )
@@ -558,6 +562,25 @@ async def _mark_claim_fired(claim: IdleFollowupClaim) -> None:
         "WHERE user_id = %s AND activity_version = %s AND status = 'executing'",
         (claim.user_id, claim.activity_version),
     )
+
+
+async def _pause_claim_until_coins_available(claim: IdleFollowupClaim) -> None:
+    await mysql_connection.execute(
+        "UPDATE ai_idle_followups "
+        "SET status = 'armed', claim_until = NULL, last_error = NULL "
+        "WHERE user_id = %s AND activity_version = %s AND status = 'executing'",
+        (claim.user_id, claim.activity_version),
+    )
+
+
+async def _get_followup_user_total_coins(user_id: int) -> int | None:
+    row = await mysql_connection.fetch_one(
+        "SELECT coins, coins_paid FROM user WHERE id = %s",
+        (user_id,),
+    )
+    if not row:
+        return None
+    return (row[0] or 0) + (row[1] or 0)
 
 
 async def _record_claim_failure(claim: IdleFollowupClaim, exc: Exception) -> None:
@@ -682,6 +705,18 @@ async def _process_claim(
     try:
         async with get_conversation_lock(claim.user_id):
             if not await _claim_is_current(claim):
+                return
+
+            total_coins = await _get_followup_user_total_coins(claim.user_id)
+            if total_coins is None:
+                await _mark_claim_fired(claim)
+                return
+            if total_coins < 1:
+                await _pause_claim_until_coins_available(claim)
+                logger.info(
+                    "Idle follow-up paused until coins are available: user_id=%s",
+                    claim.user_id,
+                )
                 return
 
             chat_history = await mysql_connection.async_get_chat_history(claim.user_id)

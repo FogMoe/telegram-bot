@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -6,6 +7,29 @@ import pytest
 
 from features.ai import idle_followup
 from features.ai.tools import get_tool_request_context
+
+
+def test_claim_due_followups_skips_registered_users_without_coins(monkeypatch):
+    captured_queries = []
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield SimpleNamespace()
+
+    async def fake_fetch_all(sql, params, **kwargs):
+        captured_queries.append((sql, params))
+        return []
+
+    monkeypatch.setattr(idle_followup.mysql_connection, "transaction", fake_transaction)
+    monkeypatch.setattr(idle_followup.mysql_connection, "fetch_all", fake_fetch_all)
+
+    assert asyncio.run(idle_followup._claim_due_followups()) == []
+
+    query, params = captured_queries[0]
+    query = " ".join(query.split())
+    assert "LEFT JOIN user AS u ON u.id = f.user_id" in query
+    assert "COALESCE(u.coins, 0) + COALESCE(u.coins_paid, 0) > 0" in query
+    assert params[-1] == idle_followup.IDLE_FOLLOWUP_BATCH_SIZE
 
 
 def test_calculate_ttl_uses_default_median_and_hard_bounds():
@@ -281,6 +305,9 @@ def test_process_claim_stops_when_user_returns_during_recap(monkeypatch):
     async def fake_history(_user_id):
         return [{"role": "user", "content": "hello"}]
 
+    async def fake_total_coins(_user_id):
+        return 1
+
     async def fake_memory_context(_user_id):
         return {"impression": "", "diary_index": []}
 
@@ -300,6 +327,11 @@ def test_process_claim_stops_when_user_returns_during_recap(monkeypatch):
         persisted.append((args, kwargs))
 
     monkeypatch.setattr(idle_followup, "_claim_is_current", fake_claim_is_current)
+    monkeypatch.setattr(
+        idle_followup,
+        "_get_followup_user_total_coins",
+        fake_total_coins,
+    )
     monkeypatch.setattr(
         idle_followup.mysql_connection,
         "async_get_chat_history",
@@ -348,6 +380,9 @@ def test_process_claim_keeps_main_ai_tools_enabled(monkeypatch):
     async def fake_history(_user_id):
         return [{"role": "user", "content": "hello"}]
 
+    async def fake_total_coins(_user_id):
+        return 1
+
     async def fake_memory_context(_user_id):
         return {"impression": "", "diary_index": []}
 
@@ -380,6 +415,11 @@ def test_process_claim_keeps_main_ai_tools_enabled(monkeypatch):
 
     monkeypatch.setattr(idle_followup, "_claim_is_current", always_current)
     monkeypatch.setattr(
+        idle_followup,
+        "_get_followup_user_total_coins",
+        fake_total_coins,
+    )
+    monkeypatch.setattr(
         idle_followup.mysql_connection,
         "async_get_chat_history",
         fake_history,
@@ -407,3 +447,57 @@ def test_process_claim_keeps_main_ai_tools_enabled(monkeypatch):
     assert "<memory_suggestion>" in captured["persist_args"][1]
     assert captured["persist_args"][3] == tool_logs
     assert captured["send_args"][2] == tool_logs
+
+
+def test_process_claim_pauses_before_recap_when_coins_are_exhausted(monkeypatch):
+    claim = idle_followup.IdleFollowupClaim(
+        user_id=789,
+        activity_version=3,
+        retry_count=0,
+    )
+    paused = []
+    downstream_calls = []
+
+    async def always_current(_claim):
+        return True
+
+    async def zero_coins(_user_id):
+        return 0
+
+    async def fake_pause(_claim):
+        paused.append(_claim)
+
+    async def track_downstream(*args, **kwargs):
+        downstream_calls.append((args, kwargs))
+        return []
+
+    monkeypatch.setattr(idle_followup, "_claim_is_current", always_current)
+    monkeypatch.setattr(
+        idle_followup,
+        "_get_followup_user_total_coins",
+        zero_coins,
+    )
+    monkeypatch.setattr(
+        idle_followup,
+        "_pause_claim_until_coins_available",
+        fake_pause,
+    )
+    monkeypatch.setattr(
+        idle_followup.mysql_connection,
+        "async_get_chat_history",
+        track_downstream,
+    )
+    monkeypatch.setattr(idle_followup, "_generate_recap", track_downstream)
+    monkeypatch.setattr(idle_followup.ai_chat, "get_ai_response", track_downstream)
+    monkeypatch.setattr(idle_followup, "_persist_completed_turn", track_downstream)
+    monkeypatch.setattr(idle_followup, "_send_followup_outputs", track_downstream)
+
+    asyncio.run(
+        idle_followup._process_claim(
+            claim,
+            SimpleNamespace(bot=SimpleNamespace()),
+        )
+    )
+
+    assert paused == [claim]
+    assert downstream_calls == []
