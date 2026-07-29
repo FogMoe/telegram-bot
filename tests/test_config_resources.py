@@ -11,6 +11,9 @@ def test_text_resources_are_loaded_verbatim():
     assert config.ADVISOR_SYSTEM_PROMPT == (
         config.BASE_DIR / "resources" / "prompts" / "advisor_system_prompt.md"
     ).read_text(encoding="utf-8")
+    assert config.SUMMARY_SYSTEM_PROMPT == (
+        config.BASE_DIR / "resources" / "prompts" / "summary_system_prompt.md"
+    ).read_text(encoding="utf-8")
     assert config.IDLE_RECAP_SYSTEM_PROMPT == (
         config.BASE_DIR / "resources" / "prompts" / "idle_recap_system_prompt.md"
     ).read_text(encoding="utf-8")

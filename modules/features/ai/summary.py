@@ -7,17 +7,12 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple
 
-from core import mysql_connection
+from core import config, mysql_connection
 from core.token_estimator import estimate_tokens
 from .task_runner import run_ai_task
 
 SUMMARY_MAX_TOKENS = 2500
 SUMMARY_RETRY_LIMIT = 3
-SUMMARY_SYSTEM_PROMPT = (
-    "你是雾萌娘的对话归档整理员，负责撰写客观、中立的会话摘要。"
-    " 请准确提炼对话背景、关键事件或诉求、情绪变化、需要跟进的事项。"
-    " 不要捏造信息或过度推测，保持专业、清晰的语气，并控制在合理长度。"
-)
 
 _SUMMARY_EXECUTOR = ThreadPoolExecutor(max_workers=2)
 
@@ -300,7 +295,7 @@ def _generate_summary(user_id: int, snapshot_text: str) -> Optional[str]:
     )
 
     messages = [
-        {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+        {"role": "system", "content": config.SUMMARY_SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
     ]
 

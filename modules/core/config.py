@@ -324,6 +324,9 @@ SYSTEM_PROMPT = _read_text_resource("resources/prompts/system_prompt.md")
 ADVISOR_SYSTEM_PROMPT = _read_text_resource(
     "resources/prompts/advisor_system_prompt.md"
 )
+SUMMARY_SYSTEM_PROMPT = _read_text_resource(
+    "resources/prompts/summary_system_prompt.md"
+)
 IDLE_RECAP_SYSTEM_PROMPT = _read_text_resource(
     "resources/prompts/idle_recap_system_prompt.md"
 )

@@ -14,8 +14,13 @@ def test_generate_summary_counts_with_response_model(monkeypatch):
         ],
     )
     recorded = {}
+    task_call = {}
 
-    monkeypatch.setattr(summary, "run_ai_task", lambda *args, **kwargs: response)
+    def fake_run_ai_task(*args, **kwargs):
+        task_call.update(args=args, kwargs=kwargs)
+        return response
+
+    monkeypatch.setattr(summary, "run_ai_task", fake_run_ai_task)
 
     def fake_trim(value, max_tokens, *, model=None):
         recorded.update(
@@ -32,6 +37,10 @@ def test_generate_summary_counts_with_response_model(monkeypatch):
         "value": "generated summary",
         "max_tokens": summary.SUMMARY_MAX_TOKENS,
         "model": "openai/gpt-4o-mini",
+    }
+    assert task_call["kwargs"]["messages"][0] == {
+        "role": "system",
+        "content": summary.config.SUMMARY_SYSTEM_PROMPT,
     }
 
 
