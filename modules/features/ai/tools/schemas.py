@@ -14,6 +14,17 @@ def _tool_definition(name: str, description: str) -> dict[str, Any]:
     }
 
 
+# This schema intentionally stays outside OPENAI_TOOLS. The idle recap loop
+# opts into it explicitly, so the main assistant never receives this tool.
+IDLE_RECAP_READ_DIARY_TOOL = _tool_definition(
+    "read_diary_page",
+    (
+        "Read one existing diary page selected from diary_index. This tool is "
+        "read-only and cannot create, edit, or delete diary pages."
+    ),
+)
+
+
 OPENAI_TOOLS: list[dict[str, Any]] = [
     _tool_definition(
         "get_help_text",
@@ -147,4 +158,4 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     ),
 ]
 
-__all__ = ["OPENAI_TOOLS"]
+__all__ = ["IDLE_RECAP_READ_DIARY_TOOL", "OPENAI_TOOLS"]

@@ -40,10 +40,13 @@ from features.ai.sticker_sender import (
 from features.ai.tool_history import tool_logs_to_record_entries
 from features.ai.tool_runner import run_tool_loop
 from features.ai.tools import (
+    AI_TOOL_HANDLERS,
     OPENAI_TOOLS,
     clear_tool_request_context,
     set_tool_request_context,
 )
+from features.ai.tools.memory_tools import read_diary_page_tool
+from features.ai.tools.schemas import IDLE_RECAP_READ_DIARY_TOOL
 from features.ai.user_state import build_user_state_prompt
 
 logger = logging.getLogger(__name__)
@@ -63,13 +66,20 @@ IDLE_RECAP_MAX_TOKENS = 1000
 IDLE_RECAP_RETRY_LIMIT = 2
 IDLE_RECAP_TIMEOUT_SECONDS = 120
 IDLE_RECAP_TOOL_NAMES = frozenset(
-    {"fetch_permanent_summaries", "search_permanent_records"}
+    {"fetch_permanent_summaries", "search_permanent_records", "read_diary_page"}
 )
+# read_diary_page is deliberately absent from OPENAI_TOOLS. Supplying its schema
+# and handler only to this loop keeps the facade exclusive to the recap agent.
 IDLE_RECAP_TOOLS = [
     tool
-    for tool in OPENAI_TOOLS
+    for tool in [*OPENAI_TOOLS, IDLE_RECAP_READ_DIARY_TOOL]
     if (tool.get("function") or {}).get("name") in IDLE_RECAP_TOOL_NAMES
 ]
+IDLE_RECAP_TOOL_HANDLERS = {
+    "fetch_permanent_summaries": AI_TOOL_HANDLERS["fetch_permanent_summaries"],
+    "search_permanent_records": AI_TOOL_HANDLERS["search_permanent_records"],
+    "read_diary_page": read_diary_page_tool,
+}
 
 _idle_followup_job_lock = asyncio.Lock()
 _MESSAGE_TAG_RE = re.compile(r"<message>(.*?)</message>", re.DOTALL)
@@ -310,6 +320,7 @@ def _run_recap_agent(
                     completion_timeout=IDLE_RECAP_TIMEOUT_SECONDS,
                     completion_kwargs=completion_kwargs,
                     tool_definitions=IDLE_RECAP_TOOLS,
+                    tool_handlers=IDLE_RECAP_TOOL_HANDLERS,
                     system_prompt_override=config.IDLE_RECAP_SYSTEM_PROMPT,
                 )
                 return content

@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from features.ai.tools import memory_tools
 from features.ai.tools.context import clear_tool_request_context, set_tool_request_context
-from features.ai.tools.models import UserDiaryArgs, parameters_schema
+from features.ai.tools.models import ReadDiaryPageArgs, UserDiaryArgs, parameters_schema
 
 
 class _FakeDiaryDatabase:
@@ -105,6 +105,34 @@ def test_user_diary_schema_exposes_index_and_bounded_metadata():
         UserDiaryArgs(title="t" * 61)
     with pytest.raises(ValidationError):
         UserDiaryArgs(summary="s" * 121)
+
+
+def test_recap_read_diary_schema_exposes_only_a_required_page_number():
+    schema = parameters_schema(ReadDiaryPageArgs)
+
+    assert set(schema["properties"]) == {"page"}
+    assert schema["required"] == ["page"]
+    assert schema["properties"]["page"]["minimum"] == 1
+    assert schema["properties"]["page"]["maximum"] == 100
+
+
+def test_recap_read_diary_page_reads_content_without_a_write_path(diary_db):
+    diary_db.add_page(
+        2,
+        "Private details",
+        title="Projects",
+        summary="Current projects.",
+    )
+
+    result = memory_tools.read_diary_page_tool(page=2)
+
+    assert result == {
+        "page": 2,
+        "title": "Projects",
+        "summary": "Current projects.",
+        "content": "Private details",
+    }
+    assert diary_db.last_write_sql == ""
 
 
 def test_user_diary_index_lists_pages_without_full_content(diary_db):

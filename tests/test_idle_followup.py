@@ -249,6 +249,11 @@ def test_run_recap_agent_exposes_only_read_only_memory_tools(monkeypatch):
     assert tool_names == {
         "fetch_permanent_summaries",
         "search_permanent_records",
+        "read_diary_page",
+    }
+    assert set(captured["kwargs"]["tool_handlers"]) == tool_names
+    assert "read_diary_page" not in {
+        tool["function"]["name"] for tool in idle_followup.OPENAI_TOOLS
     }
     assert captured["kwargs"]["system_prompt_override"] == (
         idle_followup.config.IDLE_RECAP_SYSTEM_PROMPT

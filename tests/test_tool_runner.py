@@ -56,7 +56,8 @@ def test_run_tool_loop_uses_custom_prompt_and_tool_subset(monkeypatch):
         _Response(_Message("done", None)),
     ]
     calls = []
-    handler_calls = []
+    global_handler_calls = []
+    custom_handler_calls = []
 
     def fake_create_chat_completion(*args, **kwargs):
         calls.append(kwargs)
@@ -66,7 +67,7 @@ def test_run_tool_loop_uses_custom_prompt_and_tool_subset(monkeypatch):
     monkeypatch.setitem(
         tool_runner.AI_TOOL_HANDLERS,
         "fetch_permanent_summaries",
-        lambda **kwargs: handler_calls.append(kwargs) or {"records": []},
+        lambda **kwargs: global_handler_calls.append(kwargs) or {"records": []},
     )
 
     message, _ = tool_runner.run_tool_loop(
@@ -75,6 +76,12 @@ def test_run_tool_loop_uses_custom_prompt_and_tool_subset(monkeypatch):
         [{"role": "user", "content": "review"}],
         provider_name="Recap",
         tool_definitions=[tool_definition],
+        tool_handlers={
+            "fetch_permanent_summaries": (
+                lambda **kwargs: custom_handler_calls.append(kwargs)
+                or {"records": []}
+            )
+        },
         system_prompt_override="recap system prompt",
     )
 
@@ -84,7 +91,8 @@ def test_run_tool_loop_uses_custom_prompt_and_tool_subset(monkeypatch):
         "role": "system",
         "content": "recap system prompt",
     }
-    assert handler_calls == [{}]
+    assert custom_handler_calls == [{}]
+    assert global_handler_calls == []
 
 
 def test_run_tool_loop_rejects_tool_outside_custom_subset(monkeypatch):

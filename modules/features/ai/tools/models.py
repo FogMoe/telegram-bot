@@ -210,6 +210,14 @@ class SearchPermanentRecordsArgs(ToolArguments):
     )
 
 
+class ReadDiaryPageArgs(ToolArguments):
+    page: int = Field(
+        ge=1,
+        le=100,
+        description="Existing diary page number from diary_index (1-100)",
+    )
+
+
 class ScheduleAIMessageArgs(ToolArguments):
     action: str | None = Field(
         default="create",
@@ -318,6 +326,7 @@ AI_TOOL_ARG_MODELS: dict[str, type[ToolArguments]] = {
     "update_impression": UpdateImpressionArgs,
     "fetch_permanent_summaries": FetchPermanentSummariesArgs,
     "search_permanent_records": SearchPermanentRecordsArgs,
+    "read_diary_page": ReadDiaryPageArgs,
     "schedule_ai_message": ScheduleAIMessageArgs,
     "user_diary": UserDiaryArgs,
 }

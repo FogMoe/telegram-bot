@@ -18,6 +18,10 @@ def test_text_resources_are_loaded_verbatim():
     assert "memory_suggestion.diary" in config.IDLE_RECAP_SYSTEM_PROMPT
     assert "fetch_permanent_summaries" in config.IDLE_RECAP_SYSTEM_PROMPT
     assert "search_permanent_records" in config.IDLE_RECAP_SYSTEM_PROMPT
+    assert "read_diary_page" in config.IDLE_RECAP_SYSTEM_PROMPT
+    assert "雾萌（FOGMOE）是一个在 Telegram 上陪伴用户聊天的 AI 朋友" in (
+        config.IDLE_RECAP_SYSTEM_PROMPT
+    )
     assert "`recap` 是已发生对话内容的简短概括" in config.IDLE_RECAP_SYSTEM_PROMPT
     assert "`open_loops` 是尚未完成或值得稍后确认的事项，没有则返回空字符串" in (
         config.IDLE_RECAP_SYSTEM_PROMPT

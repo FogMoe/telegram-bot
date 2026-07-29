@@ -350,6 +350,43 @@ def search_permanent_records_tool(
     return response
 
 
+def read_diary_page_tool(page: Optional[int] = None) -> dict:
+    """Read one diary page through the recap agent's read-only interface."""
+    context = get_tool_request_context()
+    user_id = context.get("user_id")
+    if not user_id:
+        return {"error": "Missing user information, cannot access diary"}
+
+    try:
+        page_value = int(page) if page is not None else 0
+    except (TypeError, ValueError):
+        return {"error": "Invalid diary page number"}
+    if page_value < 1 or page_value > MAX_USER_DIARY_PAGES:
+        return {
+            "error": f"Diary page number out of range (max={MAX_USER_DIARY_PAGES})"
+        }
+
+    # Keep this query separate from user_diary_tool: that handler also has write
+    # paths, while this recap-only facade accepts no action or content arguments
+    # and can therefore execute only this SELECT.
+    row = mysql_connection.run_sync(
+        mysql_connection.fetch_one(
+            "SELECT content, title, summary FROM ai_user_diary_pages "
+            "WHERE user_id = %s AND page_no = %s",
+            (user_id, page_value),
+        )
+    )
+    if not row:
+        return {"page": page_value, "error": "Diary page does not exist"}
+
+    return {
+        "page": page_value,
+        "title": _diary_text(row[1]).strip(),
+        "summary": _diary_text(row[2]).strip(),
+        "content": _diary_text(row[0]),
+    }
+
+
 def user_diary_tool(
     action: Optional[str] = None,
     content: Optional[str] = None,
@@ -698,5 +735,6 @@ __all__ = [
     "fetch_group_context_tool",
     "fetch_permanent_summaries_tool",
     "search_permanent_records_tool",
+    "read_diary_page_tool",
     "user_diary_tool",
 ]

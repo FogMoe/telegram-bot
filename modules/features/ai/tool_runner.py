@@ -2,7 +2,7 @@ import base64
 import json
 import logging
 import time
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional
+from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Optional
 
 from pydantic import ValidationError
 
@@ -545,10 +545,12 @@ def run_tool_loop(
     completion_kwargs: Optional[Dict[str, Any]] = None,
     visible_content_handler: Optional[VisibleContentHandler] = None,
     tool_definitions: Optional[List[Dict[str, Any]]] = None,
+    tool_handlers: Optional[Mapping[str, Callable[..., dict]]] = None,
     system_prompt_override: str | None = None,
 ) -> AIResponse:
-    """Run a tool-calling loop through LiteLLM using OpenAI-format tools."""
+    """Run a tool loop, optionally replacing its advertised tools and handlers."""
     tools = OPENAI_TOOLS if tool_definitions is None else list(tool_definitions)
+    handlers = AI_TOOL_HANDLERS if tool_handlers is None else dict(tool_handlers)
     available_tool_names = {
         str((tool.get("function") or {}).get("name"))
         for tool in tools
@@ -683,7 +685,7 @@ def run_tool_loop(
                 assistant_message_logged = True
             tool_logs.append(tool_log_entry)
 
-            handler = AI_TOOL_HANDLERS.get(function_name)
+            handler = handlers.get(function_name)
             if validation_error is not None:
                 logging.warning(
                     "%s 工具参数校验失败: %s, args=%s, error=%s",
