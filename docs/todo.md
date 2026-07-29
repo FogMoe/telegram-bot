@@ -1,5 +1,6 @@
 # TODO
 
+- Track provider-side prompt-cache usage from LiteLLM responses, including cached/input tokens, token hit rate, and request hit rate; keep it distinct from LiteLLM response-cache metrics.
 - Add fuzzy search support for `search_permanent_records` (mode + min_score, optional dependency like rapidfuzz).
 - Add bidirectional AI reaction support:
   1) Give the AI a tool to add a reaction to a target Telegram message authored by either the user or the AI, with validation for supported reactions and bot permissions.
