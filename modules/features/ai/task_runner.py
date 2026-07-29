@@ -1,6 +1,7 @@
 import logging
 from typing import Any, Dict, List
 
+from .context_budget import ContextBudgetExceededError
 from .litellm_client import create_chat_completion
 from .provider_resolver import (
     TASKS,
@@ -54,6 +55,8 @@ def run_ai_task(
                     **kwargs,
                 }
                 return create_chat_completion(provider, model, messages, **request_kwargs)
+            except ContextBudgetExceededError:
+                raise
             except Exception as exc:
                 logging.warning(
                     "AI task %s failed via provider=%s model=%s: %s",

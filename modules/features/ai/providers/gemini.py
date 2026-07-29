@@ -3,6 +3,7 @@ from typing import Dict, Optional
 
 from core import config
 
+from ..context_budget import ContextBudgetExceededError
 from ..errors import SafetyBlockError
 from ..tool_runner import run_tool_loop
 from ..types import AIResponse, PartialAIResponseError, VisibleContentHandler
@@ -35,6 +36,8 @@ def get_ai_response(
 
     try:
         return _run(primary_model)
+    except ContextBudgetExceededError:
+        raise
     except PartialAIResponseError:
         raise
     except Exception as exc:

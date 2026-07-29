@@ -3,6 +3,33 @@ import time
 from typing import Any
 
 
+def _telegram_command_name(arguments: object) -> str | None:
+    if not isinstance(arguments, dict):
+        return None
+    command_text = str(arguments.get("command") or "").strip()
+    if not command_text.startswith("/"):
+        return None
+    command_token = command_text.split(maxsplit=1)[0][1:]
+    return command_token.split("@", maxsplit=1)[0].strip().lower() or None
+
+
+def tool_logs_completed_clear(tool_logs: list[dict[str, Any]]) -> bool:
+    """返回本轮是否成功通过 Telegram 工具执行了 /clear。"""
+    for tool_log in tool_logs:
+        if not isinstance(tool_log, dict):
+            continue
+        if tool_log.get("type", "tool_result") != "tool_result":
+            continue
+        if tool_log.get("tool_name") != "execute_telegram_command":
+            continue
+        if _telegram_command_name(tool_log.get("arguments")) != "clear":
+            continue
+        result = tool_log.get("result")
+        if isinstance(result, dict) and result.get("success") is True:
+            return True
+    return False
+
+
 def _tool_call_ids_from_message(message: dict[str, Any]) -> list[str]:
     call_ids: list[str] = []
     for tool_call in message.get("tool_calls") or []:

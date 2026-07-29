@@ -21,6 +21,7 @@ from .tools.schemas import SUMMARY_SEARCH_PRIOR_CONTEXT_TOOL
 from .tools.summary_tools import search_prior_context_tool
 
 SUMMARY_MAX_TOKENS = 2500
+SUMMARY_CONTEXT_HARD_LIMIT_RATIO = 1.5
 SUMMARY_RETRY_LIMIT = 3
 SUMMARY_TOOL_MAX_ITERATIONS = 4
 SUMMARY_TOOLS = [SUMMARY_SEARCH_PRIOR_CONTEXT_TOOL]
@@ -353,6 +354,7 @@ def _run_summary_agent(
                         tool_context,
                         provider_name="Summary",
                         max_tokens=SUMMARY_MAX_TOKENS,
+                        context_hard_limit_ratio=SUMMARY_CONTEXT_HARD_LIMIT_RATIO,
                         max_iterations=SUMMARY_TOOL_MAX_ITERATIONS,
                         completion_kwargs=completion_kwargs_for_task(
                             provider,

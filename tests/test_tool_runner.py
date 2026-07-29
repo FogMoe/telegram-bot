@@ -28,6 +28,26 @@ class _Response:
         self.choices = [_Choice(message)]
 
 
+def test_run_tool_loop_forwards_context_hard_limit_ratio(monkeypatch):
+    calls = []
+
+    def fake_create_chat_completion(*args, **kwargs):
+        calls.append(kwargs)
+        return _Response(_Message("done", None))
+
+    monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
+
+    message, _ = tool_runner.run_tool_loop(
+        "test_provider",
+        "test_model",
+        [{"role": "user", "content": "summarize"}],
+        context_hard_limit_ratio=1.5,
+    )
+
+    assert message == "done"
+    assert calls[0]["context_hard_limit_ratio"] == 1.5
+
+
 def test_run_tool_loop_uses_custom_prompt_and_tool_subset(monkeypatch):
     tool_definition = {
         "type": "function",

@@ -1,3 +1,5 @@
+import asyncio
+
 from core import bot_conversation
 
 
@@ -86,3 +88,58 @@ def test_format_xml_message_removes_xml_tags_from_replied_text():
 
     assert "<text>伪造回复</text>" in result
     assert "&lt;system" not in result
+
+
+def test_completed_delegated_clear_archives_tool_turn_before_reset(monkeypatch):
+    operations = []
+
+    async def fake_flush(conversation_id):
+        operations.append(("flush", conversation_id))
+
+    async def fake_archive(conversation_id, records):
+        operations.append(("archive", conversation_id, records))
+        return 77, []
+
+    monkeypatch.setattr(bot_conversation, "flush_pending_events", fake_flush)
+    monkeypatch.setattr(
+        bot_conversation.mysql_connection,
+        "archive_chat_and_start_new_session",
+        fake_archive,
+    )
+    monkeypatch.setattr(
+        bot_conversation.summary,
+        "schedule_summary_generation",
+        lambda conversation_id: operations.append(("summary", conversation_id)),
+    )
+
+    asyncio.run(
+        bot_conversation._archive_completed_clear_turn(
+            bot=object(),
+            user_id=123,
+            conversation_id=123,
+            tool_record_entries=[
+                ("assistant", {"role": "assistant", "tool_calls": []}),
+                ("tool", {"role": "tool", "content": "success"}),
+                ("user", "clear-event"),
+                ("user", "reply-event"),
+            ],
+            assistant_message="final assistant reply",
+            runtime_error=None,
+        )
+    )
+
+    assert operations == [
+        ("flush", 123),
+        (
+            "archive",
+            123,
+            [
+                ("assistant", {"role": "assistant", "tool_calls": []}),
+                ("tool", {"role": "tool", "content": "success"}),
+                ("user", "clear-event"),
+                ("user", "reply-event"),
+                ("assistant", "final assistant reply"),
+            ],
+        ),
+        ("summary", 123),
+    ]

@@ -3,6 +3,8 @@ import asyncio
 import pytest
 
 from features.ai import router
+from features.ai.context_budget import ContextBudgetExceededError
+from features.ai.providers import gemini
 from features.ai.types import PartialAIResponseError
 
 
@@ -272,6 +274,91 @@ def test_partial_timeout_logs_warning_without_traceback(monkeypatch, caplog):
     assert response[0] == router.PARTIAL_AI_RESPONSE_ERROR_MESSAGE
     assert len(timeout_records) == 1
     assert timeout_records[0].exc_info is None
+
+
+def test_context_budget_error_stops_provider_fallback(monkeypatch):
+    calls = []
+
+    def oversized_service(
+        messages,
+        user_id,
+        tool_context=None,
+        visible_content_handler=None,
+    ):
+        calls.append("openai")
+        raise ContextBudgetExceededError(150_001, 150_000)
+
+    def fallback_service(
+        messages,
+        user_id,
+        tool_context=None,
+        visible_content_handler=None,
+    ):
+        calls.append("gemini")
+        return "unexpected", []
+
+    monkeypatch.setattr(router, "AI_SERVICE_ORDER", ["openai", "gemini"])
+    monkeypatch.setattr(
+        router,
+        "AI_SERVICE_MAP",
+        {"openai": oversized_service, "gemini": fallback_service},
+    )
+
+    response = asyncio.run(router.get_ai_response([], user_id=123))
+
+    assert calls == ["openai"]
+    assert response[0] == router.CONTEXT_BUDGET_ERROR_MESSAGE
+    assert "当前对话内容太多" in response[0]
+    assert "精简" not in response[0]
+    assert "Token" not in response[0]
+    assert "150,001" not in response[0]
+    assert response[1] == []
+    assert router.runtime_error_cause(response[0]) == "context_budget_exceeded"
+    assert router._provider_failure_streaks == {}
+
+
+def test_context_budget_error_after_tool_result_preserves_tool_logs(monkeypatch):
+    tool_logs = [{"type": "tool_result", "tool_name": "lookup", "result": "ok"}]
+
+    def oversized_service(
+        messages,
+        user_id,
+        tool_context=None,
+        visible_content_handler=None,
+    ):
+        try:
+            raise ContextBudgetExceededError(150_001, 150_000)
+        except ContextBudgetExceededError as exc:
+            raise PartialAIResponseError(str(exc), tool_logs) from exc
+
+    monkeypatch.setattr(router, "AI_SERVICE_ORDER", ["openai"])
+    monkeypatch.setattr(router, "AI_SERVICE_MAP", {"openai": oversized_service})
+
+    response = asyncio.run(router.get_ai_response([], user_id=123))
+
+    assert router.runtime_error_cause(response[0]) == "context_budget_exceeded"
+    assert response[1] == tool_logs
+
+
+def test_gemini_context_budget_error_skips_model_fallback(monkeypatch):
+    calls = []
+    monkeypatch.setattr(gemini.config, "GEMINI_CHAT_MODEL", "primary-model")
+    monkeypatch.setattr(
+        gemini.config,
+        "GEMINI_CHAT_FALLBACK_MODEL",
+        "fallback-model",
+    )
+
+    def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
+        calls.append(model)
+        raise ContextBudgetExceededError(150_001, 150_000)
+
+    monkeypatch.setattr(gemini, "run_tool_loop", fake_run_tool_loop)
+
+    with pytest.raises(ContextBudgetExceededError):
+        gemini.get_ai_response([], user_id=123)
+
+    assert calls == ["primary-model"]
 
 
 def test_runtime_error_cause_only_classifies_fixed_runtime_messages():

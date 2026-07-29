@@ -15,11 +15,15 @@ from core import config, mysql_connection, process_user, stake_reward_pool
 from core.archive_utils import send_permanent_records_archive
 from core.command_cooldown import cooldown
 from core.telegram_history import (
+    capture_telegram_history_events,
+    flush_pending_events,
     record_command_update,
+    telegram_history_capture_active,
     telegram_history_scope,
 )
 from core.telegram_utils import partial_send, safe_send_markdown
 from features.ai import ai_chat, idle_followup, summary
+from features.ai.conversation_locks import get_conversation_lock
 from features.economy import ref
 
 logger = logging.getLogger(__name__)
@@ -349,61 +353,100 @@ async def github_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
-@cooldown
-async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    conversation_id = user_id  # Assuming conversation_id is the user_id for simplicity
+async def _clear_command_unlocked(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    user_id: int,
+    conversation_id: int,
+    delegated_capture: bool,
+) -> None:
+    # 清空前先写完旧会话尚在限流窗口内的事件，避免它们落入新会话。
+    await flush_pending_events(user_id)
 
-    snapshot_created = False
-    archived_records: list[dict] = []
+    if await process_user.async_get_user_coins(user_id) < 1:
+        with telegram_history_scope(
+            origin="bot_runtime",
+            event="error_notice",
+            cause="coins_insufficient",
+            command="clear",
+        ):
+            await update.message.reply_text(
+                "您的硬币不足，无法与雾萌娘连接，需要1个硬币。"
+                "试试通过 /lottery 抽奖吧！"
+            )
+        return
 
     await idle_followup.cancel_idle_followup(user_id)
 
-    async with mysql_connection.transaction() as connection:
-        snapshot_row = await mysql_connection.fetch_one(
-            "SELECT messages FROM chat_records WHERE conversation_id = %s",
-            (conversation_id,),
-            connection=connection,
+    # AI 代执行时由当前 AI 轮在工具记录完整后统一归档，避免拆散旧会话。
+    if delegated_capture:
+        await record_command_update(update, context.bot)
+        await update.message.reply_text(
+            "雾萌娘已进行记忆清除处理。\n"
+            "The current conversation history has been cleared."
         )
-        conversation_snapshot = None
-        if snapshot_row and snapshot_row[0]:
-            raw_snapshot = snapshot_row[0]
-            if isinstance(raw_snapshot, bytes):
-                conversation_snapshot = raw_snapshot.decode("utf-8")
-            elif isinstance(raw_snapshot, (dict, list)):
-                conversation_snapshot = json.dumps(raw_snapshot, ensure_ascii=False)
-            else:
-                conversation_snapshot = str(raw_snapshot)
+        return
 
-        if conversation_snapshot:
-            await connection.exec_driver_sql(
-                "INSERT INTO permanent_chat_records (user_id, conversation_snapshot) VALUES (%s, %s)",
-                (user_id, conversation_snapshot),
-            )
-            snapshot_created = True
-            archived_records = await mysql_connection.prune_permanent_records(
-                user_id,
-                connection=connection,
-            )
+    # 普通 /clear 先把命令放进旧会话归档；新活跃历史只留下 new_session。
+    with capture_telegram_history_events(user_id) as command_events:
+        await record_command_update(update, context.bot)
 
-        await connection.exec_driver_sql(
-            "DELETE FROM chat_records WHERE conversation_id = %s",
-            (conversation_id,),
+    record_id, archived_records = (
+        await mysql_connection.archive_chat_and_start_new_session(
+            conversation_id,
+            [("user", content) for content in command_events],
         )
+    )
 
-    # /clear 本身是新一轮历史的第一个用户动作，不能在清空前写入。
-    await record_command_update(update, context.bot)
-    if snapshot_created:
-        summary.schedule_summary_generation(user_id)
-    if archived_records:
-        await send_permanent_records_archive(
-            context.bot,
+    post_clear_events: list[str] = []
+    try:
+        with capture_telegram_history_events(user_id) as post_clear_events:
+            await update.message.reply_text(
+                "雾萌娘已进行记忆清除处理。\n"
+                "The current conversation history has been cleared."
+            )
+            if archived_records:
+                await send_permanent_records_archive(
+                    context.bot,
+                    user_id,
+                    archived_records,
+                    logger=logger,
+                )
+    finally:
+        await mysql_connection.append_permanent_chat_record(
             user_id,
-            archived_records,
-            logger=logger,
+            record_id,
+            [("user", content) for content in post_clear_events],
         )
 
-    await update.message.reply_text("雾萌娘已进行记忆清除处理。\nThe current conversation history has been cleared.")
+    summary.schedule_summary_generation(user_id)
+
+
+@cooldown
+async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    conversation_id = user_id
+    delegated_capture = telegram_history_capture_active(user_id)
+    if delegated_capture:
+        # AI 工具调用已处于当前会话锁内，不能重复获取同一把锁。
+        await _clear_command_unlocked(
+            update,
+            context,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            delegated_capture=True,
+        )
+        return
+
+    async with get_conversation_lock(conversation_id):
+        await _clear_command_unlocked(
+            update,
+            context,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            delegated_capture=False,
+        )
 
 
 @cooldown

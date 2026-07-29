@@ -5,6 +5,7 @@ import litellm
 
 from core import config
 from core.litellm_models import litellm_model_name, normalize_provider
+from .context_budget import enforce_messages_context_budget
 from .litellm_message_sanitizer import (
     PROVIDER_SPECIFIC_KEYS,
     sanitize_message_for_provider,
@@ -60,20 +61,44 @@ def create_chat_completion(
     provider: str,
     model: str,
     messages: List[Dict[str, Any]],
+    *,
+    context_hard_limit_ratio: float | None = None,
     **kwargs: Any,
 ) -> Any:
     litellm_provider = normalize_provider(provider)
-    history_provider = (
-        "openai"
-        if litellm_provider == "gemini" and config.GEMINI_OPENAI_COMPATIBLE
-        else litellm_provider
-    )
-    provider_messages = _sanitize_messages_for_provider(messages, history_provider)
     request_kwargs = {
         key: value
         for key, value in kwargs.items()
         if value is not None
     }
+    max_output_tokens = request_kwargs.get(
+        "max_completion_tokens",
+        request_kwargs.get("max_tokens", 0),
+    )
+    budget_result = enforce_messages_context_budget(
+        messages,
+        token_limit=int(
+            config.CHAT_TOKEN_LIMIT
+            * (
+                config.CHAT_CONTEXT_HARD_LIMIT_RATIO
+                if context_hard_limit_ratio is None
+                else context_hard_limit_ratio
+            )
+        ),
+        max_output_tokens=int(max_output_tokens or 0),
+        safety_tokens=config.CHAT_CONTEXT_SAFETY_TOKENS,
+        model=model,
+        tools=request_kwargs.get("tools"),
+    )
+    history_provider = (
+        "openai"
+        if litellm_provider == "gemini" and config.GEMINI_OPENAI_COMPATIBLE
+        else litellm_provider
+    )
+    provider_messages = _sanitize_messages_for_provider(
+        budget_result.messages,
+        history_provider,
+    )
     request_kwargs.setdefault("drop_params", True)
 
     litellm_model = litellm_model_name(litellm_provider, model)

@@ -171,6 +171,37 @@ def test_run_ai_task_uses_resolved_models_with_fallback_and_kwarg_override(monke
     }
 
 
+def test_run_ai_task_does_not_retry_provider_independent_context_error(monkeypatch):
+    from features.ai.context_budget import ContextBudgetExceededError
+
+    calls = []
+    monkeypatch.setattr(
+        task_runner,
+        "get_provider_order_for_task",
+        lambda task: ["openai", "gemini"],
+    )
+    monkeypatch.setattr(
+        task_runner,
+        "get_models_for_task",
+        lambda provider, task: [f"{provider}-model"],
+    )
+
+    def fake_create_chat_completion(provider, model, messages, **kwargs):
+        calls.append(provider)
+        raise ContextBudgetExceededError(150_001, 150_000)
+
+    monkeypatch.setattr(
+        task_runner,
+        "create_chat_completion",
+        fake_create_chat_completion,
+    )
+
+    with pytest.raises(ContextBudgetExceededError):
+        task_runner.run_ai_task("advisor", [{"role": "user", "content": "x"}])
+
+    assert calls == ["openai"]
+
+
 def test_run_ai_task_skips_invalid_provider_and_uses_fallback(monkeypatch):
     calls = []
 

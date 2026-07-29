@@ -1,4 +1,7 @@
-from features.ai.tool_history import tool_logs_to_record_entries
+from features.ai.tool_history import (
+    tool_logs_completed_clear,
+    tool_logs_to_record_entries,
+)
 
 
 def test_tool_logs_to_record_entries_deduplicates_visible_tool_call_content():
@@ -112,3 +115,20 @@ def test_tool_logs_to_record_entries_keeps_telegram_events_after_tool_result():
 
     assert [role for role, _ in entries] == ["assistant", "tool", "user", "user"]
     assert entries[-2:] == [("user", "command-event"), ("user", "reply-event")]
+
+
+def test_tool_logs_completed_clear_requires_successful_clear_result():
+    successful_clear = {
+        "type": "tool_result",
+        "tool_name": "execute_telegram_command",
+        "arguments": {"command": "/clear"},
+        "result": {"success": True},
+    }
+
+    assert tool_logs_completed_clear([successful_clear]) is True
+    assert tool_logs_completed_clear(
+        [{**successful_clear, "result": {"success": False}}]
+    ) is False
+    assert tool_logs_completed_clear(
+        [{**successful_clear, "arguments": {"command": "/me"}}]
+    ) is False

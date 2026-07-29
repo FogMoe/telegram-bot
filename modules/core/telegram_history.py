@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
+import re
+from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
@@ -12,7 +16,7 @@ from typing import Any, Iterator
 from telegram import Update
 from telegram.ext import ExtBot
 
-from . import group_chat_history, mysql_connection
+from . import config, group_chat_history, mysql_connection
 from .prompt_utils import format_metadata_attrs, remove_xml_tags, xml_escape
 from .telegram_utils import describe_message_for_context
 
@@ -40,6 +44,12 @@ class TelegramHistoryCapture:
     active: bool = True
 
 
+@dataclass(frozen=True)
+class _PendingTelegramEvent:
+    content: str
+    bot: Any
+
+
 _HISTORY_CONTEXT: ContextVar[TelegramHistoryContext | None] = ContextVar(
     "telegram_history_context",
     default=None,
@@ -59,6 +69,12 @@ _DELEGATED_COMMAND: ContextVar[bool] = ContextVar(
 
 _SENSITIVE_COMMAND_ARGUMENTS = {"charge", "webpassword"}
 _SENSITIVE_COMMAND_OUTPUTS = {"create_code"}
+_VOLATILE_EVENT_ATTR_PATTERN = re.compile(
+    r'\s(?:timestamp|message_id|reply_to_message_id|edited_at)="[^"]*"'
+)
+_PENDING_EVENTS: dict[int, OrderedDict[str, _PendingTelegramEvent]] = {}
+_PENDING_FLUSH_TASKS: dict[int, asyncio.Task] = {}
+_PENDING_FLUSH_LOCKS: dict[int, asyncio.Lock] = {}
 
 
 def _format_timestamp(value: Any) -> str:
@@ -317,6 +333,12 @@ def capture_telegram_history_events(user_id: int) -> Iterator[list[str]]:
         _CAPTURED_EVENTS.reset(token)
 
 
+def telegram_history_capture_active(user_id: int) -> bool:
+    """返回当前任务是否正在捕获该用户的 Telegram 事件。"""
+    capture = _CAPTURED_EVENTS.get()
+    return bool(capture and capture.active and capture.user_id == user_id)
+
+
 @contextmanager
 def delegated_telegram_command() -> Iterator[None]:
     """标记由 AI 工具代用户投递的 Telegram 命令。"""
@@ -327,15 +349,23 @@ def delegated_telegram_command() -> Iterator[None]:
         _DELEGATED_COMMAND.reset(token)
 
 
-async def _persist_event(user_id: int, content: str, bot: Any) -> None:
-    capture = _CAPTURED_EVENTS.get()
-    if capture is not None and capture.active and capture.user_id == user_id:
-        capture.events.append(content)
-        return
+def _coalesce_key(content: str) -> str:
+    stable_content = _VOLATILE_EVENT_ATTR_PATTERN.sub("", content)
+    return hashlib.sha256(stable_content.encode("utf-8")).hexdigest()
 
+
+async def _write_pending_events(
+    user_id: int,
+    events: list[_PendingTelegramEvent],
+) -> None:
+    if not events:
+        return
     try:
         snapshot_created, warning_level, archived_records = (
-            await mysql_connection.async_insert_chat_record(user_id, "user", content)
+            await mysql_connection.async_insert_chat_records(
+                user_id,
+                [("user", event.content) for event in events],
+            )
         )
         if warning_level == "overflow":
             from features.ai import summary
@@ -358,13 +388,73 @@ async def _persist_event(user_id: int, content: str, bot: Any) -> None:
 
             with suppress_telegram_history():
                 await send_permanent_records_archive(
-                    bot,
+                    events[-1].bot,
                     user_id,
                     archived_records,
                     logger=logger,
                 )
     except Exception:
         logger.exception("记录 Telegram 元事件失败: user_id=%s", user_id)
+
+
+async def flush_pending_events(user_id: int) -> None:
+    """立即写入指定用户已通过限流的元事件。"""
+    flush_lock = _PENDING_FLUSH_LOCKS.setdefault(user_id, asyncio.Lock())
+    async with flush_lock:
+        flush_task = _PENDING_FLUSH_TASKS.get(user_id)
+        current_task = asyncio.current_task()
+        if flush_task is not None and flush_task is not current_task:
+            _PENDING_FLUSH_TASKS.pop(user_id, None)
+            flush_task.cancel()
+
+        pending = _PENDING_EVENTS.pop(user_id, None)
+        if not pending:
+            return
+        await _write_pending_events(user_id, list(pending.values()))
+
+
+async def _flush_pending_events_later(user_id: int) -> None:
+    try:
+        await asyncio.sleep(config.TELEGRAM_HISTORY_RATE_WINDOW_SECONDS)
+        await flush_pending_events(user_id)
+    except asyncio.CancelledError:
+        return
+    finally:
+        current_task = asyncio.current_task()
+        if _PENDING_FLUSH_TASKS.get(user_id) is current_task:
+            _PENDING_FLUSH_TASKS.pop(user_id, None)
+        if _PENDING_EVENTS.get(user_id) and user_id not in _PENDING_FLUSH_TASKS:
+            _PENDING_FLUSH_TASKS[user_id] = asyncio.create_task(
+                _flush_pending_events_later(user_id)
+            )
+
+
+async def flush_all_pending_events() -> None:
+    """进程停止前尽力冲刷所有用户的元事件。"""
+    for user_id in list(_PENDING_EVENTS):
+        await flush_pending_events(user_id)
+
+
+async def _persist_event(user_id: int, content: str, bot: Any) -> None:
+    capture = _CAPTURED_EVENTS.get()
+    if capture is not None and capture.active and capture.user_id == user_id:
+        capture.events.append(content)
+        return
+
+    pending = _PENDING_EVENTS.setdefault(user_id, OrderedDict())
+    event_key = _coalesce_key(content)
+    pending.pop(event_key, None)
+    pending[event_key] = _PendingTelegramEvent(content=content, bot=bot)
+
+    max_events = config.TELEGRAM_HISTORY_RATE_MAX_EVENTS
+    while len(pending) > max_events:
+        pending.popitem(last=False)
+
+    task = _PENDING_FLUSH_TASKS.get(user_id)
+    if task is None or task.done():
+        _PENDING_FLUSH_TASKS[user_id] = asyncio.create_task(
+            _flush_pending_events_later(user_id)
+        )
 
 
 async def record_command_update(update: Update, bot: Any) -> None:
@@ -440,7 +530,7 @@ async def prepare_update_history(update: Update, context: Any) -> None:
         )
     )
 
-    if command and (command != "clear" or _DELEGATED_COMMAND.get()):
+    if command and command != "clear":
         await record_command_update(update, context.bot)
     elif update.callback_query and user:
         content = format_callback_event(update)

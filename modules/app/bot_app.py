@@ -5,9 +5,13 @@ from telegram.request import HTTPXRequest
 
 from core import config
 from core.bot_conversation import post_init
-from core.telegram_history import HistoryTrackingExtBot
+from core.telegram_history import HistoryTrackingExtBot, flush_all_pending_events
 
 from .handler_registry import register_handlers
+
+
+async def _flush_telegram_history_on_stop(application) -> None:
+    await flush_all_pending_events()
 
 
 def create_application():
@@ -32,6 +36,7 @@ def create_application():
         .bot(bot)
         .concurrent_updates(True)
         .post_init(post_init)
+        .post_stop(_flush_telegram_history_on_stop)
         .build()
     )
 

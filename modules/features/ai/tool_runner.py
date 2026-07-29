@@ -539,6 +539,7 @@ def run_tool_loop(
     provider_name: str = "AI",
     tool_choice: str | Dict[str, object] = "auto",
     max_tokens: int = 4096,
+    context_hard_limit_ratio: float | None = None,
     max_iterations: int = 10,
     completion_timeout: int | None = None,
     skip_tools: Optional[Iterable[str]] = None,
@@ -584,6 +585,7 @@ def run_tool_loop(
             request_kwargs = {
                 "max_tokens": max_tokens,
                 **(completion_kwargs or {}),
+                "context_hard_limit_ratio": context_hard_limit_ratio,
                 "timeout": request_timeout,
             }
             response = _create_chat_completion_with_post_tool_retries(
@@ -787,6 +789,7 @@ def run_tool_loop(
         request_kwargs = {
             "max_tokens": max_tokens,
             **(completion_kwargs or {}),
+            "context_hard_limit_ratio": context_hard_limit_ratio,
             "timeout": request_timeout,
         }
         response = _create_chat_completion_with_post_tool_retries(

@@ -4,7 +4,22 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import telegram_history
+from core import bot_commands, telegram_history
+
+
+@pytest.fixture(autouse=True)
+def _clear_pending_history_events():
+    for task in telegram_history._PENDING_FLUSH_TASKS.values():
+        task.cancel()
+    telegram_history._PENDING_FLUSH_TASKS.clear()
+    telegram_history._PENDING_EVENTS.clear()
+    telegram_history._PENDING_FLUSH_LOCKS.clear()
+    yield
+    for task in telegram_history._PENDING_FLUSH_TASKS.values():
+        task.cancel()
+    telegram_history._PENDING_FLUSH_TASKS.clear()
+    telegram_history._PENDING_EVENTS.clear()
+    telegram_history._PENDING_FLUSH_LOCKS.clear()
 
 
 def _message(**changes):
@@ -135,19 +150,128 @@ def test_empty_callback_answer_is_not_recorded(monkeypatch):
 def test_persist_event_always_uses_user_role(monkeypatch):
     calls = []
 
-    async def fake_insert(conversation_id, role, content):
-        calls.append((conversation_id, role, content))
+    async def fake_insert(conversation_id, records):
+        calls.append((conversation_id, records))
         return False, None, []
 
     monkeypatch.setattr(
         telegram_history.mysql_connection,
-        "async_insert_chat_record",
+        "async_insert_chat_records",
         fake_insert,
     )
 
-    asyncio.run(telegram_history._persist_event(123, "event", object()))
+    async def run_persist():
+        await telegram_history._persist_event(123, "event", object())
+        await telegram_history.flush_pending_events(123)
 
-    assert calls == [(123, "user", "event")]
+    asyncio.run(run_persist())
+
+    assert calls == [(123, [("user", "event")])]
+
+
+def test_rate_window_keeps_only_last_duplicate_event(monkeypatch):
+    calls = []
+
+    async def fake_insert(conversation_id, records):
+        calls.append((conversation_id, records))
+        return False, None, []
+
+    monkeypatch.setattr(
+        telegram_history.mysql_connection,
+        "async_insert_chat_records",
+        fake_insert,
+    )
+    first = (
+        '<metadata type="bot_event" timestamp="2026-07-29 12:00:00" '
+        'message_id="1" event="command_reply">'
+        "<displayed_message>same</displayed_message></metadata>"
+    )
+    last = (
+        '<metadata type="bot_event" timestamp="2026-07-29 12:00:01" '
+        'message_id="2" event="command_reply">'
+        "<displayed_message>same</displayed_message></metadata>"
+    )
+
+    async def run_persist():
+        await telegram_history._persist_event(123, first, object())
+        await telegram_history._persist_event(123, last, object())
+        await telegram_history.flush_pending_events(123)
+
+    asyncio.run(run_persist())
+
+    assert calls == [(123, [("user", last)])]
+
+
+def test_rate_window_discards_oldest_unique_events(monkeypatch):
+    calls = []
+
+    async def fake_insert(conversation_id, records):
+        calls.append((conversation_id, records))
+        return False, None, []
+
+    monkeypatch.setattr(
+        telegram_history.mysql_connection,
+        "async_insert_chat_records",
+        fake_insert,
+    )
+    monkeypatch.setattr(
+        telegram_history.config,
+        "TELEGRAM_HISTORY_RATE_MAX_EVENTS",
+        2,
+    )
+
+    async def run_persist():
+        for content in ("first", "second", "last"):
+            await telegram_history._persist_event(123, content, object())
+        await telegram_history.flush_pending_events(123)
+
+    asyncio.run(run_persist())
+
+    assert calls == [(123, [("user", "second"), ("user", "last")])]
+
+
+def test_forced_flush_waits_for_active_write_and_keeps_new_event(monkeypatch):
+    calls = []
+
+    async def run_scenario():
+        write_started = asyncio.Event()
+        allow_write = asyncio.Event()
+
+        async def fake_insert(conversation_id, records):
+            calls.append((conversation_id, records))
+            if len(calls) == 1:
+                write_started.set()
+                await allow_write.wait()
+            return False, None, []
+
+        monkeypatch.setattr(
+            telegram_history.mysql_connection,
+            "async_insert_chat_records",
+            fake_insert,
+        )
+        monkeypatch.setattr(
+            telegram_history.config,
+            "TELEGRAM_HISTORY_RATE_WINDOW_SECONDS",
+            0,
+        )
+
+        await telegram_history._persist_event(123, "first", object())
+        await write_started.wait()
+        forced_flush = asyncio.create_task(telegram_history.flush_pending_events(123))
+        await telegram_history._persist_event(123, "second", object())
+        await asyncio.sleep(0)
+        assert forced_flush.done() is False
+
+        allow_write.set()
+        await forced_flush
+        await telegram_history.flush_pending_events(123)
+
+    asyncio.run(run_scenario())
+
+    assert calls == [
+        (123, [("user", "first")]),
+        (123, [("user", "second")]),
+    ]
 
 
 def test_capture_scope_defers_matching_user_events(monkeypatch):
@@ -172,6 +296,213 @@ def test_capture_scope_defers_matching_user_events(monkeypatch):
 
     assert events == ["captured"]
     assert calls == []
+
+
+def test_clear_is_not_recorded_by_pre_handler_even_when_delegated():
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=123, username="kc"),
+        effective_chat=SimpleNamespace(id=123, type="private", title=None),
+        effective_message=_message(text="/clear"),
+        edited_message=None,
+        callback_query=None,
+    )
+
+    async def run_prepare():
+        with telegram_history.capture_telegram_history_events(123) as events:
+            with telegram_history.delegated_telegram_command():
+                await telegram_history.prepare_update_history(
+                    update,
+                    SimpleNamespace(bot=object()),
+                )
+        return events
+
+    assert asyncio.run(run_prepare()) == []
+
+
+def test_clear_archives_command_then_appends_displayed_reply(monkeypatch):
+    operations = []
+    bot = object()
+
+    async def fake_flush(user_id):
+        operations.append("flush_old_events")
+
+    async def fake_cancel(user_id):
+        operations.append("cancel_idle_followup")
+
+    async def fake_coins(user_id):
+        return 1
+
+    async def fake_archive(conversation_id, records):
+        operations.append(("archive_and_reset", records))
+        return 77, []
+
+    async def fake_append(user_id, record_id, records):
+        operations.append(("append_to_archive", record_id, records))
+
+    async def fake_record_command(update, history_bot):
+        await telegram_history._persist_event(123, "clear-event", history_bot)
+
+    async def fake_reply_text(text):
+        await telegram_history._persist_event(123, "reply-event", bot)
+
+    monkeypatch.setattr(bot_commands, "flush_pending_events", fake_flush)
+    monkeypatch.setattr(
+        bot_commands.process_user,
+        "async_get_user_coins",
+        fake_coins,
+    )
+    monkeypatch.setattr(
+        bot_commands.idle_followup,
+        "cancel_idle_followup",
+        fake_cancel,
+    )
+    monkeypatch.setattr(
+        bot_commands.mysql_connection,
+        "archive_chat_and_start_new_session",
+        fake_archive,
+    )
+    monkeypatch.setattr(
+        bot_commands.mysql_connection,
+        "append_permanent_chat_record",
+        fake_append,
+    )
+    monkeypatch.setattr(bot_commands, "record_command_update", fake_record_command)
+    monkeypatch.setattr(
+        bot_commands.summary,
+        "schedule_summary_generation",
+        lambda user_id: operations.append("schedule_summary"),
+    )
+
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=123),
+        message=SimpleNamespace(reply_text=fake_reply_text),
+    )
+    context = SimpleNamespace(bot=bot)
+
+    asyncio.run(bot_commands.clear_command.__wrapped__(update, context))
+
+    assert operations[:2] == [
+        "flush_old_events",
+        "cancel_idle_followup",
+    ]
+    assert operations[2] == (
+        "archive_and_reset",
+        [("user", "clear-event")],
+    )
+    assert operations[3] == (
+        "append_to_archive",
+        77,
+        [("user", "reply-event")],
+    )
+    assert operations[4] == "schedule_summary"
+
+
+def test_delegated_clear_defers_archive_to_ai_turn(monkeypatch):
+    bot = object()
+
+    async def fake_flush(user_id):
+        return None
+
+    async def fake_cancel(user_id):
+        return None
+
+    async def fake_coins(user_id):
+        return 1
+
+    async def unexpected_archive(*args, **kwargs):
+        raise AssertionError("delegated /clear must not archive inside the handler")
+
+    async def fake_record_command(update, history_bot):
+        await telegram_history._persist_event(123, "clear-event", history_bot)
+
+    async def fake_reply_text(text):
+        await telegram_history._persist_event(123, "reply-event", bot)
+
+    monkeypatch.setattr(bot_commands, "flush_pending_events", fake_flush)
+    monkeypatch.setattr(
+        bot_commands.process_user,
+        "async_get_user_coins",
+        fake_coins,
+    )
+    monkeypatch.setattr(
+        bot_commands.idle_followup,
+        "cancel_idle_followup",
+        fake_cancel,
+    )
+    monkeypatch.setattr(
+        bot_commands.mysql_connection,
+        "archive_chat_and_start_new_session",
+        unexpected_archive,
+    )
+    monkeypatch.setattr(bot_commands, "record_command_update", fake_record_command)
+
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=123),
+        message=SimpleNamespace(reply_text=fake_reply_text),
+    )
+    context = SimpleNamespace(bot=bot)
+
+    async def run_clear():
+        with telegram_history.capture_telegram_history_events(123) as events:
+            await bot_commands.clear_command.__wrapped__(update, context)
+        return events
+
+    assert asyncio.run(run_clear()) == ["clear-event", "reply-event"]
+
+
+def test_zero_coin_clear_reuses_insufficient_coin_notice_and_does_not_archive(
+    monkeypatch,
+):
+    operations = []
+
+    async def fake_flush(user_id):
+        operations.append("flush_old_events")
+
+    async def fake_coins(user_id):
+        return 0
+
+    async def unexpected_cancel(user_id):
+        raise AssertionError("zero-coin /clear must not alter idle follow-up state")
+
+    async def unexpected_archive(*args, **kwargs):
+        raise AssertionError("zero-coin /clear must not archive history")
+
+    async def fake_reply_text(text):
+        operations.append(("reply", text))
+
+    monkeypatch.setattr(bot_commands, "flush_pending_events", fake_flush)
+    monkeypatch.setattr(
+        bot_commands.process_user,
+        "async_get_user_coins",
+        fake_coins,
+    )
+    monkeypatch.setattr(
+        bot_commands.idle_followup,
+        "cancel_idle_followup",
+        unexpected_cancel,
+    )
+    monkeypatch.setattr(
+        bot_commands.mysql_connection,
+        "archive_chat_and_start_new_session",
+        unexpected_archive,
+    )
+
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=123),
+        message=SimpleNamespace(reply_text=fake_reply_text),
+    )
+    context = SimpleNamespace(bot=object())
+
+    asyncio.run(bot_commands.clear_command.__wrapped__(update, context))
+
+    assert operations == [
+        "flush_old_events",
+        (
+            "reply",
+            "您的硬币不足，无法与雾萌娘连接，需要1个硬币。"
+            "试试通过 /lottery 抽奖吧！",
+        ),
+    ]
 
 
 def test_command_and_successful_reply_are_recorded_in_order(monkeypatch):

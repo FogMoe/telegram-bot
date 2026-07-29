@@ -135,6 +135,7 @@ def test_run_summary_agent_exposes_only_summary_search_tool(monkeypatch):
         tool["function"]["name"] for tool in OPENAI_TOOLS
     }
     assert captured["kwargs"]["max_tokens"] == 2500
+    assert captured["kwargs"]["context_hard_limit_ratio"] == 1.5
     assert captured["kwargs"]["max_iterations"] == 4
     assert captured["kwargs"]["completion_kwargs"] == {
         "reasoning_effort": "high"

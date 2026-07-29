@@ -1,7 +1,7 @@
 import pytest
 
 from core import config
-from features.ai import litellm_client
+from features.ai import context_budget, litellm_client
 from features.ai.litellm_message_sanitizer import sanitize_message_for_provider
 from features.ai.litellm_provider_config import (
     azure_api_base,
@@ -197,6 +197,116 @@ def test_create_chat_completion_normalizes_provider_and_filters_none_kwargs(
             "drop_params": True,
         }
     ]
+
+
+def test_create_chat_completion_uses_twenty_five_percent_hard_limit(monkeypatch):
+    recorded = {}
+    messages = [{"role": "user", "content": "hello"}]
+    tools = [{"type": "function", "function": {"name": "lookup"}}]
+
+    def fake_enforce(request_messages, **kwargs):
+        recorded["messages"] = request_messages
+        recorded.update(kwargs)
+        return context_budget.ContextBudgetResult(
+            messages=list(request_messages),
+            request_tokens=149_999,
+        )
+
+    monkeypatch.setattr(config, "CHAT_TOKEN_LIMIT", 120_000)
+    monkeypatch.setattr(config, "CHAT_CONTEXT_HARD_LIMIT_RATIO", 1.25)
+    monkeypatch.setattr(
+        litellm_client,
+        "enforce_messages_context_budget",
+        fake_enforce,
+    )
+    monkeypatch.setattr(litellm_client, "_provider_params", lambda provider: {})
+    monkeypatch.setattr(litellm_client.litellm, "completion", lambda **kwargs: "ok")
+
+    assert (
+        litellm_client.create_chat_completion(
+            "openai",
+            "test-model",
+            messages,
+            tools=tools,
+            max_tokens=4096,
+        )
+        == "ok"
+    )
+    assert recorded == {
+        "messages": messages,
+        "token_limit": 150_000,
+        "max_output_tokens": 4096,
+        "safety_tokens": config.CHAT_CONTEXT_SAFETY_TOKENS,
+        "model": "test-model",
+        "tools": tools,
+    }
+
+
+def test_create_chat_completion_accepts_summary_hard_limit_override(monkeypatch):
+    recorded = {}
+    provider_calls = []
+    messages = [{"role": "user", "content": "summarize"}]
+
+    def fake_enforce(request_messages, **kwargs):
+        recorded.update(kwargs)
+        return context_budget.ContextBudgetResult(
+            messages=list(request_messages),
+            request_tokens=179_999,
+        )
+
+    monkeypatch.setattr(config, "CHAT_TOKEN_LIMIT", 120_000)
+    monkeypatch.setattr(config, "CHAT_CONTEXT_HARD_LIMIT_RATIO", 1.25)
+    monkeypatch.setattr(
+        litellm_client,
+        "enforce_messages_context_budget",
+        fake_enforce,
+    )
+    monkeypatch.setattr(litellm_client, "_provider_params", lambda provider: {})
+    monkeypatch.setattr(
+        litellm_client.litellm,
+        "completion",
+        lambda **kwargs: provider_calls.append(kwargs) or "ok",
+    )
+
+    assert (
+        litellm_client.create_chat_completion(
+            "openai",
+            "summary-model",
+            messages,
+            context_hard_limit_ratio=1.5,
+            max_tokens=2500,
+        )
+        == "ok"
+    )
+    assert recorded["token_limit"] == 180_000
+    assert "context_hard_limit_ratio" not in provider_calls[0]
+
+
+def test_create_chat_completion_blocks_before_provider_call(monkeypatch):
+    provider_called = False
+
+    def reject_request(messages, **kwargs):
+        raise context_budget.ContextBudgetExceededError(150_001, 150_000)
+
+    def fake_completion(**kwargs):
+        nonlocal provider_called
+        provider_called = True
+
+    monkeypatch.setattr(
+        litellm_client,
+        "enforce_messages_context_budget",
+        reject_request,
+    )
+    monkeypatch.setattr(litellm_client.litellm, "completion", fake_completion)
+
+    with pytest.raises(context_budget.ContextBudgetExceededError):
+        litellm_client.create_chat_completion(
+            "openai",
+            "test-model",
+            [{"role": "user", "content": "oversized"}],
+        )
+
+    assert provider_called is False
 
 
 def test_create_chat_completion_uses_openai_history_shape_for_compatible_gemini(

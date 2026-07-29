@@ -15,6 +15,8 @@ transaction = db.transaction
 run_sync = db.run_sync
 
 PERMANENT_RECORDS_KEEP = 100
+COIN_SERVICE_STATE_SUSPENDED = "suspended"
+COIN_SERVICE_STATE_RESUMED = "resumed"
 
 
 def _configured_chat_models_for_provider(provider: str) -> list[str]:
@@ -51,6 +53,15 @@ def _is_history_state_event(message: object) -> bool:
     if not isinstance(content, str):
         return False
     return 'origin="history_state"' in content
+
+
+def _is_coin_service_state_event(message: object) -> bool:
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    if not isinstance(content, str):
+        return False
+    return 'origin="coin_service"' in content and 'service_state="' in content
 
 
 def _assistant_tool_call_ids(message: dict) -> list[str]:
@@ -361,6 +372,39 @@ def _build_history_state_event(
     }
 
 
+def _build_coin_service_state_event(state: str) -> dict:
+    if state == COIN_SERVICE_STATE_SUSPENDED:
+        reason = "coins_exhausted"
+        detail = (
+            "User coin balance reached zero. AI conversation history recording "
+            "is suspended until coins are available again."
+        )
+    elif state == COIN_SERVICE_STATE_RESUMED:
+        reason = "coins_available"
+        detail = (
+            "User coin balance is positive again. AI conversation history "
+            "recording has resumed."
+        )
+    else:
+        raise ValueError(f"Unsupported coin service state: {state}")
+
+    attrs = [
+        ("type", "system"),
+        ("timestamp", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")),
+        ("origin", "coin_service"),
+        ("service_state", state),
+        ("reason", reason),
+    ]
+    return {
+        "role": "user",
+        "content": (
+            f"<metadata {format_metadata_attrs(attrs)}>\n"
+            f"  <status>{xml_escape(detail)}</status>\n"
+            "</metadata>"
+        ),
+    }
+
+
 def _find_last_user_message_index(messages: list[dict]) -> int | None:
     for idx in range(len(messages) - 1, -1, -1):
         msg = messages[idx]
@@ -405,11 +449,44 @@ def _last_history_state_event(messages: list[dict]) -> str | None:
     return None
 
 
+def _last_coin_service_state(messages: list[dict]) -> str | None:
+    marker = 'service_state="'
+    for message in reversed(messages):
+        if not _is_coin_service_state_event(message):
+            continue
+        content = message.get("content") or ""
+        value_start = content.find(marker)
+        if value_start == -1:
+            continue
+        value_start += len(marker)
+        value_end = content.find('"', value_start)
+        if value_end != -1:
+            return content[value_start:value_end]
+    return None
+
+
+async def _get_history_user_total_coins(
+    conversation_id: int,
+    *,
+    connection,
+) -> int | None:
+    row = await fetch_one(
+        "SELECT coins, coins_paid FROM user WHERE id = %s",
+        (conversation_id,),
+        connection=connection,
+    )
+    if not row:
+        return None
+    return int(row[0] or 0) + int(row[1] or 0)
+
+
 async def insert_chat_records(
     conversation_id,
     records: list[tuple[str, Any]],
     *,
     system_prompt_extra: str | None = None,
+    allow_zero_balance: bool = False,
+    suspend_if_zero: bool = False,
 ):
     snapshot_created = False
     warning_level = None
@@ -420,12 +497,12 @@ async def insert_chat_records(
         _coerce_message_entry(role, content)
         for role, content in records
     ]
-    if not message_entries:
+    if not message_entries and not suspend_if_zero:
         return snapshot_created, warning_level, archived_records
 
     async with transaction() as connection:
         row = await fetch_one(
-            "SELECT messages FROM chat_records WHERE conversation_id = %s",
+            "SELECT messages FROM chat_records WHERE conversation_id = %s FOR UPDATE",
             (conversation_id,),
             connection=connection,
         )
@@ -441,6 +518,48 @@ async def insert_chat_records(
 
         if not isinstance(messages, list):
             messages = []
+
+        total_coins = await _get_history_user_total_coins(
+            int(conversation_id),
+            connection=connection,
+        )
+        coin_service_state = _last_coin_service_state(messages)
+        zero_balance_transition = False
+
+        if suspend_if_zero:
+            if (
+                total_coins is None
+                or total_coins > 0
+                or coin_service_state == COIN_SERVICE_STATE_SUSPENDED
+            ):
+                return snapshot_created, warning_level, archived_records
+            message_entries = [
+                _build_coin_service_state_event(COIN_SERVICE_STATE_SUSPENDED)
+            ]
+            zero_balance_transition = True
+        elif total_coins is not None and total_coins <= 0:
+            if allow_zero_balance:
+                if coin_service_state == COIN_SERVICE_STATE_SUSPENDED:
+                    message_entries.insert(
+                        0,
+                        _build_coin_service_state_event(COIN_SERVICE_STATE_RESUMED),
+                    )
+            elif coin_service_state == COIN_SERVICE_STATE_SUSPENDED:
+                return snapshot_created, warning_level, archived_records
+            else:
+                message_entries.append(
+                    _build_coin_service_state_event(COIN_SERVICE_STATE_SUSPENDED)
+                )
+                zero_balance_transition = True
+        elif (
+            total_coins is not None
+            and total_coins > 0
+            and coin_service_state == COIN_SERVICE_STATE_SUSPENDED
+        ):
+            message_entries.insert(
+                0,
+                _build_coin_service_state_event(COIN_SERVICE_STATE_RESUMED),
+            )
 
         messages_with_new = list(messages)
         messages_with_new.extend(message_entries)
@@ -474,7 +593,7 @@ async def insert_chat_records(
         compressed_event: dict | None = None
         if warning_level == "overflow":
             event_state = "compressed"
-        elif latest_role == "user":
+        elif latest_role == "user" and not zero_balance_transition:
             if warning_level == "near_limit":
                 event_state = "near_limit"
             elif is_new_session:
@@ -566,17 +685,136 @@ async def insert_chat_records(
     return snapshot_created, warning_level, archived_records
 
 
+async def archive_chat_and_start_new_session(
+    conversation_id: int,
+    records: list[tuple[str, Any]],
+) -> tuple[int, list[dict]]:
+    """把当前会话及收尾记录整体归档，并把活跃历史重置为 new_session。"""
+    final_entries = [_coerce_message_entry(role, content) for role, content in records]
+
+    async with transaction() as connection:
+        row = await fetch_one(
+            "SELECT messages FROM chat_records WHERE conversation_id = %s FOR UPDATE",
+            (conversation_id,),
+            connection=connection,
+        )
+        raw_messages = row[0] if row else None
+        if isinstance(raw_messages, bytes):
+            raw_messages = raw_messages.decode("utf-8")
+        if isinstance(raw_messages, str):
+            try:
+                messages = json.loads(raw_messages)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                messages = []
+        elif isinstance(raw_messages, list):
+            messages = list(raw_messages)
+        else:
+            messages = []
+
+        messages.extend(final_entries)
+        messages, _ = _sanitize_messages_with_tool_pairs(messages)
+        snapshot_value = json.dumps(messages, ensure_ascii=False)
+        insert_result = await connection.exec_driver_sql(
+            "INSERT INTO permanent_chat_records (user_id, conversation_snapshot) "
+            "VALUES (%s, %s)",
+            (conversation_id, snapshot_value),
+        )
+        record_id = getattr(insert_result, "lastrowid", None)
+        if not record_id:
+            last_id_row = await fetch_one(
+                "SELECT LAST_INSERT_ID()",
+                connection=connection,
+            )
+            record_id = last_id_row[0] if last_id_row else None
+        if not record_id:
+            raise RuntimeError("Failed to resolve permanent chat record id after /clear")
+
+        new_session_messages = [_build_history_state_event("new_session")]
+        total_coins = await _get_history_user_total_coins(
+            conversation_id,
+            connection=connection,
+        )
+        if total_coins is not None and total_coins <= 0:
+            new_session_messages.append(
+                _build_coin_service_state_event(COIN_SERVICE_STATE_SUSPENDED)
+            )
+        new_session_json = json.dumps(new_session_messages, ensure_ascii=False)
+        if row:
+            await connection.exec_driver_sql(
+                "UPDATE chat_records SET messages = %s, "
+                "last_rotated_at = CURRENT_TIMESTAMP WHERE conversation_id = %s",
+                (new_session_json, conversation_id),
+            )
+        else:
+            await connection.exec_driver_sql(
+                "INSERT INTO chat_records "
+                "(conversation_id, messages, last_rotated_at) "
+                "VALUES (%s, %s, CURRENT_TIMESTAMP)",
+                (conversation_id, new_session_json),
+            )
+
+        archived_records = await prune_permanent_records(
+            conversation_id,
+            connection=connection,
+        )
+
+    return int(record_id), archived_records
+
+
+async def append_permanent_chat_record(
+    user_id: int,
+    record_id: int,
+    records: list[tuple[str, Any]],
+) -> None:
+    """把清理完成后才成功显示的事件追加到对应归档。"""
+    if not records:
+        return
+    new_entries = [_coerce_message_entry(role, content) for role, content in records]
+
+    async with transaction() as connection:
+        row = await fetch_one(
+            "SELECT conversation_snapshot FROM permanent_chat_records "
+            "WHERE id = %s AND user_id = %s FOR UPDATE",
+            (record_id, user_id),
+            connection=connection,
+        )
+        if not row:
+            raise RuntimeError("Permanent chat record not found while finalizing /clear")
+        snapshot = row[0]
+        if isinstance(snapshot, bytes):
+            snapshot = snapshot.decode("utf-8")
+        if isinstance(snapshot, str):
+            try:
+                messages = json.loads(snapshot)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                messages = []
+        elif isinstance(snapshot, list):
+            messages = list(snapshot)
+        else:
+            messages = []
+
+        messages.extend(new_entries)
+        messages, _ = _sanitize_messages_with_tool_pairs(messages)
+        await connection.exec_driver_sql(
+            "UPDATE permanent_chat_records SET conversation_snapshot = %s, "
+            "summary = NULL WHERE id = %s AND user_id = %s",
+            (json.dumps(messages, ensure_ascii=False), record_id, user_id),
+        )
+
+
 async def insert_chat_record(
     conversation_id,
     role,
     content,
     *,
     system_prompt_extra: str | None = None,
+    allow_zero_balance: bool = False,
 ):
     return await insert_chat_records(
         conversation_id,
         [(role, content)],
         system_prompt_extra=system_prompt_extra,
+        allow_zero_balance=allow_zero_balance,
     )
 
 
@@ -586,12 +824,14 @@ async def async_insert_chat_record(
     content,
     *,
     system_prompt_extra: str | None = None,
+    allow_zero_balance: bool = False,
 ):
     return await insert_chat_record(
         conversation_id,
         role,
         content,
         system_prompt_extra=system_prompt_extra,
+        allow_zero_balance=allow_zero_balance,
     )
 
 
@@ -600,11 +840,15 @@ async def async_insert_chat_records(
     records: list[tuple[str, Any]],
     *,
     system_prompt_extra: str | None = None,
+    allow_zero_balance: bool = False,
+    suspend_if_zero: bool = False,
 ):
     return await insert_chat_records(
         conversation_id,
         records,
         system_prompt_extra=system_prompt_extra,
+        allow_zero_balance=allow_zero_balance,
+        suspend_if_zero=suspend_if_zero,
     )
 
 

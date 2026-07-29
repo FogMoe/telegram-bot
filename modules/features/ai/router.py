@@ -6,6 +6,7 @@ from typing import Dict, Optional
 from core import config
 
 from .chat_capabilities import chat_model_for_service, chat_service_supports_vision
+from .context_budget import ContextBudgetExceededError
 from .message_content import messages_have_images, strip_image_content
 from .tools import clear_tool_request_context, cleanup_linux_sandbox, set_tool_request_context
 from .errors import SafetyBlockError, is_timeout_error
@@ -51,12 +52,35 @@ AI_SERVICE_ERROR_MESSAGE = (
     "请联系管理员 @ScarletKc 反馈问题。"
 )
 
+CONTEXT_BUDGET_ERROR_MESSAGE = (
+    "当前对话内容太多，系统无法继续处理。请使用 /clear 开始新会话后重试。\n"
+    "This conversation is too long for the system to continue. "
+    "Use /clear to start a new session and try again."
+)
+
+
+def _context_budget_error_message(_: ContextBudgetExceededError) -> str:
+    return CONTEXT_BUDGET_ERROR_MESSAGE
+
+
+def _find_context_budget_error(exc: BaseException) -> ContextBudgetExceededError | None:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ContextBudgetExceededError):
+            return current
+        current = current.__cause__ or current.__context__
+    return None
+
 
 def runtime_error_cause(message: str) -> str | None:
     if message == PARTIAL_AI_RESPONSE_ERROR_MESSAGE:
         return "partial_ai_response_failed"
     if message == AI_SERVICE_ERROR_MESSAGE:
         return "all_ai_services_failed"
+    if message == CONTEXT_BUDGET_ERROR_MESSAGE:
+        return "context_budget_exceeded"
     return None
 
 
@@ -253,6 +277,10 @@ async def _try_ai_services(
                 continue
             raise
         except PartialAIResponseError as exc:
+            context_error = _find_context_budget_error(exc)
+            if context_error is not None:
+                logging.warning("AI 请求超过上下文硬上限: %s", context_error)
+                return (_context_budget_error_message(context_error), exc.tool_logs), None
             if is_timeout_error(exc):
                 logging.warning(
                     "%s timed out after partial AI response; not retrying",
@@ -269,6 +297,10 @@ async def _try_ai_services(
                 return ("", exc.tool_logs), None
             return (PARTIAL_AI_RESPONSE_ERROR_MESSAGE, exc.tool_logs), None
         except Exception as exc:
+            context_error = _find_context_budget_error(exc)
+            if context_error is not None:
+                logging.warning("AI 请求超过上下文硬上限: %s", context_error)
+                return (_context_budget_error_message(context_error), []), None
             if _visible_content_was_sent(visible_content_handler):
                 if is_timeout_error(exc):
                     logging.warning(

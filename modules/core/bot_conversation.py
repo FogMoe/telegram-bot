@@ -16,7 +16,9 @@ from core.prompt_utils import (
     format_user_state_prompt,
 )
 from core.telegram_history import (
+    capture_telegram_history_events,
     format_user_message as _format_xml_message,
+    flush_pending_events,
     normalize_command_name,
     suppress_telegram_history,
     telegram_history_scope,
@@ -35,7 +37,10 @@ from features.ai.reply_filter import normalize_ai_reply_text
 from features.ai.sticker_sender import normalize_sticker_directives, send_ai_reply_with_stickers
 from features.ai.telegram_visible_sender import TelegramVisibleContentHandler
 from features.ai.task_runner import run_ai_task
-from features.ai.tool_history import tool_logs_to_record_entries
+from features.ai.tool_history import (
+    tool_logs_completed_clear,
+    tool_logs_to_record_entries,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +78,46 @@ def _consume_batch_future_exception(future: asyncio.Future) -> None:
         future.exception()
     except Exception:
         return
+
+
+async def _archive_completed_clear_turn(
+    *,
+    bot,
+    user_id: int,
+    conversation_id: int,
+    tool_record_entries: list[tuple[str, object]],
+    assistant_message: str,
+    runtime_error: str | None,
+) -> None:
+    """把 AI 代执行 /clear 的完整当前轮归档，并重置活跃会话。"""
+    await flush_pending_events(conversation_id)
+    clear_records = list(tool_record_entries)
+    if assistant_message.strip() and not runtime_error:
+        clear_records.append(("assistant", assistant_message))
+
+    clear_record_id, clear_archived_records = (
+        await mysql_connection.archive_chat_and_start_new_session(
+            conversation_id,
+            clear_records,
+        )
+    )
+
+    archive_delivery_events: list[str] = []
+    if clear_archived_records:
+        with capture_telegram_history_events(user_id) as archive_delivery_events:
+            await send_permanent_records_archive(
+                bot,
+                user_id,
+                clear_archived_records,
+                logger=logger,
+            )
+    if archive_delivery_events:
+        await mysql_connection.append_permanent_chat_record(
+            user_id,
+            clear_record_id,
+            [("user", content) for content in archive_delivery_events],
+        )
+    summary.schedule_summary_generation(conversation_id)
 
 
 def _cache_bot_identity(bot_user: telegram.User) -> None:
@@ -602,6 +647,9 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
     if not message_jobs:
         return
 
+    # 在扣费前写完上一项操作，避免余额恰好归零时把旧事件误判为收尾记录。
+    await flush_pending_events(conversation_id)
+
     async with mysql_connection.transaction() as connection:
         row = await mysql_connection.fetch_one(
             "SELECT permission, coins, coins_paid, info FROM user WHERE id = %s",
@@ -812,6 +860,7 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
             conversation_id,
             user_record_entries,
             system_prompt_extra=user_state_prompt,
+            allow_zero_balance=True,
         )
         if user_archived_records:
             await send_permanent_records_archive(
@@ -890,11 +939,13 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
         )
 
     tool_record_entries = tool_logs_to_record_entries(tool_logs)
+    completed_clear = tool_logs_completed_clear(tool_logs)
 
-    if tool_record_entries:
+    if tool_record_entries and not completed_clear:
         tool_snapshot_created, tool_storage_warning, tool_archived_records = await mysql_connection.async_insert_chat_records(
             conversation_id,
             tool_record_entries,
+            allow_zero_balance=True,
         )
         if tool_archived_records:
             await send_permanent_records_archive(
@@ -909,7 +960,7 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
         if tool_snapshot_created and tool_storage_warning != "overflow":
             summary.schedule_summary_generation(conversation_id)
 
-    if assistant_message.strip() and not runtime_error:
+    if assistant_message.strip() and not runtime_error and not completed_clear:
         # 异步插入AI回复到聊天记录
         (
             assistant_snapshot_created,
@@ -919,6 +970,7 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
             conversation_id,
             "assistant",
             assistant_message,
+            allow_zero_balance=True,
         )
         if assistant_archived_records:
             await send_permanent_records_archive(
@@ -1006,3 +1058,38 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
             if getattr(sent_message, "message_id", None) in bot_event_message_ids:
                 continue
             await group_chat_history.log_group_message(sent_message, update.effective_chat.id)
+
+    if completed_clear:
+        # 本轮工具调用完成后才建立真正的新会话边界。
+        await _archive_completed_clear_turn(
+            bot=context.bot,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            tool_record_entries=tool_record_entries,
+            assistant_message=assistant_message,
+            runtime_error=runtime_error,
+        )
+
+    # 先保存本轮所有成功显示的结果，再把零余额状态作为严格写入边界。
+    await flush_pending_events(conversation_id)
+    (
+        suspension_snapshot_created,
+        suspension_warning,
+        suspension_archived_records,
+    ) = await mysql_connection.async_insert_chat_records(
+        conversation_id,
+        [],
+        suspend_if_zero=True,
+    )
+    if suspension_archived_records:
+        await send_permanent_records_archive(
+            context.bot,
+            user_id,
+            suspension_archived_records,
+            logger=logger,
+        )
+    if suspension_warning:
+        await notify_history_warning(suspension_warning)
+    await handle_overflow_summary(suspension_warning)
+    if suspension_snapshot_created and suspension_warning != "overflow":
+        summary.schedule_summary_generation(conversation_id)
