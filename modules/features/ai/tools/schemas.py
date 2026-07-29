@@ -20,6 +20,15 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
         "Returns a list of available Telegram commands and features for users",
     ),
     _tool_definition(
+        "execute_telegram_command",
+        (
+            "Run a Telegram command as the current user in the current chat. The "
+            "normal command handler sends its mechanical reply directly, and its "
+            "events enter the conversation before the next model response. Returns "
+            "execution status only."
+        ),
+    ),
+    _tool_definition(
         "read_doc",
         (
             "Read an internal reference document about how this bot's own features "

@@ -98,7 +98,13 @@ async def _refresh_bot_identity(bot, *, source: str) -> bool:
 
 
 async def post_init(application) -> None:
-    db.set_main_loop(asyncio.get_running_loop())
+    main_loop = asyncio.get_running_loop()
+    db.set_main_loop(main_loop)
+    from features.ai.telegram_command_executor import (
+        configure_telegram_command_executor,
+    )
+
+    configure_telegram_command_executor(application, main_loop)
     await _refresh_bot_identity(application.bot, source="post_init")
 
 
@@ -840,8 +846,14 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
     tool_context = {
         "is_group": update.effective_chat.type in ("group", "supergroup"),
         "group_id": update.effective_chat.id if update.effective_chat.type in ("group", "supergroup") else None,
+        "chat_id": update.effective_chat.id,
+        "chat_type": update.effective_chat.type,
+        "chat_title": getattr(update.effective_chat, "title", None),
         "message_id": getattr(effective_message, "message_id", None),
         "user_id": user_id,
+        "username": getattr(update.effective_user, "username", None),
+        "first_name": getattr(update.effective_user, "first_name", None),
+        "language_code": getattr(update.effective_user, "language_code", None),
         "user_state_prompt": user_state_prompt,
     }
     sent_messages = []

@@ -17,11 +17,13 @@ from .sandbox_tools import linux_sandbox_tool
 from .models import AI_TOOL_ARG_MODELS
 from .schemas import OPENAI_TOOLS
 from .sticker_tools import list_available_stickers_tool
+from .telegram_command_tools import execute_telegram_command_tool
 from .user_tools import kindness_gift_tool, update_impression_tool
 from .voice_tools import generate_voice_tool
 
 AI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
     "get_help_text": get_help_text_tool,
+    "execute_telegram_command": execute_telegram_command_tool,
     "read_doc": read_doc_tool,
     "google_search": google_search_tool,
     "advisor": advisor_tool,

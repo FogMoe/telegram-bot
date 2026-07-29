@@ -11,6 +11,7 @@ from .memory_tools import (
 from .schedule_tools import schedule_ai_message_tool
 from .sandbox_tools import cleanup_linux_sandbox, linux_sandbox_tool
 from .sticker_tools import list_available_stickers_tool
+from .telegram_command_tools import execute_telegram_command_tool
 from .user_tools import kindness_gift_tool, update_impression_tool
 from .voice_tools import generate_voice_tool
 
@@ -34,4 +35,5 @@ __all__ = [
     "user_diary_tool",
     "schedule_ai_message_tool",
     "list_available_stickers_tool",
+    "execute_telegram_command_tool",
 ]

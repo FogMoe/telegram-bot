@@ -83,6 +83,30 @@ def test_persist_event_always_uses_user_role(monkeypatch):
     assert calls == [(123, "user", "event")]
 
 
+def test_capture_scope_defers_matching_user_events(monkeypatch):
+    calls = []
+
+    async def fake_insert(conversation_id, role, content):
+        calls.append((conversation_id, role, content))
+        return False, None, []
+
+    monkeypatch.setattr(
+        telegram_history.mysql_connection,
+        "async_insert_chat_record",
+        fake_insert,
+    )
+
+    async def run_capture():
+        with telegram_history.capture_telegram_history_events(123) as events:
+            await telegram_history._persist_event(123, "captured", object())
+        return events
+
+    events = asyncio.run(run_capture())
+
+    assert events == ["captured"]
+    assert calls == []
+
+
 def test_command_and_successful_reply_are_recorded_in_order(monkeypatch):
     recorded = []
 

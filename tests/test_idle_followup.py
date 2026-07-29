@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from features.ai import idle_followup
+from features.ai.tools import get_tool_request_context
 
 
 def test_calculate_ttl_uses_default_median_and_hard_bounds():
@@ -59,22 +60,29 @@ def test_extract_recent_dialogue_keeps_real_messages_and_media_only():
 def test_parse_recap_response_requires_exact_schema():
     result = idle_followup._parse_recap_response(
         '{"recap":"聊了计划", "open_loops":"确认时间", '
-        '"suggested_follow_up":"问进展"}'
+        '"suggested_follow_up":"问进展", "memory_suggestion":'
+        '{"impression":"喜欢简洁回答", "diary":"正在准备演示"}}'
     )
     assert result == {
         "recap": "聊了计划",
         "open_loops": "确认时间",
         "suggested_follow_up": "问进展",
+        "memory_suggestion": {
+            "impression": "喜欢简洁回答",
+            "diary": "正在准备演示",
+        },
     }
 
     with pytest.raises(ValueError, match="required JSON schema"):
         idle_followup._parse_recap_response(
-            '{"recap": [], "open_loops": "", "suggested_follow_up": ""}'
+            '{"recap": [], "open_loops": "", "suggested_follow_up": "", '
+            '"memory_suggestion":{"impression":"", "diary":""}}'
         )
 
     with pytest.raises(ValueError, match="required JSON schema"):
         idle_followup._parse_recap_response(
-            '```json\n{"recap":"x","open_loops":"","suggested_follow_up":""}\n```'
+            '```json\n{"recap":"x","open_loops":"","suggested_follow_up":"",'
+            '"memory_suggestion":{"impression":"","diary":""}}\n```'
         )
 
 
@@ -84,6 +92,10 @@ def test_format_idle_recap_event_escapes_output_without_internal_version():
             "recap": "用户提到 <计划>",
             "open_loops": "确认 & 回复",
             "suggested_follow_up": "问一下进展",
+            "memory_suggestion": {
+                "impression": "长期偏好 <简洁>",
+                "diary": "正在准备 A & B",
+            },
         },
         timestamp=datetime(2026, 7, 29, 12, 0, 0),
     )
@@ -93,43 +105,162 @@ def test_format_idle_recap_event_escapes_output_without_internal_version():
     assert "activity_version" not in result
     assert "<recap>用户提到 &lt;计划&gt;</recap>" in result
     assert "<open_loops>确认 &amp; 回复</open_loops>" in result
+    assert "<memory_suggestion>" in result
+    assert "<impression>长期偏好 &lt;简洁&gt;</impression>" in result
+    assert "<diary>正在准备 A &amp; B</diary>" in result
     assert "<message>" not in result
     assert "<instruction>" not in result
 
 
+def test_format_idle_recap_event_omits_empty_memory_suggestion():
+    result = idle_followup._format_idle_recap_event(
+        {
+            "recap": "简短回顾",
+            "open_loops": "",
+            "suggested_follow_up": "",
+            "memory_suggestion": {"impression": "", "diary": ""},
+        },
+        timestamp=datetime(2026, 7, 29, 12, 0, 0),
+    )
+
+    assert "<memory_suggestion>" not in result
+
+
+def test_load_recap_memory_context_uses_saved_impression_and_diary_index(monkeypatch):
+    async def fake_impression(_user_id):
+        return " 喜欢简洁回答\n"
+
+    async def fake_fetch_all(_sql, _params):
+        return [
+            (1, "Projects", " Current work "),
+            (2, "Relationships", "Important people"),
+        ]
+
+    monkeypatch.setattr(
+        idle_followup.process_user,
+        "async_get_user_impression",
+        fake_impression,
+    )
+    monkeypatch.setattr(idle_followup.mysql_connection, "fetch_all", fake_fetch_all)
+
+    result = asyncio.run(idle_followup._load_recap_memory_context(123))
+
+    assert result == {
+        "impression": "喜欢简洁回答",
+        "diary_index": [
+            {"page": 1, "title": "Projects", "summary": "Current work"},
+            {
+                "page": 2,
+                "title": "Relationships",
+                "summary": "Important people",
+            },
+        ],
+    }
+
+
 def test_generate_recap_requests_strict_sdk_json_schema(monkeypatch):
     captured = {}
-    response = SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(
-                    content=(
-                        '{"recap":"聊了计划","open_loops":"",'
-                        '"suggested_follow_up":"稍后问候"}'
-                    )
-                )
-            )
-        ]
-    )
 
-    def fake_run_ai_task(task, messages, **kwargs):
-        captured.update(task=task, messages=messages, kwargs=kwargs)
-        return response
+    def fake_run_recap_agent(messages, user_id, response_format):
+        captured.update(
+            messages=messages,
+            user_id=user_id,
+            response_format=response_format,
+        )
+        return (
+            '{"recap":"聊了计划","open_loops":"",'
+            '"suggested_follow_up":"稍后问候","memory_suggestion":'
+            '{"impression":"","diary":"准备周五演示"}}'
+        )
 
-    monkeypatch.setattr(idle_followup, "run_ai_task", fake_run_ai_task)
+    monkeypatch.setattr(idle_followup, "_run_recap_agent", fake_run_recap_agent)
 
     result = idle_followup._generate_recap_sync(
-        [{"role": "user", "content": "最近很忙"}]
+        321,
+        [{"role": "user", "content": "最近很忙"}],
+        {
+            "impression": "喜欢简洁回答",
+            "diary_index": [{"page": 1, "title": "Projects", "summary": "旧项目"}],
+        },
     )
 
-    response_format = captured["kwargs"]["response_format"]
+    response_format = captured["response_format"]
     assert result["recap"] == "聊了计划"
-    assert captured["task"] == "recap"
-    assert captured["kwargs"]["drop_params"] is False
-    assert captured["kwargs"]["max_tokens"] == 1000
+    assert result["memory_suggestion"]["diary"] == "准备周五演示"
+    assert captured["user_id"] == 321
     assert response_format["type"] == "json_schema"
     assert response_format["json_schema"]["strict"] is True
-    assert response_format["json_schema"]["schema"]["additionalProperties"] is False
+    schema = response_format["json_schema"]["schema"]
+    assert schema["additionalProperties"] is False
+    memory_schema = schema["$defs"]["IdleRecapMemorySuggestion"]
+    assert memory_schema["additionalProperties"] is False
+    assert memory_schema["properties"]["impression"]["maxLength"] == 2000
+    assert "喜欢简洁回答" in captured["messages"][0]["content"]
+    assert "旧项目" in captured["messages"][0]["content"]
+
+
+def test_run_recap_agent_exposes_only_read_only_memory_tools(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        idle_followup,
+        "get_provider_order_for_task",
+        lambda task: ["gemini"],
+    )
+    monkeypatch.setattr(
+        idle_followup,
+        "get_models_for_task",
+        lambda provider, task: ["recap-model"],
+    )
+    monkeypatch.setattr(
+        idle_followup,
+        "completion_kwargs_for_task",
+        lambda provider, task: {"reasoning_effort": "high"},
+    )
+
+    def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
+        captured.update(
+            provider=provider,
+            model=model,
+            messages=messages,
+            tool_context=tool_context,
+            kwargs=kwargs,
+            active_context=get_tool_request_context(),
+        )
+        return "structured result", []
+
+    monkeypatch.setattr(idle_followup, "run_tool_loop", fake_run_tool_loop)
+
+    response_format = {"type": "json_schema"}
+    result = idle_followup._run_recap_agent(
+        [{"role": "user", "content": "review"}],
+        456,
+        response_format,
+    )
+
+    tool_names = {
+        tool["function"]["name"]
+        for tool in captured["kwargs"]["tool_definitions"]
+    }
+    assert result == "structured result"
+    assert captured["provider"] == "gemini"
+    assert captured["model"] == "recap-model"
+    assert captured["active_context"] == {"user_id": 456}
+    assert tool_names == {
+        "fetch_permanent_summaries",
+        "search_permanent_records",
+    }
+    assert captured["kwargs"]["system_prompt_override"] == (
+        idle_followup.config.IDLE_RECAP_SYSTEM_PROMPT
+    )
+    assert captured["kwargs"]["max_tokens"] == 1000
+    assert captured["kwargs"]["completion_timeout"] == 120
+    assert captured["kwargs"]["completion_kwargs"] == {
+        "reasoning_effort": "high",
+        "response_format": response_format,
+        "drop_params": False,
+    }
+    assert get_tool_request_context() == {}
 
 
 def test_process_claim_stops_when_user_returns_during_recap(monkeypatch):
@@ -148,11 +279,15 @@ def test_process_claim_stops_when_user_returns_during_recap(monkeypatch):
     async def fake_history(_user_id):
         return [{"role": "user", "content": "hello"}]
 
-    async def fake_generate(_dialogue):
+    async def fake_memory_context(_user_id):
+        return {"impression": "", "diary_index": []}
+
+    async def fake_generate(_user_id, _dialogue, _memory_context):
         return {
             "recap": "用户打了招呼",
             "open_loops": "",
             "suggested_follow_up": "",
+            "memory_suggestion": {"impression": "", "diary": ""},
         }
 
     async def fake_ai_response(*args, **kwargs):
@@ -167,6 +302,11 @@ def test_process_claim_stops_when_user_returns_during_recap(monkeypatch):
         idle_followup.mysql_connection,
         "async_get_chat_history",
         fake_history,
+    )
+    monkeypatch.setattr(
+        idle_followup,
+        "_load_recap_memory_context",
+        fake_memory_context,
     )
     monkeypatch.setattr(idle_followup, "_generate_recap", fake_generate)
     monkeypatch.setattr(idle_followup.ai_chat, "get_ai_response", fake_ai_response)
@@ -206,11 +346,18 @@ def test_process_claim_keeps_main_ai_tools_enabled(monkeypatch):
     async def fake_history(_user_id):
         return [{"role": "user", "content": "hello"}]
 
-    async def fake_generate(_dialogue):
+    async def fake_memory_context(_user_id):
+        return {"impression": "", "diary_index": []}
+
+    async def fake_generate(_user_id, _dialogue, _memory_context):
         return {
             "recap": "用户打了招呼",
             "open_loops": "",
             "suggested_follow_up": "自然问候",
+            "memory_suggestion": {
+                "impression": "用户喜欢简洁回答",
+                "diary": "",
+            },
         }
 
     async def fake_user_state(_user_id):
@@ -235,6 +382,11 @@ def test_process_claim_keeps_main_ai_tools_enabled(monkeypatch):
         "async_get_chat_history",
         fake_history,
     )
+    monkeypatch.setattr(
+        idle_followup,
+        "_load_recap_memory_context",
+        fake_memory_context,
+    )
     monkeypatch.setattr(idle_followup, "_generate_recap", fake_generate)
     monkeypatch.setattr(idle_followup, "build_user_state_prompt", fake_user_state)
     monkeypatch.setattr(idle_followup.ai_chat, "get_ai_response", fake_ai_response)
@@ -250,5 +402,6 @@ def test_process_claim_keeps_main_ai_tools_enabled(monkeypatch):
     )
 
     assert "disable_tools" not in captured["tool_context"]
+    assert "<memory_suggestion>" in captured["persist_args"][1]
     assert captured["persist_args"][3] == tool_logs
     assert captured["send_args"][2] == tool_logs

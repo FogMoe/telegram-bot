@@ -28,6 +28,112 @@ class _Response:
         self.choices = [_Choice(message)]
 
 
+def test_run_tool_loop_uses_custom_prompt_and_tool_subset(monkeypatch):
+    tool_definition = {
+        "type": "function",
+        "function": {
+            "name": "fetch_permanent_summaries",
+            "description": "Fetch summaries",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    responses = [
+        _Response(
+            _Message(
+                "",
+                [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "fetch_permanent_summaries",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+            )
+        ),
+        _Response(_Message("done", None)),
+    ]
+    calls = []
+    handler_calls = []
+
+    def fake_create_chat_completion(*args, **kwargs):
+        calls.append(kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
+    monkeypatch.setitem(
+        tool_runner.AI_TOOL_HANDLERS,
+        "fetch_permanent_summaries",
+        lambda **kwargs: handler_calls.append(kwargs) or {"records": []},
+    )
+
+    message, _ = tool_runner.run_tool_loop(
+        "test_provider",
+        "test_model",
+        [{"role": "user", "content": "review"}],
+        provider_name="Recap",
+        tool_definitions=[tool_definition],
+        system_prompt_override="recap system prompt",
+    )
+
+    assert message == "done"
+    assert calls[0]["tools"] == [tool_definition]
+    assert calls[0]["messages"][0] == {
+        "role": "system",
+        "content": "recap system prompt",
+    }
+    assert handler_calls == [{}]
+
+
+def test_run_tool_loop_rejects_tool_outside_custom_subset(monkeypatch):
+    responses = [
+        _Response(
+            _Message(
+                "",
+                [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "update_impression",
+                            "arguments": '{"impression":"should not run"}',
+                        },
+                    }
+                ],
+            )
+        ),
+        _Response(_Message("done", None)),
+    ]
+    calls = []
+    handler_calls = []
+
+    def fake_create_chat_completion(*args, **kwargs):
+        calls.append(kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
+    monkeypatch.setitem(
+        tool_runner.AI_TOOL_HANDLERS,
+        "update_impression",
+        lambda **kwargs: handler_calls.append(kwargs) or {"status": "updated"},
+    )
+
+    message, _ = tool_runner.run_tool_loop(
+        "test_provider",
+        "test_model",
+        [{"role": "user", "content": "review"}],
+        provider_name="Recap",
+        tool_definitions=[],
+        system_prompt_override="recap system prompt",
+    )
+
+    assert message == "done"
+    assert handler_calls == []
+    assert "Tool is not available in this agent" in str(calls[1]["messages"])
+
+
 def test_run_tool_loop_does_not_synthesize_tool_result_reply(monkeypatch):
     responses = [
         _Response(
@@ -270,6 +376,155 @@ def test_run_tool_loop_retries_transient_followup_without_reexecuting_tool(monke
     assert sleeps == [tool_runner.POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS[0]]
     assert tool_calls == [{"query": "example"}]
     assert sum(log.get("type") == "tool_result" for log in tool_logs) == 1
+
+
+def test_run_tool_loop_injects_telegram_events_before_final_reply(monkeypatch):
+    responses = [
+        _Response(
+            _Message(
+                "",
+                [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "execute_telegram_command",
+                            "arguments": '{"command": "/me"}',
+                        },
+                    }
+                ],
+            )
+        ),
+        _Response(_Message("已经执行好了。", None)),
+    ]
+    calls = []
+
+    def fake_create_chat_completion(*args, **kwargs):
+        calls.append(kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(
+        tool_runner,
+        "create_chat_completion",
+        fake_create_chat_completion,
+    )
+    monkeypatch.setitem(
+        tool_runner.AI_TOOL_HANDLERS,
+        "execute_telegram_command",
+        lambda **kwargs: {
+            "success": True,
+            tool_runner.TOOL_CONTEXT_MESSAGES_KEY: [
+                "command-event",
+                "reply-event",
+            ],
+        },
+    )
+
+    message, tool_logs = tool_runner.run_tool_loop(
+        "test_provider",
+        "test_model",
+        [{"role": "user", "content": "替我执行 /me"}],
+        provider_name="Test",
+    )
+
+    assert message == "已经执行好了。"
+    followup_messages = calls[1]["messages"]
+    assert [item["role"] for item in followup_messages[-4:]] == [
+        "assistant",
+        "tool",
+        "user",
+        "user",
+    ]
+    assert followup_messages[-3]["content"] == '{"success": true}'
+    assert followup_messages[-2:] == [
+        {"role": "user", "content": "command-event"},
+        {"role": "user", "content": "reply-event"},
+    ]
+    assert [
+        log["content"]
+        for log in tool_logs
+        if log.get("type") == "telegram_event"
+    ] == ["command-event", "reply-event"]
+
+
+def test_run_tool_loop_exposes_command_error_for_model_retry(monkeypatch):
+    responses = [
+        _Response(
+            _Message(
+                "",
+                [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "execute_telegram_command",
+                            "arguments": '{"command": "/mee"}',
+                        },
+                    }
+                ],
+            )
+        ),
+        _Response(
+            _Message(
+                "",
+                [
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {
+                            "name": "execute_telegram_command",
+                            "arguments": '{"command": "/me"}',
+                        },
+                    }
+                ],
+            )
+        ),
+        _Response(_Message("完成。", None)),
+    ]
+    completion_calls = []
+    tool_calls = []
+
+    def fake_create_chat_completion(*args, **kwargs):
+        completion_calls.append(kwargs)
+        return responses.pop(0)
+
+    def fake_execute(**kwargs):
+        tool_calls.append(kwargs)
+        if kwargs["command"] == "/mee":
+            return {
+                "success": False,
+                "error": {
+                    "code": "unknown_command",
+                    "message": "Use get_help_text and retry.",
+                },
+            }
+        return {"success": True}
+
+    monkeypatch.setattr(
+        tool_runner,
+        "create_chat_completion",
+        fake_create_chat_completion,
+    )
+    monkeypatch.setitem(
+        tool_runner.AI_TOOL_HANDLERS,
+        "execute_telegram_command",
+        fake_execute,
+    )
+
+    message, _ = tool_runner.run_tool_loop(
+        "test_provider",
+        "test_model",
+        [{"role": "user", "content": "替我执行 /me"}],
+        provider_name="Test",
+    )
+
+    assert message == "完成。"
+    assert tool_calls == [{"command": "/mee"}, {"command": "/me"}]
+    assert any(
+        item.get("role") == "tool"
+        and '"code": "unknown_command"' in str(item.get("content"))
+        for item in completion_calls[1]["messages"]
+    )
 
 
 def test_run_tool_loop_does_not_retry_non_transient_followup_error(monkeypatch):

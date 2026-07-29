@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
@@ -31,12 +31,27 @@ class TelegramHistoryContext:
     redactions: tuple[str, ...] = ()
 
 
+@dataclass
+class TelegramHistoryCapture:
+    user_id: int
+    events: list[str] = field(default_factory=list)
+    active: bool = True
+
+
 _HISTORY_CONTEXT: ContextVar[TelegramHistoryContext | None] = ContextVar(
     "telegram_history_context",
     default=None,
 )
 _CAPTURE_SUPPRESSED: ContextVar[bool] = ContextVar(
     "telegram_history_capture_suppressed",
+    default=False,
+)
+_CAPTURED_EVENTS: ContextVar[TelegramHistoryCapture | None] = ContextVar(
+    "telegram_history_captured_events",
+    default=None,
+)
+_DELEGATED_COMMAND: ContextVar[bool] = ContextVar(
+    "telegram_history_delegated_command",
     default=False,
 )
 
@@ -68,6 +83,8 @@ def format_user_message(
     edited_at: str | None = None,
     event: str | None = None,
     command: str | None = None,
+    origin: str | None = None,
+    delegated: bool = False,
     redacted: bool = False,
     forward_type: str | None = None,
     forward_origin_timestamp: str | None = None,
@@ -86,7 +103,7 @@ def format_user_message(
     media_description: str | None = None,
     media_emoji: str | None = None,
 ) -> str:
-    """格式化真实用户消息；只有这种记录包含 ``<message>``。"""
+    """格式化真实用户消息或明确标记的 AI 代执行命令。"""
     attrs = [
         ("type", chat_type),
         ("timestamp", timestamp),
@@ -94,6 +111,8 @@ def format_user_message(
         ("message_id", str(message_id) if message_id is not None else None),
         ("event", event),
         ("command", command),
+        ("origin", origin),
+        ("delegated", "true" if delegated else None),
         ("redacted", "true" if redacted else None),
         ("edited", "true" if edited else None),
         ("edited_at", edited_at if edited else None),
@@ -284,7 +303,34 @@ def suppress_telegram_history() -> Iterator[None]:
         _CAPTURE_SUPPRESSED.reset(token)
 
 
+@contextmanager
+def capture_telegram_history_events(user_id: int) -> Iterator[list[str]]:
+    """捕获当前用户的 Telegram 事件，交由调用方按正确顺序统一持久化。"""
+    capture = TelegramHistoryCapture(user_id=user_id)
+    token = _CAPTURED_EVENTS.set(capture)
+    try:
+        yield capture.events
+    finally:
+        capture.active = False
+        _CAPTURED_EVENTS.reset(token)
+
+
+@contextmanager
+def delegated_telegram_command() -> Iterator[None]:
+    """标记由 AI 工具代用户投递的 Telegram 命令。"""
+    token = _DELEGATED_COMMAND.set(True)
+    try:
+        yield
+    finally:
+        _DELEGATED_COMMAND.reset(token)
+
+
 async def _persist_event(user_id: int, content: str, bot: Any) -> None:
+    capture = _CAPTURED_EVENTS.get()
+    if capture is not None and capture.active and capture.user_id == user_id:
+        capture.events.append(content)
+        return
+
     try:
         snapshot_created, warning_level, archived_records = (
             await mysql_connection.async_insert_chat_record(user_id, "user", content)
@@ -327,6 +373,7 @@ async def record_command_update(update: Update, bot: Any) -> None:
     if not message or not user or not chat or not command:
         return
 
+    delegated = _DELEGATED_COMMAND.get()
     command_text = _command_text_for_history(message.text or "", command)
     content = format_user_message(
         chat_type=chat.type or "private",
@@ -341,13 +388,15 @@ async def record_command_update(update: Update, bot: Any) -> None:
         else None,
         event="command",
         command=command,
+        origin="ai_tool" if delegated else None,
+        delegated=delegated,
         redacted=(
             command in _SENSITIVE_COMMAND_ARGUMENTS
             and bool((message.text or "").split(maxsplit=1)[1:])
         ),
     )
     await _persist_event(user.id, content, bot)
-    if chat.type in ("group", "supergroup"):
+    if chat.type in ("group", "supergroup") and not delegated:
         try:
             await group_chat_history.log_group_message(message, chat.id)
         except Exception:
@@ -387,7 +436,7 @@ async def prepare_update_history(update: Update, context: Any) -> None:
         )
     )
 
-    if command and command != "clear":
+    if command and (command != "clear" or _DELEGATED_COMMAND.get()):
         await record_command_update(update, context.bot)
     elif update.callback_query and user:
         content = format_callback_event(update)

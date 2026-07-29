@@ -79,3 +79,36 @@ def test_tool_logs_to_record_entries_keeps_standalone_visible_content():
     )
 
     assert entries == [("assistant", "这是已经发出的最终回复。")]
+
+
+def test_tool_logs_to_record_entries_keeps_telegram_events_after_tool_result():
+    entries = tool_logs_to_record_entries(
+        [
+            {
+                "type": "assistant_tool_call",
+                "tool_name": "execute_telegram_command",
+                "arguments": {"command": "/me"},
+                "tool_call_id": "call_1",
+            },
+            {
+                "type": "tool_result",
+                "tool_name": "execute_telegram_command",
+                "arguments": {"command": "/me"},
+                "result": {"success": True},
+                "tool_call_id": "call_1",
+            },
+            {
+                "type": "telegram_event",
+                "role": "user",
+                "content": "command-event",
+            },
+            {
+                "type": "telegram_event",
+                "role": "user",
+                "content": "reply-event",
+            },
+        ]
+    )
+
+    assert [role for role, _ in entries] == ["assistant", "tool", "user", "user"]
+    assert entries[-2:] == [("user", "command-event"), ("user", "reply-event")]

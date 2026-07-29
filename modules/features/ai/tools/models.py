@@ -11,6 +11,18 @@ class GetHelpTextArgs(ToolArguments):
     pass
 
 
+class ExecuteTelegramCommandArgs(ToolArguments):
+    command: str = Field(
+        min_length=2,
+        max_length=1033,
+        pattern=r"^/[a-z][a-z0-9_]*(?: [^\r\n]+)?$",
+        description=(
+            "Complete Telegram command, including the leading slash and any "
+            "arguments."
+        ),
+    )
+
+
 class ListAvailableStickersArgs(ToolArguments):
     pack_name: str | None = Field(
         default=None,
@@ -291,6 +303,7 @@ class UserDiaryArgs(ToolArguments):
 
 AI_TOOL_ARG_MODELS: dict[str, type[ToolArguments]] = {
     "get_help_text": GetHelpTextArgs,
+    "execute_telegram_command": ExecuteTelegramCommandArgs,
     "read_doc": ReadDocArgs,
     "list_available_stickers": ListAvailableStickersArgs,
     "google_search": GoogleSearchArgs,

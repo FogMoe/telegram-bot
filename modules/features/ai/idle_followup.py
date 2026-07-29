@@ -15,7 +15,7 @@ from typing import Any, Iterable
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from telegram.ext import ContextTypes
 
-from core import config, mysql_connection
+from core import config, mysql_connection, process_user
 from core.archive_utils import send_permanent_records_archive
 from core.prompt_utils import format_metadata_attrs, xml_escape
 from core.telegram_history import suppress_telegram_history
@@ -24,6 +24,11 @@ from features.ai import ai_chat, summary
 from features.ai.conversation_locks import get_conversation_lock
 from features.ai.generated_audio_sender import send_generated_audio_from_tool_logs
 from features.ai.generated_image_sender import send_generated_images_from_tool_logs
+from features.ai.provider_resolver import (
+    completion_kwargs_for_task,
+    get_models_for_task,
+    get_provider_order_for_task,
+)
 from features.ai.reply_filter import normalize_ai_reply_text
 from features.ai.router import runtime_error_cause
 from features.ai.runtime import EXECUTOR
@@ -32,8 +37,13 @@ from features.ai.sticker_sender import (
     normalize_sticker_directives,
     send_ai_reply_with_stickers,
 )
-from features.ai.task_runner import run_ai_task
 from features.ai.tool_history import tool_logs_to_record_entries
+from features.ai.tool_runner import run_tool_loop
+from features.ai.tools import (
+    OPENAI_TOOLS,
+    clear_tool_request_context,
+    set_tool_request_context,
+)
 from features.ai.user_state import build_user_state_prompt
 
 logger = logging.getLogger(__name__)
@@ -52,10 +62,25 @@ IDLE_RECAP_MAX_DIALOGUE_MESSAGES = 20
 IDLE_RECAP_MAX_TOKENS = 1000
 IDLE_RECAP_RETRY_LIMIT = 2
 IDLE_RECAP_TIMEOUT_SECONDS = 120
+IDLE_RECAP_TOOL_NAMES = frozenset(
+    {"fetch_permanent_summaries", "search_permanent_records"}
+)
+IDLE_RECAP_TOOLS = [
+    tool
+    for tool in OPENAI_TOOLS
+    if (tool.get("function") or {}).get("name") in IDLE_RECAP_TOOL_NAMES
+]
 
 _idle_followup_job_lock = asyncio.Lock()
 _MESSAGE_TAG_RE = re.compile(r"<message>(.*?)</message>", re.DOTALL)
 _MEDIA_DESCRIPTION_RE = re.compile(r"<description>(.*?)</description>", re.DOTALL)
+
+
+class IdleRecapMemorySuggestion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    impression: str = Field(max_length=2000)
+    diary: str = Field(max_length=2000)
 
 
 class IdleRecapOutput(BaseModel):
@@ -64,6 +89,8 @@ class IdleRecapOutput(BaseModel):
     recap: str = Field(max_length=2000)
     open_loops: str = Field(max_length=2000)
     suggested_follow_up: str = Field(max_length=2000)
+    memory_suggestion: IdleRecapMemorySuggestion
+
 
 @dataclass(frozen=True)
 class IdleFollowupClaim:
@@ -173,57 +200,68 @@ def _extract_recent_dialogue(messages: list[dict]) -> list[dict[str, str]]:
     return dialogue[-IDLE_RECAP_MAX_DIALOGUE_MESSAGES:]
 
 
-def _parse_recap_response(value: object) -> dict[str, str]:
+def _normalize_recap_text(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _parse_recap_response(value: object) -> dict[str, Any]:
     text = str(value or "").strip()
     try:
         parsed = IdleRecapOutput.model_validate_json(text)
     except ValidationError as exc:
         raise ValueError("idle recap response failed the required JSON schema") from exc
 
-    result = {
-        field: re.sub(r"\s+", " ", value).strip()
-        for field, value in parsed.model_dump().items()
+    result: dict[str, Any] = {
+        "recap": _normalize_recap_text(parsed.recap),
+        "open_loops": _normalize_recap_text(parsed.open_loops),
+        "suggested_follow_up": _normalize_recap_text(parsed.suggested_follow_up),
+        "memory_suggestion": {
+            "impression": _normalize_recap_text(parsed.memory_suggestion.impression),
+            "diary": _normalize_recap_text(parsed.memory_suggestion.diary),
+        },
     }
 
-    if not any(result.values()):
+    memory_suggestion = result["memory_suggestion"]
+    if not any(
+        [
+            result["recap"],
+            result["open_loops"],
+            result["suggested_follow_up"],
+            memory_suggestion["impression"],
+            memory_suggestion["diary"],
+        ]
+    ):
         raise ValueError("idle recap response contains no usable content")
     return result
 
 
-def _generate_recap_sync(dialogue: list[dict[str, str]]) -> dict[str, str]:
+def _generate_recap_sync(
+    user_id: int,
+    dialogue: list[dict[str, str]],
+    memory_context: dict[str, Any],
+) -> dict[str, Any]:
     transcript = json.dumps(dialogue, ensure_ascii=False)
+    stored_memory = json.dumps(memory_context, ensure_ascii=False)
     prompt = (
         "根据下面近期对话生成一次短期回顾。"
-        "recap 是已发生内容的简短概括；"
-        "open_loops 是尚未完成或值得稍后确认的事项，没有则为空字符串；"
-        "suggested_follow_up 是适合自然跟进的方向，没有则为空字符串。"
-        "不要把建议写成用户已经提出的要求。\n\n"
-        f"近期对话：{transcript}"
+        "现有长期记忆只用于判断候选内容是否已经记录。\n\n"
+        f"近期对话：{transcript}\n\n"
+        f"现有长期记忆：{stored_memory}"
     )
-    messages = [
-        {"role": "system", "content": config.IDLE_RECAP_SYSTEM_PROMPT},
-        {"role": "user", "content": prompt},
-    ]
+    messages = [{"role": "user", "content": prompt}]
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "idle_recap",
+            "strict": True,
+            "schema": IdleRecapOutput.model_json_schema(),
+        },
+    }
 
     last_error: Exception | None = None
     for attempt in range(1, IDLE_RECAP_RETRY_LIMIT + 1):
         try:
-            response = run_ai_task(
-                "recap",
-                messages=messages,
-                max_tokens=IDLE_RECAP_MAX_TOKENS,
-                timeout=IDLE_RECAP_TIMEOUT_SECONDS,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "idle_recap",
-                        "strict": True,
-                        "schema": IdleRecapOutput.model_json_schema(),
-                    },
-                },
-                drop_params=False,
-            )
-            content = response.choices[0].message.content
+            content = _run_recap_agent(messages, user_id, response_format)
             return _parse_recap_response(content)
         except Exception as exc:
             last_error = exc
@@ -236,13 +274,99 @@ def _generate_recap_sync(dialogue: list[dict[str, str]]) -> dict[str, str]:
     raise RuntimeError("Idle recap generation failed after retries") from last_error
 
 
-async def _generate_recap(dialogue: list[dict[str, str]]) -> dict[str, str]:
+def _run_recap_agent(
+    messages: list[dict[str, Any]],
+    user_id: int,
+    response_format: dict[str, Any],
+) -> str:
+    last_error: Exception | None = None
+    for provider in get_provider_order_for_task("recap"):
+        try:
+            models = get_models_for_task(provider, "recap")
+        except Exception as exc:
+            logger.warning(
+                "Idle recap skipped invalid provider=%s: %s",
+                provider,
+                exc,
+            )
+            last_error = exc
+            continue
+
+        for model in models:
+            set_tool_request_context({"user_id": user_id})
+            try:
+                completion_kwargs = {
+                    **completion_kwargs_for_task(provider, "recap"),
+                    "response_format": response_format,
+                    "drop_params": False,
+                }
+                content, _ = run_tool_loop(
+                    provider,
+                    model,
+                    messages,
+                    {"user_id": user_id},
+                    provider_name="Idle recap",
+                    max_tokens=IDLE_RECAP_MAX_TOKENS,
+                    completion_timeout=IDLE_RECAP_TIMEOUT_SECONDS,
+                    completion_kwargs=completion_kwargs,
+                    tool_definitions=IDLE_RECAP_TOOLS,
+                    system_prompt_override=config.IDLE_RECAP_SYSTEM_PROMPT,
+                )
+                return content
+            except Exception as exc:
+                logger.warning(
+                    "Idle recap failed via provider=%s model=%s: %s",
+                    provider,
+                    model,
+                    exc,
+                )
+                last_error = exc
+            finally:
+                clear_tool_request_context()
+
+    raise RuntimeError("All providers failed for idle recap") from last_error
+
+
+async def _generate_recap(
+    user_id: int,
+    dialogue: list[dict[str, str]],
+    memory_context: dict[str, Any],
+) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(EXECUTOR, _generate_recap_sync, dialogue)
+    return await loop.run_in_executor(
+        EXECUTOR,
+        _generate_recap_sync,
+        user_id,
+        dialogue,
+        memory_context,
+    )
+
+
+async def _load_recap_memory_context(user_id: int) -> dict[str, Any]:
+    impression = _normalize_recap_text(
+        await process_user.async_get_user_impression(user_id)
+    )
+    rows = await mysql_connection.fetch_all(
+        "SELECT page_no, title, summary FROM ai_user_diary_pages "
+        "WHERE user_id = %s ORDER BY page_no ASC",
+        (user_id,),
+    )
+    diary_index = [
+        {
+            "page": int(row[0]),
+            "title": _normalize_recap_text(row[1]),
+            "summary": _normalize_recap_text(row[2]),
+        }
+        for row in rows
+    ]
+    return {
+        "impression": impression,
+        "diary_index": diary_index,
+    }
 
 
 def _format_idle_recap_event(
-    recap: dict[str, str],
+    recap: dict[str, Any],
     *,
     timestamp: datetime,
 ) -> str:
@@ -264,6 +388,17 @@ def _format_idle_recap_event(
             f"{xml_escape(recap['suggested_follow_up'])}"
             "</suggested_follow_up>"
         )
+    memory_suggestion = recap.get("memory_suggestion")
+    if isinstance(memory_suggestion, dict):
+        impression = _normalize_recap_text(memory_suggestion.get("impression"))
+        diary = _normalize_recap_text(memory_suggestion.get("diary"))
+        if impression or diary:
+            lines.append("  <memory_suggestion>")
+            if impression:
+                lines.append(f"    <impression>{xml_escape(impression)}</impression>")
+            if diary:
+                lines.append(f"    <diary>{xml_escape(diary)}</diary>")
+            lines.append("  </memory_suggestion>")
     lines.append("</metadata>")
     return "\n".join(lines)
 
@@ -544,7 +679,8 @@ async def _process_claim(
                 await _mark_claim_fired(claim)
                 return
 
-            recap = await _generate_recap(dialogue)
+            memory_context = await _load_recap_memory_context(claim.user_id)
+            recap = await _generate_recap(claim.user_id, dialogue, memory_context)
             if not await _claim_is_current(claim):
                 return
 

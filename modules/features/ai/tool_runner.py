@@ -12,7 +12,13 @@ from .errors import is_retryable_completion_error
 from .tools import OPENAI_TOOLS, AI_TOOL_ARG_MODELS, AI_TOOL_HANDLERS
 from .prompts import compose_system_prompt
 from .litellm_client import create_chat_completion
-from .types import AIResponse, PartialAIResponseError, ToolLog, VisibleContentHandler
+from .types import (
+    AIResponse,
+    PartialAIResponseError,
+    TOOL_CONTEXT_MESSAGES_KEY,
+    ToolLog,
+    VisibleContentHandler,
+)
 
 POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS = (1.0, 3.0)
 
@@ -279,6 +285,10 @@ def _public_tool_result(
     *,
     media_sent: bool = False,
 ) -> Dict[str, Any]:
+    if isinstance(tool_result, dict) and TOOL_CONTEXT_MESSAGES_KEY in tool_result:
+        tool_result = dict(tool_result)
+        tool_result.pop(TOOL_CONTEXT_MESSAGES_KEY, None)
+
     if tool_name not in {"generate_image", "generate_voice"} or not isinstance(tool_result, dict):
         return tool_result
 
@@ -314,6 +324,20 @@ def _public_tool_result(
         }
 
     return {"status": tool_result.get("status") or "unknown"}
+
+
+def _context_messages_from_tool_result(tool_result: Any) -> list[dict[str, str]]:
+    if not isinstance(tool_result, dict):
+        return []
+    raw_messages = tool_result.get(TOOL_CONTEXT_MESSAGES_KEY)
+    if not isinstance(raw_messages, list):
+        return []
+
+    return [
+        {"role": "user", "content": message}
+        for message in raw_messages
+        if isinstance(message, str) and message.strip()
+    ]
 
 
 def _log_generate_image_result(provider_name: str, tool_result: Dict[str, Any]) -> None:
@@ -520,12 +544,23 @@ def run_tool_loop(
     skip_tools: Optional[Iterable[str]] = None,
     completion_kwargs: Optional[Dict[str, Any]] = None,
     visible_content_handler: Optional[VisibleContentHandler] = None,
+    tool_definitions: Optional[List[Dict[str, Any]]] = None,
+    system_prompt_override: str | None = None,
 ) -> AIResponse:
     """Run a tool-calling loop through LiteLLM using OpenAI-format tools."""
-    tools = OPENAI_TOOLS
+    tools = OPENAI_TOOLS if tool_definitions is None else list(tool_definitions)
+    available_tool_names = {
+        str((tool.get("function") or {}).get("name"))
+        for tool in tools
+        if isinstance(tool, dict) and (tool.get("function") or {}).get("name")
+    }
     system_message = {
         "role": "system",
-        "content": compose_system_prompt(tool_context),
+        "content": (
+            compose_system_prompt(tool_context)
+            if system_prompt_override is None
+            else system_prompt_override
+        ),
     }
 
     filtered_messages = [
@@ -606,6 +641,7 @@ def run_tool_loop(
         filtered_messages.append(assistant_model_message)
 
         assistant_message_logged = False
+        round_context_messages: list[dict[str, str]] = []
         for tool_call in tool_calls:
             function_payload = tool_call.get("function") or {}
             function_name = function_payload.get("name")
@@ -657,6 +693,15 @@ def run_tool_loop(
                     validation_error.get("details"),
                 )
                 internal_tool_result = validation_error
+            elif function_name not in available_tool_names:
+                logging.warning(
+                    "%s 拒绝未开放的工具调用: %s",
+                    provider_name,
+                    function_name,
+                )
+                internal_tool_result = {
+                    "error": f"Tool is not available in this agent: {function_name}"
+                }
             elif handler:
                 try:
                     internal_tool_result = handler(**function_args)
@@ -723,6 +768,17 @@ def run_tool_loop(
                     tool_log_entry["media_sent"] = True
                     tool_log_entry["sent_message_count"] = len(sent_media_messages)
             tool_logs.append(tool_log_entry)
+            round_context_messages.extend(
+                _context_messages_from_tool_result(internal_tool_result)
+            )
+
+        for context_message in round_context_messages:
+            filtered_messages.append(context_message)
+            tool_logs.append({
+                "type": "telegram_event",
+                "role": "user",
+                "content": context_message["content"],
+            })
 
     logging.warning("%s 工具调用次数超限（%s轮）", provider_name, max_iterations)
     try:

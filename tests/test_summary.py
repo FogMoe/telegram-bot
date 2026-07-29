@@ -138,6 +138,10 @@ def test_format_history_replaces_idle_recap_with_trigger_marker():
                     "<recap>model note</recap>"
                     "<open_loops>unfinished item</open_loops>"
                     "<suggested_follow_up>ask about it</suggested_follow_up>"
+                    "<memory_suggestion>"
+                    "<impression>likes concise replies</impression>"
+                    "<diary>preparing a presentation</diary>"
+                    "</memory_suggestion>"
                     "</metadata>"
                 ),
             },
@@ -155,4 +159,6 @@ def test_format_history_replaces_idle_recap_with_trigger_marker():
     assert "model note" not in result
     assert "unfinished item" not in result
     assert "ask about it" not in result
+    assert "likes concise replies" not in result
+    assert "preparing a presentation" not in result
     assert "USER:" not in result

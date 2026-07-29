@@ -99,6 +99,12 @@ def tool_logs_to_record_entries(
                 record_entries.append(("assistant", visible_content))
             continue
 
+        if entry_type == "telegram_event":
+            content = str(tool_log.get("content") or "").strip()
+            if content:
+                record_entries.append(("user", content))
+            continue
+
         tool_call_id = tool_log.get("tool_call_id")
         if not tool_call_id:
             if entry_type == "tool_result" and pending_tool_call_ids:
