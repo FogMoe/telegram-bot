@@ -272,3 +272,15 @@ def test_partial_timeout_logs_warning_without_traceback(monkeypatch, caplog):
     assert response[0] == router.PARTIAL_AI_RESPONSE_ERROR_MESSAGE
     assert len(timeout_records) == 1
     assert timeout_records[0].exc_info is None
+
+
+def test_runtime_error_cause_only_classifies_fixed_runtime_messages():
+    assert (
+        router.runtime_error_cause(router.PARTIAL_AI_RESPONSE_ERROR_MESSAGE)
+        == "partial_ai_response_failed"
+    )
+    assert (
+        router.runtime_error_cause(router.AI_SERVICE_ERROR_MESSAGE)
+        == "all_ai_services_failed"
+    )
+    assert router.runtime_error_cause("这是 AI 的普通回复") is None

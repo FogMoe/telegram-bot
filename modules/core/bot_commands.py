@@ -14,6 +14,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from core import config, mysql_connection, process_user, stake_reward_pool
 from core.archive_utils import send_permanent_records_archive
 from core.command_cooldown import cooldown
+from core.telegram_history import (
+    record_command_update,
+    telegram_history_scope,
+)
 from core.telegram_utils import partial_send, safe_send_markdown
 from features.ai import ai_chat, summary
 from features.economy import ref
@@ -385,6 +389,8 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             (conversation_id,),
         )
 
+    # /clear 本身是新一轮历史的第一个用户动作，不能在清空前写入。
+    await record_command_update(update, context.bot)
     if snapshot_created:
         summary.schedule_summary_generation(user_id)
     if archived_records:
@@ -586,25 +592,30 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     # 根据不同类型的更新选择不同的回复方式
     try:
-        if update and update.effective_message:
-            await update.effective_message.reply_text(
-                "看起来对话出现了一些小问题呢。"
-                "您可以尝试使用 /clear 命令来清空聊天记录，"
-                "然后我们重新开始对话吧！\n"
-                "It seems there was a small issue with the conversation."
-                "You can try using the  /clear  command to clear the chat history,"
-                "and then we can start over!\n\n"
-                "错误信息 Error message: \n\n" + str(context.error) + "\n\n您可以发送给管理员 @ScarletKc 报告此问题。\n"
-                "You can report this issue to the admin @ScarletKc."
-            )
-        elif update and update.callback_query:
-            # 对回调查询错误的处理
-            await update.callback_query.answer("处理请求时出错，请稍后再试")
-            if update.effective_chat:
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text="操作出错，请稍后再试。\n错误信息: " + str(context.error)
+        with telegram_history_scope(
+            origin="bot_runtime",
+            event="error_notice",
+            cause="telegram_update_failed",
+        ):
+            if update and update.effective_message:
+                await update.effective_message.reply_text(
+                    "看起来对话出现了一些小问题呢。"
+                    "您可以尝试使用 /clear 命令来清空聊天记录，"
+                    "然后我们重新开始对话吧！\n"
+                    "It seems there was a small issue with the conversation."
+                    "You can try using the  /clear  command to clear the chat history,"
+                    "and then we can start over!\n\n"
+                    "错误信息 Error message: \n\n" + str(context.error) + "\n\n您可以发送给管理员 @ScarletKc 报告此问题。\n"
+                    "You can report this issue to the admin @ScarletKc."
                 )
+            elif update and update.callback_query:
+                # 对回调查询错误的处理
+                await update.callback_query.answer("处理请求时出错，请稍后再试")
+                if update.effective_chat:
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text="操作出错，请稍后再试。\n错误信息: " + str(context.error)
+                    )
     except Exception as e:
         logging.error(f"在处理错误时又发生了错误: {str(e)}")
 

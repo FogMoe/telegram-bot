@@ -113,6 +113,50 @@ def _format_history_for_summary(snapshot_text: str) -> str:
             attrs[key] = _flatten_text(_xml_unescape(value))
         return attrs
 
+    def _find_tag(content: str, tag: str) -> str:
+        match = re.search(fr"<{tag}>(.*?)</{tag}>", content, re.DOTALL)
+        if not match:
+            return ""
+        return _flatten_text(_xml_unescape(match.group(1)))
+
+    def _format_runtime_event(content: str) -> str | None:
+        attrs = _extract_metadata_attrs(content)
+        event_type = attrs.get("type")
+        if event_type not in {"bot_event", "user_event"}:
+            return None
+
+        attr_order = (
+            "chat_type",
+            "title",
+            "timestamp",
+            "user",
+            "origin",
+            "event",
+            "command",
+            "cause",
+            "content_type",
+            "redacted",
+            "message_id",
+            "reply_to_message_id",
+        )
+        parts = [
+            f"{key}={attrs[key]}"
+            for key in attr_order
+            if attrs.get(key)
+        ]
+        if event_type == "bot_event":
+            displayed_message = _find_tag(content, "displayed_message")
+            if displayed_message:
+                parts.append(f"displayed_message={displayed_message}")
+            label = "BOT_EVENT"
+        else:
+            callback_match = re.search(r"<callback\s+([^>]*)/>", content)
+            if callback_match:
+                for key, value in re.findall(r'(\w+)="(.*?)"', callback_match.group(1)):
+                    parts.append(f"callback_{key}={_flatten_text(_xml_unescape(value))}")
+            label = "USER_ACTION"
+        return f"{label}: " + " | ".join(parts)
+
     def _extract_scheduled_task_fields(content: str) -> dict | None:
         if 'origin="scheduled_task"' not in content:
             return None
@@ -150,6 +194,10 @@ def _format_history_for_summary(snapshot_text: str) -> str:
         if role == "user":
             if content:
                 if isinstance(content, str):
+                    runtime_event_line = _format_runtime_event(content)
+                    if runtime_event_line is not None:
+                        lines.append(runtime_event_line)
+                        continue
                     scheduled_fields = _extract_scheduled_task_fields(content)
                     if scheduled_fields is not None:
                         attrs = scheduled_fields.get("attrs") or {}

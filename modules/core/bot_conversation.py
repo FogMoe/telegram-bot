@@ -12,7 +12,15 @@ from telegram.ext import ContextTypes
 
 from core import config, db, group_chat_history, mysql_connection, process_user, stake_reward_pool
 from core.archive_utils import send_permanent_records_archive
-from core.prompt_utils import format_metadata_attrs, format_user_state_prompt, xml_escape
+from core.prompt_utils import (
+    format_user_state_prompt,
+)
+from core.telegram_history import (
+    format_user_message as _format_xml_message,
+    normalize_command_name,
+    suppress_telegram_history,
+    telegram_history_scope,
+)
 from core.telegram_utils import (
     describe_forward_for_context,
     describe_message_for_context,
@@ -172,101 +180,6 @@ def _format_message_timestamp(value) -> str | None:
     if hasattr(value, "strftime"):
         return value.strftime('%Y-%m-%d %H:%M:%S')
     return str(value)
-
-
-def _format_xml_attrs(attrs: list[tuple[str, str | None]]) -> str:
-    return " ".join(
-        f'{key}="{xml_escape(value)}"' for key, value in attrs if value
-    )
-
-
-def _format_xml_message(
-    *,
-    chat_type: str,
-    chat_title: str | None,
-    timestamp: str,
-    user_name: str,
-    message_text: str,
-    message_id: str | int | None = None,
-    edited: bool = False,
-    edited_at: str | None = None,
-    forward_type: str | None = None,
-    forward_origin_timestamp: str | None = None,
-    forward_user: str | None = None,
-    forward_name: str | None = None,
-    forward_chat: str | None = None,
-    forward_message_id: str | None = None,
-    forward_author_signature: str | None = None,
-    reply_user: str | None = None,
-    reply_text: str | None = None,
-    reply_type: str | None = None,
-    reply_caption: str | None = None,
-    reply_summary: str | None = None,
-    reply_emoji: str | None = None,
-    media_type: str | None = None,
-    media_description: str | None = None,
-    media_emoji: str | None = None,
-) -> str:
-    attrs = [
-        ("type", chat_type),
-        ("timestamp", timestamp),
-        ("user", f"@{user_name}"),
-        ("message_id", str(message_id) if message_id is not None else None),
-        ("edited", "true" if edited else None),
-        ("edited_at", edited_at if edited else None),
-    ]
-    if chat_type in ("group", "supergroup") and chat_title:
-        attrs.insert(1, ("title", chat_title))
-    attr_text = format_metadata_attrs(attrs)
-    lines = [f"<metadata {attr_text}>"]
-    if forward_type:
-        forward_attr_text = _format_xml_attrs(
-            [
-                ("type", forward_type),
-                ("origin_timestamp", forward_origin_timestamp),
-                ("user", forward_user),
-                ("name", forward_name),
-                ("chat", forward_chat),
-                ("message_id", forward_message_id),
-                ("author_signature", forward_author_signature),
-            ]
-        )
-        lines.append(f"  <forward {forward_attr_text} />")
-    if reply_type:
-        reply_user_value = f"@{reply_user}" if reply_user else ""
-        reply_attr_text = _format_xml_attrs(
-            [
-                ("user", reply_user_value),
-                ("type", reply_type),
-                ("emoji", reply_emoji),
-            ]
-        )
-        lines.append(f"  <reply {reply_attr_text}>")
-        if reply_text:
-            lines.append(f"    <text>{xml_escape(reply_text)}</text>")
-        if reply_caption:
-            lines.append(f"    <caption>{xml_escape(reply_caption)}</caption>")
-        if reply_summary:
-            lines.append(f"    <summary>{xml_escape(reply_summary)}</summary>")
-        lines.append("  </reply>")
-    elif reply_user or reply_text:
-        reply_user_value = f"@{reply_user}" if reply_user else ""
-        reply_attr = f' user="{xml_escape(reply_user_value)}"' if reply_user_value else ""
-        lines.append(f"  <reply{reply_attr}>{xml_escape(reply_text or '')}</reply>")
-    if media_type:
-        media_attrs = [("type", media_type)]
-        if media_emoji:
-            media_attrs.append(("emoji", media_emoji))
-        media_attr_text = _format_xml_attrs(media_attrs)
-        lines.append(f"  <media {media_attr_text}>")
-        if media_description:
-            lines.append(
-                f"    <description>{xml_escape(media_description)}</description>"
-            )
-        lines.append("  </media>")
-    lines.append("</metadata>")
-    lines.append(f"<message>{xml_escape(message_text)}</message>")
-    return "\n".join(lines)
 
 
 def _media_mime_type(media_type: str, effective_message) -> str | None:
@@ -553,7 +466,11 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
         # 记录群聊上下文
         should_process_group_batch = False
         for _, message in valid_items:
-            await group_chat_history.log_group_message(message, update.effective_chat.id)
+            if normalize_command_name(getattr(message, "text", None)) != "fogmoebot":
+                await group_chat_history.log_group_message(
+                    message,
+                    update.effective_chat.id,
+                )
             reply_from_user = getattr(
                 getattr(message.reply_to_message, "from_user", None),
                 "id",
@@ -764,6 +681,14 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
                 else None
             ),
         }
+        command = normalize_command_name(getattr(message, "text", None))
+        if command:
+            message_metadata_kwargs.update(
+                {
+                    "event": "command",
+                    "command": command,
+                }
+            )
         forward_kwargs = _build_forward_format_kwargs(message)
         reply_kwargs = (
             _build_reply_format_kwargs(message.reply_to_message)
@@ -865,29 +790,28 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
                 **reply_kwargs,
             )
 
-        user_record_entries.append(("user", formatted_message))
+        if command != "fogmoebot":
+            user_record_entries.append(("user", formatted_message))
 
-    if not user_record_entries:
-        return
-
-    # 异步插入用户消息
-    user_snapshot_created, user_storage_warning, user_archived_records = await mysql_connection.async_insert_chat_records(
-        conversation_id,
-        user_record_entries,
-        system_prompt_extra=user_state_prompt,
-    )
-    if user_archived_records:
-        await send_permanent_records_archive(
-            context.bot,
-            user_id,
-            user_archived_records,
-            logger=logger,
+    if user_record_entries:
+        # /fogmoebot 已由统一命令观察器写入；其他消息在这里批量写入。
+        user_snapshot_created, user_storage_warning, user_archived_records = await mysql_connection.async_insert_chat_records(
+            conversation_id,
+            user_record_entries,
+            system_prompt_extra=user_state_prompt,
         )
-    if user_storage_warning:
-        remember_history_warning(user_storage_warning)
-    await handle_overflow_summary(user_storage_warning)
-    if user_snapshot_created and user_storage_warning != "overflow":
-        summary.schedule_summary_generation(conversation_id)
+        if user_archived_records:
+            await send_permanent_records_archive(
+                context.bot,
+                user_id,
+                user_archived_records,
+                logger=logger,
+            )
+        if user_storage_warning:
+            remember_history_warning(user_storage_warning)
+        await handle_overflow_summary(user_storage_warning)
+        if user_snapshot_created and user_storage_warning != "overflow":
+            summary.schedule_summary_generation(conversation_id)
 
     # 立即获取最新历史记录，以便AI能看到刚刚插入的消息
     chat_history = await mysql_connection.async_get_chat_history(conversation_id)
@@ -912,6 +836,7 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
         "user_state_prompt": user_state_prompt,
     }
     sent_messages = []
+    bot_event_message_ids: set[int] = set()
     fallback_send = partial_send(
         context.bot.send_message,
         update.effective_chat.id,
@@ -926,15 +851,17 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
         reply_to_message_id=getattr(effective_message, "message_id", None),
     )
 
-    assistant_message, tool_logs = await ai_chat.get_ai_response(
-        chat_history_for_ai,
-        user_id,
-        tool_context=tool_context,
-        text_fallback_messages=chat_history,
-        visible_content_handler=visible_content_handler,
-    )
+    with suppress_telegram_history():
+        assistant_message, tool_logs = await ai_chat.get_ai_response(
+            chat_history_for_ai,
+            user_id,
+            tool_context=tool_context,
+            text_fallback_messages=chat_history,
+            visible_content_handler=visible_content_handler,
+        )
     sent_messages.extend(visible_content_handler.sent_messages)
     assistant_message = normalize_ai_reply_text(assistant_message)
+    runtime_error = ai_chat.runtime_error_cause(assistant_message)
     if assistant_message.strip():
         assistant_message = await normalize_sticker_directives(
             assistant_message,
@@ -961,7 +888,7 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
         if tool_snapshot_created and tool_storage_warning != "overflow":
             summary.schedule_summary_generation(conversation_id)
 
-    if assistant_message.strip():
+    if assistant_message.strip() and not runtime_error:
         # 异步插入AI回复到聊天记录
         (
             assistant_snapshot_created,
@@ -995,8 +922,18 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
         except Exception:
             logger.debug("Failed to send typing action before final AI reply")
-        sent_messages.extend(
-            await send_ai_reply_with_stickers(
+        send_scope = (
+            telegram_history_scope(
+                origin="bot_runtime",
+                event="error_notice",
+                cause=runtime_error,
+                command=normalize_command_name(getattr(effective_message, "text", None)),
+            )
+            if runtime_error
+            else suppress_telegram_history()
+        )
+        with send_scope:
+            reply_messages = await send_ai_reply_with_stickers(
                 bot=context.bot,
                 chat_id=update.effective_chat.id,
                 text=assistant_message,
@@ -1005,23 +942,30 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
                 logger=logger,
                 reply_to_message_id=None if has_visible_message else getattr(effective_message, "message_id", None),
             )
+        sent_messages.extend(reply_messages)
+        if runtime_error:
+            bot_event_message_ids.update(
+                message_id
+                for sent_message in reply_messages
+                if (message_id := getattr(sent_message, "message_id", None)) is not None
+            )
+    with suppress_telegram_history():
+        sent_messages.extend(
+            await send_generated_audio_from_tool_logs(
+                bot=context.bot,
+                chat_id=update.effective_chat.id,
+                tool_logs=tool_logs,
+                logger=logger,
+            )
         )
-    sent_messages.extend(
-        await send_generated_audio_from_tool_logs(
-            bot=context.bot,
-            chat_id=update.effective_chat.id,
-            tool_logs=tool_logs,
-            logger=logger,
+        sent_messages.extend(
+            await send_generated_images_from_tool_logs(
+                bot=context.bot,
+                chat_id=update.effective_chat.id,
+                tool_logs=tool_logs,
+                logger=logger,
+            )
         )
-    )
-    sent_messages.extend(
-        await send_generated_images_from_tool_logs(
-            bot=context.bot,
-            chat_id=update.effective_chat.id,
-            tool_logs=tool_logs,
-            logger=logger,
-        )
-    )
     if not sent_messages and not assistant_message.strip():
         tool_log_types = [
             str(tool_log.get("type", "tool_result"))
@@ -1037,5 +981,7 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
     if update.effective_chat.type in ("group", "supergroup"):
         for sent_message in sent_messages:
             if sent_message is None:
+                continue
+            if getattr(sent_message, "message_id", None) in bot_event_message_ids:
                 continue
             await group_chat_history.log_group_message(sent_message, update.effective_chat.id)

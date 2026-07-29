@@ -6,6 +6,7 @@ from .handler_groups import (
     register_economy_handlers,
     register_error_handlers,
     register_game_and_recharge_handlers,
+    register_history_handlers,
     register_interactive_feature_handlers,
     register_media_and_chart_handlers,
     register_membership_handlers,
@@ -20,6 +21,7 @@ from .handler_groups import (
 
 REGISTRATION_STEPS = (
     register_error_handlers,
+    register_history_handlers,
     register_conversation_handlers,
     register_core_command_handlers,
     register_monitoring_handlers,

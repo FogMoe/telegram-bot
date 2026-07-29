@@ -1,4 +1,19 @@
+import re
 from typing import Iterable, Optional
+
+
+_XML_ELEMENT_TAG_PATTERN = re.compile(
+    r"</?[A-Za-z_][A-Za-z0-9_.:-]*"
+    r"(?:\s+(?:[^<>\"']|\"[^\"]*\"|'[^']*')*)?\s*/?>",
+    re.DOTALL,
+)
+
+
+def remove_xml_tags(value: str) -> str:
+    """移除 Telegram 用户文本中的 XML 元素标签。"""
+    if value is None:
+        return ""
+    return _XML_ELEMENT_TAG_PATTERN.sub("", str(value))
 
 
 def xml_escape(value: str) -> str:
@@ -16,10 +31,20 @@ def xml_escape(value: str) -> str:
 
 _METADATA_ATTR_ORDER = (
     "type",
+    "chat_type",
     "title",
     "timestamp",
     "user",
     "origin",
+    "event",
+    "command",
+    "cause",
+    "content_type",
+    "message_id",
+    "reply_to_message_id",
+    "redacted",
+    "edited",
+    "edited_at",
     "history_state",
     "scheduled_at",
     "scheduled_for",

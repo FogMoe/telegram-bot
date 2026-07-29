@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy.exc import OperationalError
 
 from . import mysql_connection
+from .prompt_utils import remove_xml_tags
 
 _bot_user_id: Optional[int] = None
 _bot_display_name: str = "FogMoeBot"
@@ -54,16 +55,16 @@ def _decode_non_text(value: str) -> str:
 
 def _extract_message_payload(message) -> Tuple[str, str]:
     if getattr(message, "text", None):
-        return "text", message.text
+        return "text", remove_xml_tags(message.text)
 
     if getattr(message, "caption", None):
         if message.photo:
-            return "photo", _encode_non_text(message.caption)
+            return "photo", _encode_non_text(remove_xml_tags(message.caption))
         if message.video or message.animation:
-            return "video", _encode_non_text(message.caption)
+            return "video", _encode_non_text(remove_xml_tags(message.caption))
         if message.document:
-            return "document", _encode_non_text(message.caption)
-        return "other", _encode_non_text(message.caption)
+            return "document", _encode_non_text(remove_xml_tags(message.caption))
+        return "other", _encode_non_text(remove_xml_tags(message.caption))
 
     if getattr(message, "photo", None):
         return "photo", _encode_non_text("[photo]")

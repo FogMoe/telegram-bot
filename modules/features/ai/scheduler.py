@@ -8,6 +8,7 @@ from telegram.ext import ContextTypes
 from core import mysql_connection, process_user
 from core.archive_utils import send_permanent_records_archive
 from core.prompt_utils import format_metadata_attrs, format_user_state_prompt, xml_escape
+from core.telegram_history import suppress_telegram_history, telegram_history_scope
 from core.telegram_utils import partial_send
 from features.ai import ai_chat, summary
 from features.ai.conversation_locks import get_conversation_lock
@@ -342,14 +343,16 @@ async def _process_schedule_task_locked(
             logger=logger,
         )
 
-        assistant_message, tool_logs = await ai_chat.get_ai_response(
-            list(chat_history),
-            user_id,
-            tool_context=tool_context,
-            visible_content_handler=visible_content_handler,
-        )
+        with suppress_telegram_history():
+            assistant_message, tool_logs = await ai_chat.get_ai_response(
+                list(chat_history),
+                user_id,
+                tool_context=tool_context,
+                visible_content_handler=visible_content_handler,
+            )
         sent_messages.extend(visible_content_handler.sent_messages)
         assistant_message = normalize_ai_reply_text(assistant_message)
+        runtime_error = ai_chat.runtime_error_cause(assistant_message)
         if assistant_message.strip():
             assistant_message = await normalize_sticker_directives(
                 assistant_message,
@@ -359,7 +362,7 @@ async def _process_schedule_task_locked(
         if tool_logs:
             await _persist_tool_logs(user_id, tool_logs, context, user_id)
 
-        if assistant_message.strip():
+        if assistant_message.strip() and not runtime_error:
             snapshot_created, warning_level, archived_records = await mysql_connection.async_insert_chat_record(
                 user_id,
                 "assistant",
@@ -376,36 +379,51 @@ async def _process_schedule_task_locked(
             if snapshot_created and warning_level != "overflow":
                 summary.schedule_summary_generation(user_id)
 
+        if assistant_message.strip():
             try:
                 await context.bot.send_chat_action(chat_id=user_id, action="typing")
             except Exception:
                 logger.debug("Failed to send typing action before scheduled AI reply")
+            send_scope = (
+                telegram_history_scope(
+                    user_id=user_id,
+                    chat_id=user_id,
+                    chat_type="private",
+                    origin="bot_runtime",
+                    event="error_notice",
+                    cause=runtime_error,
+                )
+                if runtime_error
+                else suppress_telegram_history()
+            )
+            with send_scope:
+                sent_messages.extend(
+                    await send_ai_reply_with_stickers(
+                        bot=context.bot,
+                        chat_id=user_id,
+                        text=str(assistant_message),
+                        first_text_send=send_func,
+                        fallback_send=send_func,
+                        logger=logger,
+                    )
+                )
+        with suppress_telegram_history():
             sent_messages.extend(
-                await send_ai_reply_with_stickers(
+                await send_generated_audio_from_tool_logs(
                     bot=context.bot,
                     chat_id=user_id,
-                    text=str(assistant_message),
-                    first_text_send=send_func,
-                    fallback_send=send_func,
+                    tool_logs=tool_logs,
                     logger=logger,
                 )
             )
-        sent_messages.extend(
-            await send_generated_audio_from_tool_logs(
-                bot=context.bot,
-                chat_id=user_id,
-                tool_logs=tool_logs,
-                logger=logger,
+            sent_messages.extend(
+                await send_generated_images_from_tool_logs(
+                    bot=context.bot,
+                    chat_id=user_id,
+                    tool_logs=tool_logs,
+                    logger=logger,
+                )
             )
-        )
-        sent_messages.extend(
-            await send_generated_images_from_tool_logs(
-                bot=context.bot,
-                chat_id=user_id,
-                tool_logs=tool_logs,
-                logger=logger,
-            )
-        )
         if not sent_messages and not assistant_message.strip():
             tool_log_types = [
                 str(tool_log.get("type", "tool_result"))

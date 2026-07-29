@@ -19,6 +19,16 @@ def test_system_prompt_resource_preserves_markdown_line_breaks():
     )
     assert "\n# Tool Calling\n## Calling Rules\n- " in config.SYSTEM_PROMPT
     assert "\n# Runtime Context\n## Message Format\n" in config.SYSTEM_PROMPT
+
+
+def test_system_prompt_defines_telegram_meta_agent_events():
+    prompt = config.SYSTEM_PROMPT
+
+    assert 'event="command"' in prompt
+    assert 'type="user_event"' in prompt
+    assert 'type="bot_event"' in prompt
+    assert "<displayed_message>" in prompt
+    assert "without metadata" in prompt
     assert config.SYSTEM_PROMPT.endswith("\n")
 
 

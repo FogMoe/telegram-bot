@@ -1,8 +1,10 @@
+from telegram import Update
 from telegram.ext import (
     CallbackQueryHandler,
     ChatMemberHandler,
     CommandHandler,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
@@ -23,6 +25,7 @@ from core.bot_commands import (
 )
 from core.bot_conversation import reply
 from core.bot_monitoring import start_monitor, stop_monitor
+from core.telegram_history import prepare_update_history
 from features.admin import developer
 from features.ai import scheduler
 from features.crypto import chart, crypto_predict, swap_fogmoe_solana_token
@@ -43,6 +46,10 @@ from features.moderation import keyword_handler, member_verify, report, spam_con
 
 def register_error_handlers(application) -> None:
     application.add_error_handler(error_handler)
+
+
+def register_history_handlers(application) -> None:
+    application.add_handler(TypeHandler(Update, prepare_update_history), group=-100)
 
 
 def register_conversation_handlers(application) -> None:

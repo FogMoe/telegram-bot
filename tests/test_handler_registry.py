@@ -3,6 +3,7 @@ from telegram.ext import (
     ChatMemberHandler,
     CommandHandler,
     MessageHandler,
+    TypeHandler,
 )
 
 from app.handler_registry import REGISTRATION_STEPS, register_handlers
@@ -49,6 +50,8 @@ def _handler_signature(handler, group):
         detail = str(handler.chat_member_types)
     elif isinstance(handler, MessageHandler):
         detail = type(handler.filters).__name__
+    elif isinstance(handler, TypeHandler):
+        detail = handler.type.__name__
     else:
         detail = ""
 
@@ -71,6 +74,7 @@ def _job_signature(job):
 def test_registration_steps_are_grouped_by_app_assembly_boundary():
     assert [step.__name__ for step in REGISTRATION_STEPS] == [
         "register_error_handlers",
+        "register_history_handlers",
         "register_conversation_handlers",
         "register_core_command_handlers",
         "register_monitoring_handlers",
@@ -101,6 +105,7 @@ def test_register_handlers_preserves_handler_and_job_registration_order():
         _handler_signature(entry["handler"], entry["group"])
         for entry in application.handlers
     ] == [
+        ("TypeHandler", -100, "Update", "prepare_update_history"),
         ("CommandHandler", 0, "fogmoebot", "reply"),
         ("MessageHandler", 0, "_MergedFilter", "reply"),
         ("CommandHandler", 0, "start", "start"),

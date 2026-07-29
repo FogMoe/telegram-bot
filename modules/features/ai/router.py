@@ -46,6 +46,19 @@ PARTIAL_AI_RESPONSE_ERROR_MESSAGE = (
     "You can report this issue to the admin @ScarletKc."
 )
 
+AI_SERVICE_ERROR_MESSAGE = (
+    "抱歉喵，雾萌娘在处理你的请求时遇到了一点小问题！现在有点不舒服啦，请稍后再试吧～\n"
+    "请联系管理员 @ScarletKc 反馈问题。"
+)
+
+
+def runtime_error_cause(message: str) -> str | None:
+    if message == PARTIAL_AI_RESPONSE_ERROR_MESSAGE:
+        return "partial_ai_response_failed"
+    if message == AI_SERVICE_ERROR_MESSAGE:
+        return "all_ai_services_failed"
+    return None
+
 
 def _provider_circuit_is_open(service_name: str, now: float | None = None) -> bool:
     current_time = time.monotonic() if now is None else now
@@ -314,8 +327,4 @@ async def get_ai_response(
             return response
 
     logging.error("所有AI服务均调用失败: %s", last_error)
-    return (
-        "抱歉喵，雾萌娘在处理你的请求时遇到了一点小问题！现在有点不舒服啦，请稍后再试吧～\n"
-        "请联系管理员 @ScarletKc 反馈问题。",
-        [],
-    )
+    return (AI_SERVICE_ERROR_MESSAGE, [])

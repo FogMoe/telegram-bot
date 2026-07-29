@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from features.ai import summary
@@ -75,3 +76,52 @@ def test_generate_summary_falls_back_when_response_has_no_model(monkeypatch):
 
     assert summary._generate_summary(123, "[]") == "generated summary"
     assert recorded["model"] is None
+
+
+def test_format_history_labels_bot_event_as_observed_runtime_state():
+    snapshot = json.dumps(
+        [
+            {
+                "role": "user",
+                "content": (
+                    '<metadata type="bot_event" chat_type="private" '
+                    'timestamp="2026-07-29 12:00:00" origin="bot_runtime" '
+                    'event="error_notice" cause="all_ai_services_failed">\n'
+                    "  <displayed_message>服务暂时不可用</displayed_message>\n"
+                    "</metadata>"
+                ),
+            }
+        ],
+        ensure_ascii=False,
+    )
+
+    result = summary._format_history_for_summary(snapshot)
+
+    assert result.startswith("BOT_EVENT:")
+    assert "cause=all_ai_services_failed" in result
+    assert "displayed_message=服务暂时不可用" in result
+    assert "USER:" not in result
+
+
+def test_format_history_labels_callback_as_user_action():
+    snapshot = json.dumps(
+        [
+            {
+                "role": "user",
+                "content": (
+                    '<metadata type="user_event" chat_type="private" '
+                    'timestamp="2026-07-29 12:00:00" user="@kc" '
+                    'origin="telegram" event="callback_query">\n'
+                    '  <callback data="shop_buy_1" label="购买" />\n'
+                    "</metadata>"
+                ),
+            }
+        ],
+        ensure_ascii=False,
+    )
+
+    result = summary._format_history_for_summary(snapshot)
+
+    assert result.startswith("USER_ACTION:")
+    assert "callback_data=shop_buy_1" in result
+    assert "callback_label=购买" in result

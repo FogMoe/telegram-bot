@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
 from sqlalchemy.engine import Result
@@ -346,7 +346,7 @@ def _build_history_state_event(
 ) -> dict:
     attrs = [
         ("type", "system"),
-        ("timestamp", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")),
+        ("timestamp", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")),
         ("origin", "history_state"),
         ("history_state", state),
     ]
@@ -499,10 +499,7 @@ async def insert_chat_records(
                 target_index = _find_last_user_message_index(messages_with_new)
             if target_index is not None:
                 event_message = _build_history_state_event(event_state)
-                if event_state == "new_session":
-                    insert_at = target_index
-                else:
-                    insert_at = target_index + 1
+                insert_at = target_index + 1
                 messages_with_new.insert(insert_at, event_message)
                 if event_state == "near_limit":
                     near_limit_inserted = True
