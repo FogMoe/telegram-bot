@@ -499,6 +499,35 @@ async def record_command_update(update: Update, bot: Any) -> None:
             )
 
 
+async def _record_command_before_handler(
+    update: Update,
+    context: Any,
+    command: str,
+) -> None:
+    user = update.effective_user
+    chat = update.effective_chat
+    is_private_user_command = bool(
+        user
+        and chat
+        and chat.type == "private"
+        and not _DELEGATED_COMMAND.get()
+    )
+    if not is_private_user_command:
+        if command != "clear":
+            await record_command_update(update, context.bot)
+        return
+
+    # 先让执行中的 recap 失效，再等待它持有的会话锁。这样命令与 recap
+    # 只能按先后顺序写入历史，同时不会等到 recap 结束后才发现用户已返回。
+    from features.ai import idle_followup
+    from features.ai.conversation_locks import get_conversation_lock
+
+    await idle_followup.note_incoming_private_message(user.id)
+    async with get_conversation_lock(user.id):
+        if command != "clear":
+            await record_command_update(update, context.bot)
+
+
 async def prepare_update_history(update: Update, context: Any) -> None:
     """在业务 handler 前设置出站事件来源，并记录非 AI 用户动作。"""
     user = update.effective_user
@@ -530,8 +559,8 @@ async def prepare_update_history(update: Update, context: Any) -> None:
         )
     )
 
-    if command and command != "clear":
-        await record_command_update(update, context.bot)
+    if command:
+        await _record_command_before_handler(update, context, command)
     elif update.callback_query and user:
         content = format_callback_event(update)
         if content:

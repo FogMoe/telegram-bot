@@ -566,6 +566,90 @@ def test_fogmoebot_command_is_recorded_before_ai_handler(monkeypatch):
     assert "<message>/fogmoebot 你好</message>" in recorded[0]
 
 
+def test_private_command_invalidates_recap_before_waiting_for_history_lock(monkeypatch):
+    from features.ai import conversation_locks, idle_followup
+
+    events = []
+
+    async def fake_note(user_id):
+        events.append(("invalidate", user_id))
+
+    async def fake_record(update, bot):
+        events.append(("record", update.effective_user.id))
+
+    monkeypatch.setattr(idle_followup, "note_incoming_private_message", fake_note)
+    monkeypatch.setattr(telegram_history, "record_command_update", fake_record)
+
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=123, username="kc"),
+        effective_chat=SimpleNamespace(id=123, type="private", title=None),
+        effective_message=_message(text="/lottery"),
+        edited_message=None,
+        callback_query=None,
+    )
+
+    async def run_flow():
+        lock = asyncio.Lock()
+        await lock.acquire()
+        monkeypatch.setattr(conversation_locks, "get_conversation_lock", lambda _: lock)
+
+        task = asyncio.create_task(
+            telegram_history.prepare_update_history(
+                update,
+                SimpleNamespace(bot=object()),
+            )
+        )
+        await asyncio.sleep(0)
+
+        assert events == [("invalidate", 123)]
+        assert not task.done()
+
+        lock.release()
+        await task
+
+    asyncio.run(run_flow())
+
+    assert events == [("invalidate", 123), ("record", 123)]
+
+
+def test_delegated_private_command_does_not_invalidate_or_wait_for_lock(monkeypatch):
+    from features.ai import conversation_locks, idle_followup
+
+    events = []
+
+    async def fake_note(_user_id):
+        events.append("invalidate")
+
+    async def fake_record(_update, _bot):
+        events.append("record")
+
+    def fail_if_locked(_user_id):
+        raise AssertionError("delegated command must not acquire the conversation lock")
+
+    monkeypatch.setattr(idle_followup, "note_incoming_private_message", fake_note)
+    monkeypatch.setattr(conversation_locks, "get_conversation_lock", fail_if_locked)
+    monkeypatch.setattr(telegram_history, "record_command_update", fake_record)
+
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=123, username="kc"),
+        effective_chat=SimpleNamespace(id=123, type="private", title=None),
+        effective_message=_message(text="/lottery"),
+        edited_message=None,
+        callback_query=None,
+    )
+
+    async def run_flow():
+        with telegram_history.delegated_telegram_command():
+            await telegram_history.prepare_update_history(
+                update,
+                SimpleNamespace(bot=object()),
+            )
+
+    asyncio.run(run_flow())
+
+    assert events == ["record"]
+
+
 def test_sensitive_command_argument_is_redacted(monkeypatch):
     recorded = []
 
