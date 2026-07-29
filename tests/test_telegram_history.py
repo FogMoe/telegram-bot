@@ -65,6 +65,73 @@ def test_format_bot_event_marks_text_as_already_displayed():
     assert "<message>" not in result
 
 
+@pytest.mark.parametrize(
+    ("show_alert", "content_type"),
+    [
+        (False, "callback_toast"),
+        (True, "callback_alert"),
+    ],
+)
+def test_callback_answer_text_is_recorded_as_transient_bot_event(
+    monkeypatch,
+    show_alert,
+    content_type,
+):
+    recorded = []
+
+    async def fake_persist(user_id, content, bot):
+        recorded.append((user_id, content))
+
+    monkeypatch.setattr(telegram_history, "_persist_event", fake_persist)
+
+    async def run_recording():
+        with telegram_history.telegram_history_scope(
+            user_id=123,
+            chat_id=123,
+            chat_type="private",
+            source_message_id=88,
+            origin="bot_automation",
+            event="callback_reply",
+        ):
+            await telegram_history._record_callback_answer(
+                object(),
+                "购买成功",
+                show_alert,
+            )
+
+    asyncio.run(run_recording())
+
+    assert recorded[0][0] == 123
+    assert 'type="bot_event"' in recorded[0][1]
+    assert 'event="callback_reply"' in recorded[0][1]
+    assert f'content_type="{content_type}"' in recorded[0][1]
+    assert 'reply_to_message_id="88"' in recorded[0][1]
+    assert "<displayed_message>购买成功</displayed_message>" in recorded[0][1]
+
+
+def test_empty_callback_answer_is_not_recorded(monkeypatch):
+    recorded = []
+
+    async def fake_persist(user_id, content, bot):
+        recorded.append((user_id, content))
+
+    monkeypatch.setattr(telegram_history, "_persist_event", fake_persist)
+
+    async def run_recording():
+        with telegram_history.telegram_history_scope(
+            user_id=123,
+            chat_id=123,
+            chat_type="private",
+            origin="bot_automation",
+            event="callback_reply",
+        ):
+            await telegram_history._record_callback_answer(object(), None, False)
+
+    asyncio.run(run_recording())
+
+    assert recorded == []
+
+
 def test_persist_event_always_uses_user_role(monkeypatch):
     calls = []
 

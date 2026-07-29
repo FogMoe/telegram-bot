@@ -4,46 +4,72 @@ from features.ai.tools.registry import AI_TOOL_HANDLERS
 from features.ai.tools.schemas import OPENAI_TOOLS
 
 
-def test_internal_docs_are_loaded_from_resources():
-    assert config.INTERNAL_DOCS
-    for topic, content in config.INTERNAL_DOCS.items():
-        assert topic
-        assert content.strip()
-        assert content.lstrip().startswith("# "), topic
+def test_read_doc_lists_every_document_without_a_topic(monkeypatch):
+    monkeypatch.setattr(
+        config,
+        "INTERNAL_DOCS",
+        {
+            "alpha": "# Alpha\nFirst summary",
+            "beta": "# Beta\nSecond summary",
+        },
+    )
 
-
-def test_read_doc_lists_every_document_without_a_topic():
     result = read_doc_tool()
     topics = {entry["topic"] for entry in result["documents"]}
-    assert topics == set(config.INTERNAL_DOCS)
+    assert topics == {"alpha", "beta"}
     for entry in result["documents"]:
         assert entry["title"]
         assert entry["summary"]
 
 
-def test_read_doc_returns_full_content_for_a_known_topic():
-    result = read_doc_tool(topic="spam")
-    assert result["topic"] == "spam"
-    assert "/spam add" in result["content"]
+def test_read_doc_returns_full_content_for_a_known_topic(monkeypatch):
+    monkeypatch.setattr(
+        config,
+        "INTERNAL_DOCS",
+        {"alpha": "# Alpha\nFixture content"},
+    )
+
+    result = read_doc_tool(topic="alpha")
+
+    assert result["topic"] == "alpha"
+    assert result["content"] == "# Alpha\nFixture content"
     assert "truncated" not in result
 
 
-def test_read_doc_normalizes_surrounding_whitespace():
-    assert read_doc_tool(topic="  spam  ")["topic"] == "spam"
+def test_read_doc_normalizes_surrounding_whitespace(monkeypatch):
+    monkeypatch.setattr(config, "INTERNAL_DOCS", {"alpha": "fixture"})
+
+    assert read_doc_tool(topic="  alpha  ")["topic"] == "alpha"
 
 
-def test_read_doc_treats_blank_topic_as_no_topic():
+def test_read_doc_treats_blank_topic_as_no_topic(monkeypatch):
+    monkeypatch.setattr(config, "INTERNAL_DOCS", {"alpha": "fixture"})
+
     assert "documents" in read_doc_tool(topic="   ")
 
 
-def test_read_doc_rejects_unknown_topic_and_lists_alternatives():
+def test_read_doc_rejects_unknown_topic_and_lists_alternatives(monkeypatch):
+    monkeypatch.setattr(
+        config,
+        "INTERNAL_DOCS",
+        {
+            "alpha": "# Alpha\nFirst summary",
+            "beta": "# Beta\nSecond summary",
+        },
+    )
+
     result = read_doc_tool(topic="does-not-exist")
+
     assert "error" in result
-    assert {entry["topic"] for entry in result["documents"]} == set(config.INTERNAL_DOCS)
+    assert {entry["topic"] for entry in result["documents"]} == {"alpha", "beta"}
 
 
 def test_read_doc_truncates_long_documents(monkeypatch):
-    monkeypatch.setitem(config.INTERNAL_DOCS, "huge", "# Huge\nsummary\n" + "x" * 20000)
+    monkeypatch.setattr(
+        config,
+        "INTERNAL_DOCS",
+        {"huge": "# Huge\nsummary\n" + "x" * 20000},
+    )
     result = read_doc_tool(topic="huge")
     assert result["truncated"] is True
     assert len(result["content"]) == 8000

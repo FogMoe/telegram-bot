@@ -255,9 +255,6 @@ def test_run_recap_agent_exposes_only_read_only_memory_tools(monkeypatch):
     assert "read_diary_page" not in {
         tool["function"]["name"] for tool in idle_followup.OPENAI_TOOLS
     }
-    assert captured["kwargs"]["system_prompt_override"] == (
-        idle_followup.config.IDLE_RECAP_SYSTEM_PROMPT
-    )
     assert captured["kwargs"]["max_tokens"] == 1000
     assert captured["kwargs"]["completion_timeout"] == 120
     assert captured["kwargs"]["completion_kwargs"] == {

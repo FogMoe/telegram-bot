@@ -24,6 +24,8 @@ class TelegramHistoryContext:
     user_id: int | None = None
     chat_id: int | None = None
     chat_type: str | None = None
+    chat_title: str | None = None
+    source_message_id: int | None = None
     origin: str = "bot_automation"
     event: str = "automatic_reply"
     command: str | None = None
@@ -429,6 +431,8 @@ async def prepare_update_history(update: Update, context: Any) -> None:
             user_id=getattr(user, "id", None),
             chat_id=getattr(chat, "id", None),
             chat_type=getattr(chat, "type", None),
+            chat_title=(getattr(chat, "title", None) or "").strip() or None,
+            source_message_id=getattr(message, "message_id", None),
             origin=origin,
             event=event,
             command=command,
@@ -509,6 +513,41 @@ async def _record_bot_message(bot: Any, message: Any) -> None:
             )
 
 
+async def _record_callback_answer(
+    bot: Any,
+    text: Any,
+    show_alert: bool | None,
+) -> None:
+    """记录成功显示给用户的 callback toast 或 alert。"""
+    if _CAPTURE_SUPPRESSED.get():
+        return
+
+    displayed_message = str(text or "").strip()
+    context = _HISTORY_CONTEXT.get() or TelegramHistoryContext()
+    if not displayed_message or context.user_id is None:
+        return
+
+    output_redacted = False
+    for secret in context.redactions:
+        if secret and secret in displayed_message:
+            displayed_message = displayed_message.replace(secret, "[redacted]")
+            output_redacted = True
+
+    content = format_bot_event(
+        chat_type=context.chat_type or "private",
+        chat_title=context.chat_title,
+        timestamp=_format_timestamp(None),
+        origin=context.origin,
+        event=context.event,
+        displayed_message=displayed_message,
+        reply_to_message_id=context.source_message_id,
+        command=context.command,
+        content_type="callback_alert" if show_alert else "callback_toast",
+        redacted=output_redacted,
+    )
+    await _persist_event(context.user_id, content, bot)
+
+
 class HistoryTrackingExtBot(ExtBot):
     """记录成功发送到 Telegram 的可见 Bot 消息。"""
 
@@ -542,3 +581,15 @@ class HistoryTrackingExtBot(ExtBot):
         return await self._send_and_record(
             super().edit_message_caption(*args, **kwargs)
         )
+
+    async def answer_callback_query(self, *args: Any, **kwargs: Any) -> bool:
+        result = await super().answer_callback_query(*args, **kwargs)
+        text = kwargs.get("text")
+        if text is None and len(args) > 1:
+            text = args[1]
+        show_alert = kwargs.get("show_alert")
+        if show_alert is None and len(args) > 2:
+            show_alert = args[2]
+        if result:
+            await _record_callback_answer(self, text, bool(show_alert))
+        return result
