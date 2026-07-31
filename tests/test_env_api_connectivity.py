@@ -7,6 +7,7 @@ import pytest
 
 from core import config
 from features.ai.litellm_client import create_chat_completion
+from features.ai.provider_resolver import completion_kwargs_for_task
 
 
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
@@ -161,6 +162,7 @@ def test_configured_chat_provider_apis_are_reachable():
                     max_tokens=8,
                     temperature=0,
                     timeout=timeout_seconds,
+                    **completion_kwargs_for_task(provider, "chat"),
                 )
                 elapsed = time.perf_counter() - started
                 if not getattr(response, "choices", None):

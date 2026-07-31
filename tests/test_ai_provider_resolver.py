@@ -123,6 +123,18 @@ def test_completion_kwargs_omits_reasoning_effort_for_openai_compatible_gemini(
     assert provider_resolver.completion_kwargs_for_task("gemini", "summary") == {}
 
 
+def test_completion_kwargs_uses_fixed_fogmoe_default_and_advisor_effort():
+    assert provider_resolver.completion_kwargs_for_task("fogmoe", "chat") == {
+        "reasoning_effort": "low"
+    }
+    assert provider_resolver.completion_kwargs_for_task("fogmoe", "summary") == {
+        "reasoning_effort": "low"
+    }
+    assert provider_resolver.completion_kwargs_for_task("fogmoe", "advisor") == {
+        "reasoning_effort": "high"
+    }
+
+
 def test_run_ai_task_uses_resolved_models_with_fallback_and_kwarg_override(monkeypatch):
     calls = []
     messages = [{"role": "user", "content": "hello"}]
