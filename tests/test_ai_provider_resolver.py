@@ -60,6 +60,8 @@ def test_get_provider_order_for_unknown_task_fails():
     ("provider", "config_name"),
     [
         ("openai", "OPENAI_VISION_MODEL"),
+        ("openrouter", "OPENROUTER_VISION_MODEL"),
+        ("fogmoe", "FOGMOE_VISION_MODEL"),
         ("siliconflow", "SILICONFLOW_VISION_MODEL"),
         ("gemini", "GEMINI_VISION_MODEL"),
         ("zhipu", "ZHIPU_VISION_MODEL"),

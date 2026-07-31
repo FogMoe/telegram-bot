@@ -31,6 +31,18 @@ PROVIDER_CONFIGS = {
         base_url=config.OPENAI_BASE_URL or "<default>",
         key_present=bool(config.OPENAI_API_KEY or config.OPENAI_BASE_URL),
     ),
+    "openrouter": ProviderConfig(
+        model=config.OPENROUTER_CHAT_MODEL,
+        model_env="OPENROUTER_CHAT_MODEL",
+        base_url=config.OPENROUTER_API_BASE or "<missing>",
+        key_present=bool(config.OPENROUTER_API_KEY),
+    ),
+    "fogmoe": ProviderConfig(
+        model=config.FOGMOE_CHAT_MODEL,
+        model_env="FOGMOE_CHAT_MODEL",
+        base_url=config.FOGMOE_API_BASE or "<missing>",
+        key_present=bool(config.FOGMOE_API_KEY),
+    ),
     "azure": ProviderConfig(
         model=config.AZURE_OPENAI_CHAT_MODEL,
         model_env="AZURE_OPENAI_CHAT_MODEL",
@@ -82,6 +94,8 @@ def _redact_secrets(value: object) -> str:
     text = str(value)
     for secret in (
         config.OPENAI_API_KEY,
+        config.OPENROUTER_API_KEY,
+        config.FOGMOE_API_KEY,
         config.AZURE_OPENAI_API_KEY,
         config.GEMINI_API_KEY,
         config.SILICONFLOW_API_KEY,

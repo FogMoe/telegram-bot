@@ -4,11 +4,12 @@
 
 项目已接入 LiteLLM SDK 作为统一 provider 调用层：
 
-- `modules/features/ai/litellm_client.py` 负责将 `openai`、`gemini`、`azure`、`zhipu` 映射到 LiteLLM 的模型前缀和认证参数。
+- `modules/features/ai/litellm_client.py` 负责将 `openai`、`openrouter`、`fogmoe`、`gemini`、`azure`、`siliconflow`、`zhipu` 映射到 LiteLLM 的模型前缀和认证参数。
 - `modules/features/ai/task_runner.py` 负责按任务选择 provider/model/fallback。
 - 主聊天仍通过 `router.py` 按 `AI_CHAT_ORDER` 顺序 fallback。
 - summary、translate、vision、classifier 已改为通过 `run_ai_task()` 调用，不再直接创建具体 provider client。
 - 当前 `.env` 使用显式任务级配置，不再兼容旧变量名，例如 `GEMINI_MODEL`、`ZHIPUAI_API_KEY`、`AZURE_OPENAI_MODEL`。
+- OpenRouter 通过 LiteLLM 原生 `openrouter/<model>` provider 接入；FOGMOE AI endpoint 通过 LiteLLM 的 OpenAI-compatible provider 接入。完整环境变量以 [`.env.example`](../.env.example) 为准。
 
 下面的设计说明保留为后续继续演进的参考；其中自建 adapter 的职责目前主要由 LiteLLM SDK 与项目内的薄封装承担。
 

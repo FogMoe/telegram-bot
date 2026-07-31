@@ -43,6 +43,30 @@ def _openai_params() -> Dict[str, Any]:
     return params
 
 
+def _openrouter_params() -> Dict[str, Any]:
+    if not config.OPENROUTER_API_KEY:
+        raise RuntimeError("Missing OPENROUTER_API_KEY configuration.")
+    api_base = openai_compatible_api_base(config.OPENROUTER_API_BASE)
+    if not api_base:
+        raise RuntimeError("Missing OPENROUTER_API_BASE configuration.")
+    return {
+        "api_key": config.OPENROUTER_API_KEY,
+        "api_base": api_base,
+    }
+
+
+def _fogmoe_params() -> Dict[str, Any]:
+    if not config.FOGMOE_API_KEY:
+        raise RuntimeError("Missing FOGMOE_API_KEY configuration.")
+    api_base = openai_compatible_api_base(config.FOGMOE_API_BASE)
+    if not api_base:
+        raise RuntimeError("Missing FOGMOE_API_BASE configuration.")
+    return {
+        "api_key": config.FOGMOE_API_KEY,
+        "api_base": api_base,
+    }
+
+
 def _gemini_params() -> Dict[str, Any]:
     if not config.GEMINI_API_KEY:
         raise RuntimeError("Missing GEMINI_API_KEY configuration.")
@@ -96,6 +120,8 @@ def _azure_params() -> Dict[str, Any]:
 
 PROVIDER_PARAM_BUILDERS = {
     "openai": _openai_params,
+    "openrouter": _openrouter_params,
+    "fogmoe": _fogmoe_params,
     "gemini": _gemini_params,
     "zai": _zai_params,
     "siliconflow": _siliconflow_params,

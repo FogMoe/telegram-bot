@@ -23,6 +23,10 @@ def _configured_chat_models_for_provider(provider: str) -> list[str]:
     provider_name = (provider or "").strip().lower()
     if provider_name == "openai":
         return [config.OPENAI_CHAT_MODEL]
+    if provider_name == "openrouter":
+        return [config.OPENROUTER_CHAT_MODEL]
+    if provider_name == "fogmoe":
+        return [config.FOGMOE_CHAT_MODEL]
     if provider_name == "azure":
         return [config.AZURE_OPENAI_CHAT_MODEL]
     if provider_name == "gemini":

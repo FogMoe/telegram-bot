@@ -1,6 +1,7 @@
 import pytest
 
 from core import config
+from core.litellm_models import litellm_model_name
 from features.ai import context_budget, litellm_client
 from features.ai.litellm_message_sanitizer import sanitize_message_for_provider
 from features.ai.litellm_provider_config import (
@@ -15,6 +16,20 @@ def test_openai_compatible_api_base_strips_chat_completions_suffix():
     assert (
         openai_compatible_api_base("https://example.test/v1/chat/completions/")
         == "https://example.test/v1"
+    )
+
+
+def test_litellm_model_name_uses_native_openrouter_prefix():
+    assert (
+        litellm_model_name("openrouter", "openai/gpt-5.6-luna")
+        == "openrouter/openai/gpt-5.6-luna"
+    )
+
+
+def test_litellm_model_name_preserves_fogmoe_endpoint_model_id():
+    assert (
+        litellm_model_name("fogmoe", "openai/gpt-5.6-luna")
+        == "openai/openai/gpt-5.6-luna"
     )
 
 
@@ -63,6 +78,58 @@ def test_provider_params_requires_openai_key_or_base(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Missing OPENAI_API_KEY"):
         provider_params("openai")
+
+
+def test_provider_params_builds_openrouter_params(monkeypatch):
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "openrouter-key")
+    monkeypatch.setattr(
+        config,
+        "OPENROUTER_API_BASE",
+        "https://openrouter.test/api/v1/chat/completions",
+    )
+
+    assert provider_params("openrouter") == {
+        "api_key": "openrouter-key",
+        "api_base": "https://openrouter.test/api/v1",
+    }
+
+
+def test_provider_params_builds_fogmoe_openai_compatible_params(monkeypatch):
+    monkeypatch.setattr(config, "FOGMOE_API_KEY", "fogmoe-key")
+    monkeypatch.setattr(
+        config,
+        "FOGMOE_API_BASE",
+        "https://ai.fog.test/v1/chat/completions",
+    )
+
+    assert provider_params("fogmoe") == {
+        "api_key": "fogmoe-key",
+        "api_base": "https://ai.fog.test/v1",
+    }
+
+
+@pytest.mark.parametrize(
+    ("provider", "key_name", "base_name"),
+    [
+        ("openrouter", "OPENROUTER_API_KEY", "OPENROUTER_API_BASE"),
+        ("fogmoe", "FOGMOE_API_KEY", "FOGMOE_API_BASE"),
+    ],
+)
+def test_new_provider_params_require_key_and_base(
+    monkeypatch,
+    provider,
+    key_name,
+    base_name,
+):
+    monkeypatch.setattr(config, key_name, None)
+    monkeypatch.setattr(config, base_name, "https://example.test/v1")
+    with pytest.raises(RuntimeError, match=f"Missing {key_name}"):
+        provider_params(provider)
+
+    monkeypatch.setattr(config, key_name, "test-key")
+    monkeypatch.setattr(config, base_name, None)
+    with pytest.raises(RuntimeError, match=f"Missing {base_name}"):
+        provider_params(provider)
 
 
 def test_provider_params_requires_gemini_base_for_openai_compatible_mode(monkeypatch):
@@ -194,6 +261,60 @@ def test_create_chat_completion_normalizes_provider_and_filters_none_kwargs(
             "api_key": "zai-key",
             "api_base": "https://zai.test/v4",
             "max_tokens": 128,
+            "drop_params": True,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "expected_model", "expected_params"),
+    [
+        (
+            "openrouter",
+            "openai/gpt-5.6-luna",
+            "openrouter/openai/gpt-5.6-luna",
+            {
+                "api_key": "openrouter-key",
+                "api_base": "https://openrouter.test/api/v1",
+            },
+        ),
+        (
+            "fogmoe",
+            "openai/gpt-5.6-luna",
+            "openai/openai/gpt-5.6-luna",
+            {
+                "api_key": "fogmoe-key",
+                "api_base": "https://ai.fog.test/v1",
+            },
+        ),
+    ],
+)
+def test_create_chat_completion_routes_new_providers(
+    monkeypatch,
+    provider,
+    model,
+    expected_model,
+    expected_params,
+):
+    calls = []
+    monkeypatch.setattr(
+        litellm_client,
+        "_provider_params",
+        lambda resolved_provider: expected_params,
+    )
+    monkeypatch.setattr(
+        litellm_client.litellm,
+        "completion",
+        lambda **kwargs: calls.append(kwargs) or "ok",
+    )
+
+    messages = [{"role": "user", "content": "hello"}]
+    assert litellm_client.create_chat_completion(provider, model, messages) == "ok"
+    assert calls == [
+        {
+            "model": expected_model,
+            "messages": messages,
+            **expected_params,
             "drop_params": True,
         }
     ]
