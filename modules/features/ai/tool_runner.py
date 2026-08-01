@@ -279,6 +279,34 @@ def _normalise_tool_calls(tool_calls: Optional[List[Any]]) -> List[Dict[str, Any
     return [_tool_call_to_plain(call) for call in tool_calls]
 
 
+def _resolve_assistant_message(
+    response: Any,
+    *,
+    provider: str,
+    provider_name: str,
+) -> tuple[Any, Optional[List[Any]]]:
+    choices = response.choices
+    assistant_message = choices[0].message
+    raw_tool_calls = getattr(assistant_message, "tool_calls", None)
+    if raw_tool_calls or provider.strip().casefold() != "fogmoe":
+        return assistant_message, raw_tool_calls
+
+    # Temporary compatibility for BerriAI/litellm#35444. Remove after the
+    # deployed LiteLLM release merges mixed Responses output into one choice.
+    for choice_index, choice in enumerate(choices[1:], start=1):
+        candidate_message = getattr(choice, "message", None)
+        candidate_tool_calls = getattr(candidate_message, "tool_calls", None)
+        if candidate_tool_calls:
+            logging.warning(
+                "%s 返回的文本和工具调用被拆分到不同 choices；保留 choice 0 文本并使用 choice %s 的工具调用。",
+                provider_name,
+                choice_index,
+            )
+            return assistant_message, candidate_tool_calls
+
+    return assistant_message, raw_tool_calls
+
+
 def _public_tool_result(
     tool_name: str,
     tool_result: Dict[str, Any],
@@ -603,8 +631,11 @@ def run_tool_loop(
                 raise PartialAIResponseError(str(exc), tool_logs) from exc
             raise
 
-        assistant_message = response.choices[0].message
-        raw_tool_calls = getattr(assistant_message, "tool_calls", None)
+        assistant_message, raw_tool_calls = _resolve_assistant_message(
+            response,
+            provider=provider,
+            provider_name=provider_name,
+        )
         assistant_content = assistant_message.content or ""
 
         if not raw_tool_calls:

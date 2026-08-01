@@ -28,6 +28,12 @@ class _Response:
         self.choices = [_Choice(message)]
 
 
+def _response_with_choices(*messages):
+    response = _Response(messages[0])
+    response.choices.extend(_Choice(message) for message in messages[1:])
+    return response
+
+
 def test_run_tool_loop_forwards_context_hard_limit_ratio(monkeypatch):
     calls = []
 
@@ -46,6 +52,88 @@ def test_run_tool_loop_forwards_context_hard_limit_ratio(monkeypatch):
 
     assert message == "done"
     assert calls[0]["context_hard_limit_ratio"] == 1.5
+
+
+def test_run_tool_loop_uses_fogmoe_tool_calls_from_later_choice(monkeypatch):
+    tool_call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+            "name": "google_search",
+            "arguments": '{"query": "example"}',
+        },
+    }
+    responses = [
+        _response_with_choices(
+            _Message("I will check that.", None),
+            _Message(None, [tool_call]),
+        ),
+        _Response(_Message("done", None)),
+    ]
+    completion_calls = []
+    handler_calls = []
+
+    def fake_create_chat_completion(*args, **kwargs):
+        completion_calls.append(kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
+    monkeypatch.setitem(
+        tool_runner.AI_TOOL_HANDLERS,
+        "google_search",
+        lambda **kwargs: handler_calls.append(kwargs) or {"organic_results": []},
+    )
+
+    message, _ = tool_runner.run_tool_loop(
+        "fogmoe",
+        "test_model",
+        [{"role": "user", "content": "search example"}],
+        provider_name="FOGMOE",
+    )
+
+    assert message == "done"
+    assert handler_calls == [{"query": "example"}]
+    assistant_message = completion_calls[1]["messages"][-2]
+    assert assistant_message["role"] == "assistant"
+    assert assistant_message["content"] == "I will check that."
+    assert assistant_message["tool_calls"] == [tool_call]
+
+
+def test_assistant_message_fallback_does_not_scan_for_other_providers():
+    first_message = _Message("first answer", None)
+    later_tool_calls = [{"id": "call_1"}]
+    response = _response_with_choices(
+        first_message,
+        _Message(None, later_tool_calls),
+    )
+
+    assistant_message, tool_calls = tool_runner._resolve_assistant_message(
+        response,
+        provider="openai",
+        provider_name="OpenAI",
+    )
+
+    assert assistant_message is first_message
+    assert tool_calls is None
+
+
+def test_fogmoe_fallback_keeps_choice_zero_tool_calls():
+    first_tool_calls = [{"id": "call_0"}]
+    later_tool_calls = [{"id": "call_1"}]
+    first_message = _Message("first", first_tool_calls)
+    response = _response_with_choices(
+        first_message,
+        _Message(None, later_tool_calls),
+    )
+
+    assistant_message, tool_calls = tool_runner._resolve_assistant_message(
+        response,
+        provider="fogmoe",
+        provider_name="FOGMOE",
+    )
+
+    assert assistant_message is first_message
+    assert tool_calls is first_tool_calls
 
 
 def test_run_tool_loop_uses_custom_prompt_and_tool_subset(monkeypatch):
