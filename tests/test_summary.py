@@ -97,7 +97,7 @@ def test_run_summary_agent_exposes_only_summary_search_tool(monkeypatch):
     monkeypatch.setattr(
         summary,
         "completion_kwargs_for_task",
-        lambda provider, task: {"reasoning_effort": "high"},
+        lambda provider, task: {},
     )
 
     def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
@@ -137,9 +137,7 @@ def test_run_summary_agent_exposes_only_summary_search_tool(monkeypatch):
     assert captured["kwargs"]["max_tokens"] == 2500
     assert captured["kwargs"]["context_hard_limit_ratio"] == 1.5
     assert captured["kwargs"]["max_iterations"] == 4
-    assert captured["kwargs"]["completion_kwargs"] == {
-        "reasoning_effort": "high"
-    }
+    assert captured["kwargs"]["completion_kwargs"] == {}
     assert get_tool_request_context() == {}
 
 

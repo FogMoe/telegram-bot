@@ -106,18 +106,12 @@ def test_get_models_for_task_deduplicates_identical_primary_and_fallback(monkeyp
     assert provider_resolver.get_models_for_task("gemini", "chat") == ["gemini-chat"]
 
 
-def test_completion_kwargs_adds_reasoning_effort_for_native_gemini(monkeypatch):
+def test_completion_kwargs_omits_reasoning_effort_for_gemini(monkeypatch):
     monkeypatch.setattr(config, "GEMINI_OPENAI_COMPATIBLE", False)
 
-    assert provider_resolver.completion_kwargs_for_task("gemini", "vision") == {
-        "reasoning_effort": "high"
-    }
-    assert provider_resolver.completion_kwargs_for_task("gemini", "translate") == {}
+    assert provider_resolver.completion_kwargs_for_task("gemini", "vision") == {}
+    assert provider_resolver.completion_kwargs_for_task("gemini", "summary") == {}
 
-
-def test_completion_kwargs_omits_reasoning_effort_for_openai_compatible_gemini(
-    monkeypatch,
-):
     monkeypatch.setattr(config, "GEMINI_OPENAI_COMPATIBLE", True)
 
     assert provider_resolver.completion_kwargs_for_task("gemini", "summary") == {}
@@ -142,7 +136,7 @@ def test_run_ai_task_uses_resolved_models_with_fallback_and_kwarg_override(monke
     monkeypatch.setattr(
         task_runner,
         "get_provider_order_for_task",
-        lambda task: ["gemini"],
+        lambda task: ["fogmoe"],
     )
     monkeypatch.setattr(
         task_runner,

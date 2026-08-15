@@ -30,9 +30,6 @@ PROVIDER_FALLBACK_MODEL_CONFIGS = {
     ("gemini", "summary"): "GEMINI_SUMMARY_FALLBACK_MODEL",
 }
 
-GEMINI_NATIVE_REASONING_EXCLUDED_TASKS = {"translate", "classifier"}
-
-
 def _dedupe(values: List[str | None], *, lower: bool = False) -> List[str]:
     seen = set()
     result: List[str] = []
@@ -98,10 +95,4 @@ def completion_kwargs_for_task(provider: str, task: str) -> Dict[str, Any]:
         return {
             "reasoning_effort": "high" if task_name == "advisor" else "low"
         }
-    if (
-        provider_name == "gemini"
-        and not config.GEMINI_OPENAI_COMPATIBLE
-        and task_name not in GEMINI_NATIVE_REASONING_EXCLUDED_TASKS
-    ):
-        return {"reasoning_effort": "high"}
     return {}

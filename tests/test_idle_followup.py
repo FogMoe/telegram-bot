@@ -239,7 +239,7 @@ def test_run_recap_agent_exposes_only_read_only_memory_tools(monkeypatch):
     monkeypatch.setattr(
         idle_followup,
         "completion_kwargs_for_task",
-        lambda provider, task: {"reasoning_effort": "high"},
+        lambda provider, task: {},
     )
 
     def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
@@ -282,7 +282,6 @@ def test_run_recap_agent_exposes_only_read_only_memory_tools(monkeypatch):
     assert captured["kwargs"]["max_tokens"] == 1000
     assert captured["kwargs"]["completion_timeout"] == 120
     assert captured["kwargs"]["completion_kwargs"] == {
-        "reasoning_effort": "high",
         "response_format": response_format,
         "drop_params": False,
     }
