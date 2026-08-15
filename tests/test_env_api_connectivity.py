@@ -11,6 +11,7 @@ from features.ai.provider_resolver import completion_kwargs_for_task
 
 
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
+CONNECTIVITY_MAX_TOKENS = 512
 
 
 def _enabled(value: str | None) -> bool:
@@ -117,6 +118,16 @@ def _response_content(response: object) -> str:
         return ""
 
 
+def _response_finish_reason(response: object) -> str:
+    try:
+        choice = response.choices[0]
+        if isinstance(choice, dict):
+            return str(choice.get("finish_reason") or "<missing>")
+        return str(getattr(choice, "finish_reason", None) or "<missing>")
+    except Exception:
+        return "<missing>"
+
+
 def test_configured_chat_provider_apis_are_reachable():
     if not _enabled(os.getenv("RUN_ENV_API_CONNECTIVITY_TESTS")):
         pytest.skip(
@@ -159,7 +170,7 @@ def test_configured_chat_provider_apis_are_reachable():
                     provider,
                     model,
                     [{"role": "user", "content": "Reply with exactly: ok"}],
-                    max_tokens=8,
+                    max_tokens=CONNECTIVITY_MAX_TOKENS,
                     temperature=0,
                     timeout=timeout_seconds,
                     **completion_kwargs_for_task(provider, "chat"),
@@ -167,11 +178,18 @@ def test_configured_chat_provider_apis_are_reachable():
                 elapsed = time.perf_counter() - started
                 if not getattr(response, "choices", None):
                     raise AssertionError("response has no choices")
+                content = _response_content(response)
+                if not content.strip():
+                    raise AssertionError(
+                        "response content is empty "
+                        f"(finish_reason={_response_finish_reason(response)}, "
+                        f"usage={getattr(response, 'usage', None)!r})"
+                    )
                 print(
                     "[env-api] "
                     f"provider={provider} model_env={model_env} model={model} "
                     f"base={provider_config.base_url} status=OK "
-                    f"elapsed={elapsed:.2f}s content={_response_content(response)!r}"
+                    f"elapsed={elapsed:.2f}s content={content!r}"
                 )
             except Exception as exc:
                 elapsed = time.perf_counter() - started
