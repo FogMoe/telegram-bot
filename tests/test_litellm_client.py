@@ -1,4 +1,5 @@
 import pytest
+from litellm.llms.custom_httpx.http_handler import HTTPHandler
 
 from core import config
 from core.litellm_models import litellm_model_name
@@ -472,3 +473,77 @@ def test_create_chat_completion_uses_openai_history_shape_for_compatible_gemini(
             ],
         }
     ]
+
+
+def test_gemini_native_http_handler_uses_canonical_system_instruction_key(
+    monkeypatch,
+):
+    recorded = {}
+
+    def fake_post(self, *args, **kwargs):
+        recorded.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(HTTPHandler, "post", fake_post)
+    handler = object.__new__(litellm_client._GeminiNativeHTTPHandler)
+
+    assert (
+        handler.post(
+            json={
+                "system_instruction": {"parts": [{"text": "system"}]},
+                "contents": [],
+            }
+        )
+        == "ok"
+    )
+    assert recorded["json"] == {
+        "systemInstruction": {"parts": [{"text": "system"}]},
+        "contents": [],
+    }
+
+
+def test_create_chat_completion_uses_compat_client_for_custom_native_gemini(
+    monkeypatch,
+):
+    calls = []
+    clients = []
+
+    class FakeCompatClient:
+        def __init__(self, timeout=None):
+            self.timeout = timeout
+            self.closed = False
+            clients.append(self)
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "gemini-key")
+    monkeypatch.setattr(config, "GEMINI_OPENAI_COMPATIBLE", False)
+    monkeypatch.setattr(config, "GEMINI_API_BASE", "https://gemini-native.test/v1beta")
+    monkeypatch.setattr(
+        litellm_client,
+        "_GeminiNativeHTTPHandler",
+        FakeCompatClient,
+    )
+    monkeypatch.setattr(
+        litellm_client.litellm,
+        "completion",
+        lambda **kwargs: calls.append(kwargs) or "ok",
+    )
+
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "hello"},
+    ]
+    assert (
+        litellm_client.create_chat_completion(
+            "gemini",
+            "gemini-test",
+            messages,
+            timeout=17,
+        )
+        == "ok"
+    )
+    assert calls[0]["client"] is clients[0]
+    assert clients[0].timeout == 17
+    assert clients[0].closed is True
