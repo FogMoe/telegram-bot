@@ -12,6 +12,11 @@
   2) Resume the next provider from that continuation state instead of restarting from the original user messages.
   3) Preserve tool-call/result pairing and sanitize provider-specific fields before handoff.
   4) Prove with tests that already completed tools, especially side-effectful tools, are never executed twice.
+- Add an explore/research tool that keeps multi-source web research off the main model:
+  1) The main assistant only submits a research question; it does not search, fetch pages, or synthesize the sources itself.
+  2) A subagent uses `google_search` / `fetch_url` (or equivalent) to gather pages, then returns only a structured conclusion with citations.
+  3) Keep fetch_url as a short-page reader; the research tool is the path for long or multi-page investigation.
+  4) Enforce timeout, call limits, and a compact result schema so the main context only receives the conclusion.
 - Add AI document database tool (action: search | list | read):
   1) Confirm DB schema and access rules (table name, fields, ownership scope, redaction).
   2) Add Alembic migration for documents table and indexes (consider FULLTEXT on title/content).
