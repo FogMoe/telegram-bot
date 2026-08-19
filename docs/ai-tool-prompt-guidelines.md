@@ -208,6 +208,18 @@ Submit one complete reasoning task to a read-only senior advisor. Put the questi
 
 `advisor_tools.py` 负责配置检查、请求级调用上限、用户限流、进程内并发、超时、输出 token 上限和错误脱敏。这些规则不能只依赖文字提示。
 
+## `fetch_url` 当前行为与后续研究工具
+
+`fetch_url` 面向主助手，只负责打开**单个**链接并返回可阅读正文：
+
+- 上游仍走 Jina Reader，优先取 HTML；
+- handler 用 Trafilatura 抽取正文和标题，去掉导航、页脚等噪音；
+- 抽取结果超过 `FETCH_URL_MAX_CHARS`（默认 12000 字符）时截断，并返回 `truncated: true`。
+
+主 system prompt 只保留调用时机（用户给了链接，或必须读某个具体网页）。截断阈值、抽取实现和上游服务不写进提示词。
+
+长文、多来源检索、需要综合多页证据的任务**不要**继续让主模型反复 `google_search` + `fetch_url`。后续会单独增加探索/研究工具：主助手只提交研究问题，由 subagent 自行搜索和抓取网页，最后只把整理后的结论交回主模型。该工具尚未实现，计划见 `docs/todo.md`。
+
 ## 常见反模式
 
 ### 在主 system prompt 复制完整使用手册

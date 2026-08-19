@@ -9,7 +9,7 @@
 - `schemas.py`：工具 schema 定义（OpenAI JSON Schema）
 - `registry.py`：工具注册中心（名称 -> 处理函数）
 - `advisor_tools.py`：只读高级推理顾问工具（无工具权限，不自动携带聊天历史）
-- `http_tools.py`：外部 HTTP 工具（SerpApi、Jina Reader）
+- `http_tools.py`：外部 HTTP 工具（SerpApi、Jina Reader + Trafilatura 正文抽取）
 - `image_tools.py`：图片生成工具（可配置接口，保存生成图片供发送层使用）
 - `voice_tools.py`：语音生成工具（保存生成音频供发送层使用）
 - `code_tools.py`：Judge0 执行工具
@@ -37,6 +37,10 @@
 - 工具处理函数必须是同步函数，且返回可 JSON 序列化的 dict。
 - 依赖聊天/用户上下文的工具务必通过 `context.get_tool_request_context()` 读取。
 - 尽量避免长耗时网络调用，超时设置要保守。
+
+## fetch_url
+
+`fetch_url` 通过 Jina Reader 拉取页面，再用 Trafilatura 抽取正文。返回字段包括 `content` 和 `truncated`；超过 `FETCH_URL_MAX_CHARS`（默认 12000）时截断。多页探索和长文综合不走这个工具，后续会单独增加研究工具，由 subagent 完成检索并只返回结论。
 
 ## advisor 配置
 

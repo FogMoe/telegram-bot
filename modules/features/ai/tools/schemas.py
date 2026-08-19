@@ -90,7 +90,10 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     ),
     _tool_definition(
         "fetch_url",
-        "Fetch and render webpage content for up-to-date browsing",
+        (
+            "Fetch a webpage and return extracted main text for up-to-date browsing. "
+            "Overly long pages are truncated."
+        ),
     ),
     _tool_definition(
         "execute_python_code",
