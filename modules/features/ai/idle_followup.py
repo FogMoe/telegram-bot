@@ -22,8 +22,7 @@ from core.telegram_history import suppress_telegram_history
 from core.telegram_utils import partial_send
 from features.ai import ai_chat, summary
 from features.ai.conversation_locks import get_conversation_lock
-from features.ai.generated_audio_sender import send_generated_audio_from_tool_logs
-from features.ai.generated_image_sender import send_generated_images_from_tool_logs
+from features.ai.outbound import send_generated_media
 from features.ai.provider_resolver import (
     completion_kwargs_for_task,
     get_models_for_task,
@@ -681,19 +680,12 @@ async def _send_followup_outputs(
             logger.exception("Failed to send idle follow-up reply: user_id=%s", user_id)
 
     try:
-        with suppress_telegram_history():
-            await send_generated_audio_from_tool_logs(
-                bot=context.bot,
-                chat_id=user_id,
-                tool_logs=tool_logs,
-                logger=logger,
-            )
-            await send_generated_images_from_tool_logs(
-                bot=context.bot,
-                chat_id=user_id,
-                tool_logs=tool_logs,
-                logger=logger,
-            )
+        await send_generated_media(
+            bot=context.bot,
+            chat_id=user_id,
+            tool_logs=tool_logs,
+            logger=logger,
+        )
     except Exception:
         logger.exception("Failed to send idle follow-up tool media: user_id=%s", user_id)
 
@@ -821,3 +813,13 @@ __all__ = [
     "note_incoming_private_message",
     "run_idle_followup_job",
 ]
+
+
+def setup_idle_followup_jobs(application) -> None:
+    """注册空闲跟进轮询。"""
+
+    application.job_queue.run_repeating(
+        run_idle_followup_job,
+        interval=IDLE_FOLLOWUP_POLL_INTERVAL,
+        first=15,
+    )

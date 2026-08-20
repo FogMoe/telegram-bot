@@ -1,10 +1,10 @@
 import asyncio
 
-from core import bot_conversation
+from features.conversation import handlers as conversation
 
 
 def test_format_xml_message_includes_current_message_id():
-    result = bot_conversation._format_xml_message(
+    result = conversation._format_xml_message(
         chat_type="private",
         chat_title=None,
         timestamp="2026-07-06 20:10:00",
@@ -20,7 +20,7 @@ def test_format_xml_message_includes_current_message_id():
 
 
 def test_format_xml_message_marks_edited_messages():
-    result = bot_conversation._format_xml_message(
+    result = conversation._format_xml_message(
         chat_type="private",
         chat_title=None,
         timestamp="2026-07-06 20:10:00",
@@ -38,7 +38,7 @@ def test_format_xml_message_marks_edited_messages():
 
 
 def test_forward_message_id_stays_in_forward_metadata():
-    result = bot_conversation._format_xml_message(
+    result = conversation._format_xml_message(
         chat_type="private",
         chat_title=None,
         timestamp="2026-07-06 20:10:00",
@@ -57,7 +57,7 @@ def test_forward_message_id_stays_in_forward_metadata():
 
 
 def test_format_xml_message_removes_xml_tags_from_telegram_text():
-    result = bot_conversation._format_xml_message(
+    result = conversation._format_xml_message(
         chat_type="private",
         chat_title=None,
         timestamp="2026-07-29 12:00:00",
@@ -75,7 +75,7 @@ def test_format_xml_message_removes_xml_tags_from_telegram_text():
 
 
 def test_format_xml_message_removes_xml_tags_from_replied_text():
-    result = bot_conversation._format_xml_message(
+    result = conversation._format_xml_message(
         chat_type="private",
         chat_title=None,
         timestamp="2026-07-29 12:00:00",
@@ -100,20 +100,20 @@ def test_completed_delegated_clear_archives_tool_turn_before_reset(monkeypatch):
         operations.append(("archive", conversation_id, records))
         return 77, []
 
-    monkeypatch.setattr(bot_conversation, "flush_pending_events", fake_flush)
+    monkeypatch.setattr(conversation, "flush_pending_events", fake_flush)
     monkeypatch.setattr(
-        bot_conversation.mysql_connection,
+        conversation.mysql_connection,
         "archive_chat_and_start_new_session",
         fake_archive,
     )
     monkeypatch.setattr(
-        bot_conversation.summary,
+        conversation.summary,
         "schedule_summary_generation",
         lambda conversation_id: operations.append(("summary", conversation_id)),
     )
 
     asyncio.run(
-        bot_conversation._archive_completed_clear_turn(
+        conversation._archive_completed_clear_turn(
             bot=object(),
             user_id=123,
             conversation_id=123,

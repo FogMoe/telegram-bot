@@ -2,14 +2,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import bot_conversation
+from features.conversation import messages as conversation
 
 
 @pytest.fixture(autouse=True)
 def _clear_message_fingerprints():
-    bot_conversation._MESSAGE_CONTENT_FINGERPRINTS.clear()
+    conversation._MESSAGE_CONTENT_FINGERPRINTS.clear()
     yield
-    bot_conversation._MESSAGE_CONTENT_FINGERPRINTS.clear()
+    conversation._MESSAGE_CONTENT_FINGERPRINTS.clear()
 
 
 def _message(
@@ -41,10 +41,10 @@ def test_unchanged_edited_text_is_ignored():
     original = _message(text="hello")
     unchanged_edit = _message(text="hello")
 
-    assert not bot_conversation._record_message_content_and_check_unchanged_edit(
+    assert not conversation._record_message_content_and_check_unchanged_edit(
         _update(original)
     )
-    assert bot_conversation._record_message_content_and_check_unchanged_edit(
+    assert conversation._record_message_content_and_check_unchanged_edit(
         _update(unchanged_edit, edited=True)
     )
 
@@ -54,13 +54,13 @@ def test_changed_edited_text_is_processed_and_becomes_new_baseline():
     changed_edit = _message(text="hello again")
     repeated_edit = _message(text="hello again")
 
-    assert not bot_conversation._record_message_content_and_check_unchanged_edit(
+    assert not conversation._record_message_content_and_check_unchanged_edit(
         _update(original)
     )
-    assert not bot_conversation._record_message_content_and_check_unchanged_edit(
+    assert not conversation._record_message_content_and_check_unchanged_edit(
         _update(changed_edit, edited=True)
     )
-    assert bot_conversation._record_message_content_and_check_unchanged_edit(
+    assert conversation._record_message_content_and_check_unchanged_edit(
         _update(repeated_edit, edited=True)
     )
 
@@ -79,13 +79,13 @@ def test_changed_caption_or_photo_is_processed():
         photo=(SimpleNamespace(file_unique_id="photo-b"),),
     )
 
-    assert not bot_conversation._record_message_content_and_check_unchanged_edit(
+    assert not conversation._record_message_content_and_check_unchanged_edit(
         _update(original)
     )
-    assert not bot_conversation._record_message_content_and_check_unchanged_edit(
+    assert not conversation._record_message_content_and_check_unchanged_edit(
         _update(changed_caption, edited=True)
     )
-    assert not bot_conversation._record_message_content_and_check_unchanged_edit(
+    assert not conversation._record_message_content_and_check_unchanged_edit(
         _update(changed_photo, edited=True)
     )
 
@@ -94,9 +94,9 @@ def test_same_message_id_in_another_chat_is_not_ignored():
     original = _message(text="hello")
     other_chat_edit = _message(text="hello")
 
-    assert not bot_conversation._record_message_content_and_check_unchanged_edit(
+    assert not conversation._record_message_content_and_check_unchanged_edit(
         _update(original, chat_id=20)
     )
-    assert not bot_conversation._record_message_content_and_check_unchanged_edit(
+    assert not conversation._record_message_content_and_check_unchanged_edit(
         _update(other_chat_edit, edited=True, chat_id=21)
     )

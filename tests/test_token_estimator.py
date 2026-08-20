@@ -1,4 +1,4 @@
-from core import mysql_connection, token_estimator
+from core import chat_records, token_estimator
 from core.token_estimator import (
     DEFAULT_MESSAGE_OVERHEAD,
     estimate_conversation_tokens,
@@ -117,14 +117,14 @@ def test_estimate_conversation_tokens_counts_system_prompt_with_litellm(monkeypa
 
 
 def test_chat_token_count_model_uses_first_configured_chat_model(monkeypatch):
-    monkeypatch.setattr(mysql_connection.config, "AI_SERVICE_ORDER", ["openai", "gemini"])
-    monkeypatch.setattr(mysql_connection.config, "OPENAI_CHAT_MODEL", None)
-    monkeypatch.setattr(mysql_connection.config, "GEMINI_CHAT_MODEL", "gemini-2.5-pro")
-    monkeypatch.setattr(mysql_connection.config, "GEMINI_CHAT_FALLBACK_MODEL", None)
+    monkeypatch.setattr(chat_records.config, "AI_SERVICE_ORDER", ["openai", "gemini"])
+    monkeypatch.setattr(chat_records.config, "OPENAI_CHAT_MODEL", None)
+    monkeypatch.setattr(chat_records.config, "GEMINI_CHAT_MODEL", "gemini-2.5-pro")
+    monkeypatch.setattr(chat_records.config, "GEMINI_CHAT_FALLBACK_MODEL", None)
     monkeypatch.setattr(
-        mysql_connection,
+        chat_records,
         "litellm_model_name",
         lambda provider, model: f"{provider}/{model}",
     )
 
-    assert mysql_connection._chat_token_count_model() == "gemini/gemini-2.5-pro"
+    assert chat_records._chat_token_count_model() == "gemini/gemini-2.5-pro"

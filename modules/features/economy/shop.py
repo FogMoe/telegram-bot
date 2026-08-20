@@ -2,11 +2,14 @@ import asyncio
 import random
 from core import mysql_connection, process_user
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes
-from datetime import datetime, date, timedelta
+import logging
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
+from datetime import date
 import time
 from core.command_cooldown import cooldown
 
+
+logger = logging.getLogger(__name__)
 # 定义全局锁，确保购买过程的原子性
 lock = asyncio.Lock()
 
@@ -65,8 +68,8 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
             await query.edit_message_text("请选择购买的项目：", reply_markup=reply_markup)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("刷新商店菜单失败: %s", exc)
 
     elif query.data == "shop_buy_lottery":
         # 进入购买彩票二级菜单
@@ -78,8 +81,8 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
             await query.edit_message_text("请选择购彩项目：", reply_markup=reply_markup)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("刷新购彩菜单失败: %s", exc)
 
     elif query.data == "shop_buy_memory_limit":
         # 购买永久记忆上限 +1
@@ -141,15 +144,15 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
             await query.edit_message_text("欢迎来到商城，请选择购买项目：", reply_markup=reply_markup)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("返回商城主菜单失败: %s", exc)
 
     elif query.data == "shop_close":
         # 删除商城消息
         try:
             await query.delete_message()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("关闭商城消息失败: %s", exc)
 
     elif query.data == "shop_upgrade_1":
         # 执行购买升级权限到1级的操作
@@ -377,7 +380,8 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             # 更新记录的文本内容
                             last_lottery_messages[message_key]['text'] = new_text
                             last_lottery_messages[message_key]['timestamp'] = current_time
-                        except Exception as e:
+                        except Exception as exc:
+                            logger.debug("编辑彩票记录消息失败，改为发送新消息: %s", exc)
                             # 如果编辑失败，发送新消息
                             new_text = f"📊 最近的彩票记录:\n{user_username}: 刮刮乐 → {reward}金币"
                             if bonus_message:
@@ -523,7 +527,8 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             # 更新记录的文本内容
                             last_lottery_messages[message_key]['text'] = new_text
                             last_lottery_messages[message_key]['timestamp'] = current_time
-                        except Exception as e:
+                        except Exception as exc:
+                            logger.debug("编辑彩票记录消息失败，改为发送新消息: %s", exc)
                             # 如果编辑失败，发送新消息
                             new_text = f"📊 最近的彩票记录:\n{user_username}: 欢乐彩 → {reward}金币"
                             if bonus_message:
@@ -547,7 +552,8 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         'message_type': 'lottery',
                         'text': new_text
                     }
-            except Exception as e:
+            except Exception:
+                logger.exception("购买欢乐彩失败: user_id=%s", user_id)
                 await query.answer("购买欢乐彩时出错，请稍后再试。", show_alert=True)
 
 # 修改清理函数以适配JobQueue使用
@@ -566,3 +572,15 @@ async def cleanup_message_records_job(context: ContextTypes.DEFAULT_TYPE):
 async def cleanup_message_records():
     """原始清理函数，现在直接调用一次清理作业"""
     await cleanup_message_records_job(None)
+
+
+def setup_shop_handlers(application) -> None:
+    """注册商店命令、回调与消息记录清理任务。"""
+
+    application.add_handler(CommandHandler("shop", shop_command))
+    application.add_handler(CallbackQueryHandler(shop_callback, pattern=r"^shop_"))
+    application.job_queue.run_repeating(
+        cleanup_message_records_job,
+        interval=3600,
+        first=10,
+    )

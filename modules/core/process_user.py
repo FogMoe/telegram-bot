@@ -130,10 +130,6 @@ async def user_exists(user_id):
     return row is not None
 
 
-def user_exists_sync(user_id):
-    return mysql_connection.run_sync(user_exists(user_id))
-
-
 async def async_user_exists(user_id):
     return await user_exists(user_id)
 
@@ -193,20 +189,8 @@ async def get_user_personal_info(user_id: int) -> str:
     return str(row[0])
 
 
-def get_user_personal_info_sync(user_id: int) -> str:
-    return mysql_connection.run_sync(get_user_personal_info(user_id))
-
-
-async def async_get_user_personal_info(user_id: int) -> str:
-    return await get_user_personal_info(user_id)
-
-
 async def get_user_coins(user_id: int) -> int:
     return await get_user_total_coins(user_id)
-
-
-def get_user_coins_sync(user_id: int) -> int:
-    return mysql_connection.run_sync(get_user_coins(user_id))
 
 
 async def async_get_user_coins(user_id: int) -> int:
@@ -275,10 +259,6 @@ async def get_user_permission(user_id: int) -> int:
     return row[0] if row else 0
 
 
-def get_user_permission_sync(user_id: int) -> int:
-    return mysql_connection.run_sync(get_user_permission(user_id))
-
-
 async def async_get_user_permission(user_id: int) -> int:
     return await get_user_permission(user_id)
 
@@ -295,10 +275,6 @@ async def get_user_impression(user_id: int) -> str:
     if row and row[0] is not None:
         return row[0]
     return ""
-
-
-def get_user_impression_sync(user_id: int) -> str:
-    return mysql_connection.run_sync(get_user_impression(user_id))
 
 
 async def update_user_impression(user_id: int, impression: str) -> str:
@@ -328,7 +304,3 @@ def update_user_impression_sync(user_id: int, impression: str) -> str:
 
 async def async_get_user_impression(user_id: int) -> str:
     return await get_user_impression(user_id)
-
-
-async def async_update_user_impression(user_id: int, impression: str) -> str:
-    return await update_user_impression(user_id, impression)

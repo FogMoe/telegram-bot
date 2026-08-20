@@ -7,11 +7,11 @@ import hashlib
 import logging
 import re
 from collections import OrderedDict
-from contextlib import contextmanager
+from contextlib import AbstractAsyncContextManager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any, Iterator
+from typing import Any, Awaitable, Callable, Iterator
 
 from telegram import Update
 from telegram.ext import ExtBot
@@ -21,6 +21,32 @@ from .prompt_utils import format_metadata_attrs, remove_xml_tags, xml_escape
 from .telegram_utils import describe_message_for_context
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class HistoryHooks:
+    """由组装层注入的业务回调。
+
+    core 只负责写库并发出信号：摘要生成、recap 失效与会话锁属于对话业务，
+    由 features 侧实现并在启动时注入，避免 core 反向依赖 features。
+    未注入时 core 静默跳过对应动作。
+    """
+
+    on_history_overflow: Callable[[int], Awaitable[None]] | None = None
+    on_snapshot_created: Callable[[int], None] | None = None
+    private_command_guard: (
+        Callable[[int], AbstractAsyncContextManager[None]] | None
+    ) = None
+
+
+_HOOKS = HistoryHooks()
+
+
+def set_history_hooks(hooks: HistoryHooks) -> None:
+    """安装历史事件回调。由组装层在启动时调用。"""
+
+    global _HOOKS
+    _HOOKS = hooks
 
 
 @dataclass(frozen=True)
@@ -368,20 +394,11 @@ async def _write_pending_events(
             )
         )
         if warning_level == "overflow":
-            from features.ai import summary
-
-            summary_text = await summary.generate_summary_immediately(user_id)
-            if summary_text:
-                await mysql_connection.async_update_latest_history_state_summary(
-                    user_id,
-                    summary_text,
-                )
-            else:
-                summary.schedule_summary_generation(user_id)
+            if _HOOKS.on_history_overflow is not None:
+                await _HOOKS.on_history_overflow(user_id)
         elif snapshot_created:
-            from features.ai import summary
-
-            summary.schedule_summary_generation(user_id)
+            if _HOOKS.on_snapshot_created is not None:
+                _HOOKS.on_snapshot_created(user_id)
 
         if archived_records:
             from .archive_utils import send_permanent_records_archive
@@ -517,13 +534,15 @@ async def _record_command_before_handler(
             await record_command_update(update, context.bot)
         return
 
-    # 先让执行中的 recap 失效，再等待它持有的会话锁。这样命令与 recap
-    # 只能按先后顺序写入历史，同时不会等到 recap 结束后才发现用户已返回。
-    from features.ai import idle_followup
-    from features.ai.conversation_locks import get_conversation_lock
+    # 私聊命令需要先让执行中的 recap 失效，再等待它持有的会话锁；具体时序
+    # 由注入的 guard 实现，core 只负责在其作用域内写历史。
+    guard = _HOOKS.private_command_guard
+    if guard is None:
+        if command != "clear":
+            await record_command_update(update, context.bot)
+        return
 
-    await idle_followup.note_incoming_private_message(user.id)
-    async with get_conversation_lock(user.id):
+    async with guard(user.id):
         if command != "clear":
             await record_command_update(update, context.bot)
 

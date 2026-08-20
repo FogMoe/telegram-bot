@@ -1,9 +1,11 @@
-import asyncio
 from core import mysql_connection, process_user
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes
+import logging
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 from core.command_cooldown import cooldown
 
+
+logger = logging.getLogger(__name__)
 # 任务ID
 TASK_ID_CHECK_GROUP1 = 1  # 任务1：加入 @ScarletKc_Group 群组
 TASK_ID_CHECK_GROUP2 = 2  # 任务2：加入 @FOG_MOE 群组
@@ -54,8 +56,8 @@ async def task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "task_close":
         try:
             await query.delete_message()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("关闭任务消息失败: %s", exc)
         return
 
     # 根据不同任务设置相应参数
@@ -107,3 +109,10 @@ async def task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(f"恭喜您完成任务，获得 {reward_coins} 个硬币奖励！", show_alert=True)
     except Exception:
         await query.answer("发放奖励时出现错误，请稍后再试。", show_alert=True)
+
+
+def setup_task_handlers(application) -> None:
+    """注册任务系统的命令与回调。"""
+
+    application.add_handler(CommandHandler("task", task_command))
+    application.add_handler(CallbackQueryHandler(task_callback, pattern=r"^task_"))

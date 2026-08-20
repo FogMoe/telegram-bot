@@ -30,7 +30,8 @@ from .monsters import (
 )
 
 from .commands import (
-    rpg_command_handler
+    rpg_command_handler,
+    setup_rpg_handlers
 )
 
 # 导入装备和道具系统
@@ -58,6 +59,7 @@ from .equipment import (
 __all__ = [
     # 核心功能
     'rpg_command_handler',
+    'setup_rpg_handlers',
     
     # 角色系统
     'get_character',

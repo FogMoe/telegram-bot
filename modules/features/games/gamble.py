@@ -3,9 +3,12 @@ import random
 from core import mysql_connection, process_user
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ContextTypes
+import logging
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 from core.command_cooldown import cooldown
 
+
+logger = logging.getLogger(__name__)
 # 全局变量保存当前赌博局数据（同一时间只允许一局）
 gamble_game = None
 gamble_lock = asyncio.Lock()
@@ -121,8 +124,8 @@ async def gamble_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_id=gamble_game["message_id"],
                 reply_markup=gamble_game["reply_markup"]
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("更新押注面板失败: %s", exc)
 
     await query.answer(f"成功押注 {bet_value} 金币，等待开奖", show_alert=True)
 
@@ -169,8 +172,15 @@ async def gamble_finish(context: ContextTypes.DEFAULT_TYPE):
                 chat_id=chat_id,
                 message_id=message_id
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("更新开奖结果失败: %s", exc)
 
         # 清空当前赌博局数据
         gamble_game = None
+
+
+def setup_gamble_handlers(application) -> None:
+    """注册赌博玩法的命令与回调。"""
+
+    application.add_handler(CommandHandler("gamble", gamble_command))
+    application.add_handler(CallbackQueryHandler(gamble_callback, pattern=r"^gamble_"))

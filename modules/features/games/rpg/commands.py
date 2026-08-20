@@ -1,6 +1,6 @@
 import logging
 from telegram import Update
-from telegram.ext import ContextTypes
+from telegram.ext import CommandHandler, ContextTypes
 from telegram.constants import ParseMode
 
 from core.command_cooldown import cooldown
@@ -14,12 +14,9 @@ from .equipment import (
     get_player_equipment, 
     equip_item, 
     unequip_item, 
-    get_equipment_details,
     equipment_type_to_chinese,
     get_player_inventory,
     get_item_details,
-    add_item_to_inventory,
-    remove_item_from_inventory,
     use_item,
     item_type_to_chinese,
     INVENTORY_CAPACITY
@@ -190,7 +187,6 @@ async def handle_equipment_command(update: Update, context: ContextTypes.DEFAULT
         equipped_text = []
         for slot in ['weapon', 'offhand', 'armor', 'treasure1', 'treasure2']:
             slot_name = equipment_type_to_chinese(slot)
-            item_id = equipment[f"{slot}_id"]
             item_name = equipment[f"{slot}_name"] or "无"
             equipped_text.append(f"{slot_name}: {item_name}")
             
@@ -316,3 +312,9 @@ async def handle_inventory_command(update: Update, context: ContextTypes.DEFAULT
         "`/rpg item [道具ID]` - 查看道具详情\n" +
         "`/rpg item use [道具ID]` - 使用道具"
     , parse_mode=ParseMode.MARKDOWN) 
+
+
+def setup_rpg_handlers(application) -> None:
+    """注册 RPG 入口命令。"""
+
+    application.add_handler(CommandHandler("rpg", rpg_command_handler))

@@ -12,8 +12,7 @@ from core.telegram_history import suppress_telegram_history, telegram_history_sc
 from core.telegram_utils import partial_send
 from features.ai import ai_chat, summary
 from features.ai.conversation_locks import get_conversation_lock
-from features.ai.generated_audio_sender import send_generated_audio_from_tool_logs
-from features.ai.generated_image_sender import send_generated_images_from_tool_logs
+from features.ai.outbound import send_generated_media
 from features.ai.reply_filter import normalize_ai_reply_text
 from features.ai.schedule_limits import (
     DAILY_SCHEDULE_TRIGGER_LIMIT,
@@ -392,23 +391,14 @@ async def _process_schedule_task_locked(
                         logger=logger,
                     )
                 )
-        with suppress_telegram_history():
-            sent_messages.extend(
-                await send_generated_audio_from_tool_logs(
-                    bot=context.bot,
-                    chat_id=user_id,
-                    tool_logs=tool_logs,
-                    logger=logger,
-                )
+        sent_messages.extend(
+            await send_generated_media(
+                bot=context.bot,
+                chat_id=user_id,
+                tool_logs=tool_logs,
+                logger=logger,
             )
-            sent_messages.extend(
-                await send_generated_images_from_tool_logs(
-                    bot=context.bot,
-                    chat_id=user_id,
-                    tool_logs=tool_logs,
-                    logger=logger,
-                )
-            )
+        )
         if not sent_messages and not assistant_message.strip():
             tool_log_types = [
                 str(tool_log.get("type", "tool_result"))
@@ -448,3 +438,13 @@ async def run_ai_schedule_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             return
         for task in tasks:
             await _process_schedule_task(task, context)
+
+
+def setup_schedule_jobs(application) -> None:
+    """注册 AI 定时任务轮询。"""
+
+    application.job_queue.run_repeating(
+        run_ai_schedule_job,
+        interval=SCHEDULE_POLL_INTERVAL,
+        first=5,
+    )

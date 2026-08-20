@@ -4,7 +4,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from telegram import Bot, Update
-from telegram.ext import ContextTypes
+from telegram.ext import CommandHandler, ContextTypes
 
 from core import config
 from core.telegram_utils import safe_send_markdown, partial_send
@@ -89,3 +89,10 @@ async def stop_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("BTCUSDT事件合约价格模式监控已停止")
     else:
         await update.message.reply_text("BTCUSDT事件合约价格模式监控未运行")
+
+
+def setup_monitor_handlers(application) -> None:
+    """注册管理员用的行情监控开关。"""
+
+    application.add_handler(CommandHandler("start_test_monitor", start_monitor))
+    application.add_handler(CommandHandler("stop_test_monitor", stop_monitor))

@@ -15,9 +15,13 @@
 
 ## 背景
 
-当前项目已经支持多个 AI 服务，包括 Gemini、Z.ai 和 Azure OpenAI。主聊天路径通过 `router.py` 根据 `AI_SERVICE_ORDER` 依次尝试不同 provider，但 summary、翻译、图片分析、群聊触发判断等子模块仍然直接绑定某个具体 provider。
+> 以下「背景」「当前痛点」两节记录的是本次重构**之前**的状态，保留下来说明设计动机。
+> 当前实现见上文「当前实现状态」：summary、translate、vision、classifier 都已走
+> `run_ai_task()`，不再绑定具体 provider。
 
-这导致一个实际问题：如果希望把 OpenAI 作为主 provider，并逐步放弃 Gemini，不能只改一个主聊天配置。summary 仍然硬编码 Gemini，翻译、vision、classifier 仍然硬编码 Z.ai。每次切换 provider 都需要逐个追踪业务模块，容易遗漏，也容易把 provider 差异扩散到业务代码里。
+当时项目已经支持多个 AI 服务，包括 Gemini、Z.ai 和 Azure OpenAI。主聊天路径通过 `router.py` 根据 `AI_SERVICE_ORDER` 依次尝试不同 provider，但 summary、翻译、图片分析、群聊触发判断等子模块直接绑定某个具体 provider。
+
+这导致一个实际问题：如果希望把 OpenAI 作为主 provider，并逐步放弃 Gemini，不能只改一个主聊天配置。summary 硬编码 Gemini，翻译、vision、classifier 硬编码 Z.ai。每次切换 provider 都需要逐个追踪业务模块，容易遗漏，也容易把 provider 差异扩散到业务代码里。
 
 ## 目标
 

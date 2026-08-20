@@ -1,34 +1,19 @@
-from telegram import Update
-from telegram.ext import (
-    CallbackQueryHandler,
-    ChatMemberHandler,
-    CommandHandler,
-    MessageHandler,
-    TypeHandler,
-    filters,
-)
+"""按功能分组的注册步骤。
 
-from core.bot_commands import (
-    admin_announce,
-    clear_command,
-    error_handler,
-    github_command,
-    give_command,
-    help_command,
-    lottery_command,
-    me,
-    my_chat_member_handler,
-    rich_command,
-    setmyinfo_command,
-    start,
-    tl_command,
-)
-from core.bot_conversation import reply
-from core.bot_monitoring import start_monitor, stop_monitor
-from core.telegram_history import prepare_update_history
+这一层只决定注册顺序，不实现业务：每个功能自己提供 `setup_*` 注册函数。
+少数命令仍在这里直接 `add_handler`，因为它们的注册顺序在历史上是跨功能
+交错的，而 `tests/test_handler_registry.py` 把最终顺序当作契约。
+"""
+
+from telegram.ext import CommandHandler
+
 from features.admin import developer
-from features.ai import idle_followup, scheduler
-from features.crypto import chart, crypto_predict, swap_fogmoe_solana_token
+from features.admin.announce import admin_announce
+from features.ai import idle_followup, scheduler, translate_handlers
+from features.conversation import handlers as conversation
+from features.conversation import history_hooks
+from features.conversation.clear import clear_command
+from features.crypto import chart, crypto_predict, monitoring, swap_fogmoe_solana_token
 from features.economy import (
     bribe,
     charge_coin,
@@ -39,9 +24,13 @@ from features.economy import (
     task,
     web_password,
 )
+from features.economy.coins import give_command, lottery_command, rich_command
 from features.games import gamble, omikuji, rockpaperscissors_game, rpg, sicbo
 from features.media import music, pic
 from features.moderation import keyword_handler, member_verify, report, spam_control
+from features.profile import handlers as profile
+
+from .error_handler import error_handler
 
 
 def register_error_handlers(application) -> None:
@@ -49,71 +38,43 @@ def register_error_handlers(application) -> None:
 
 
 def register_history_handlers(application) -> None:
-    application.add_handler(TypeHandler(Update, prepare_update_history), group=-100)
+    history_hooks.setup_history_handlers(application)
 
 
 def register_conversation_handlers(application) -> None:
-    application.add_handler(CommandHandler("fogmoebot", reply))
-    application.add_handler(
-        MessageHandler(
-            (filters.TEXT | filters.PHOTO | filters.Sticker.ALL)
-            & ~filters.COMMAND
-            & ~filters.VIA_BOT
-            & (filters.UpdateType.MESSAGE | filters.UpdateType.EDITED_MESSAGE),
-            reply,
-        )
-    )
+    conversation.setup_conversation_handlers(application)
 
 
 def register_core_command_handlers(application) -> None:
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("me", me))
+    application.add_handler(CommandHandler("start", profile.start))
+    application.add_handler(CommandHandler("me", profile.me))
     application.add_handler(CommandHandler("lottery", lottery_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("github", github_command))
+    application.add_handler(CommandHandler("help", profile.help_command))
+    application.add_handler(CommandHandler("github", profile.github_command))
     application.add_handler(CommandHandler("clear", clear_command))
     application.add_handler(CommandHandler("admin_announce", admin_announce))
-    application.add_handler(CommandHandler("setmyinfo", setmyinfo_command))
+    application.add_handler(CommandHandler("setmyinfo", profile.setmyinfo_command))
     application.add_handler(CommandHandler("give", give_command))
     bribe.setup_bribe_command(application)
 
 
 def register_monitoring_handlers(application) -> None:
-    application.add_handler(CommandHandler("start_test_monitor", start_monitor))
-    application.add_handler(CommandHandler("stop_test_monitor", stop_monitor))
+    monitoring.setup_monitor_handlers(application)
 
 
 def register_interactive_feature_handlers(application) -> None:
     # 内联翻译暂时禁用。
-    # application.add_handler(InlineQueryHandler(inline_translate))
+    # application.add_handler(InlineQueryHandler(translate_handlers.inline_translate))
 
-    application.add_handler(CommandHandler("gamble", gamble.gamble_command))
-    application.add_handler(
-        CallbackQueryHandler(gamble.gamble_callback, pattern=r"^gamble_")
-    )
-
-    application.add_handler(CommandHandler("shop", shop.shop_command))
-    application.add_handler(CallbackQueryHandler(shop.shop_callback, pattern=r"^shop_"))
-    application.job_queue.run_repeating(
-        shop.cleanup_message_records_job,
-        interval=3600,
-        first=10,
-    )
-
-    application.add_handler(CommandHandler("task", task.task_command))
-    application.add_handler(CallbackQueryHandler(task.task_callback, pattern=r"^task_"))
-
+    gamble.setup_gamble_handlers(application)
+    shop.setup_shop_handlers(application)
+    task.setup_task_handlers(application)
     application.add_handler(CommandHandler("rich", rich_command))
 
 
 def register_membership_handlers(application) -> None:
     member_verify.setup_member_verification(application)
-    application.add_handler(
-        ChatMemberHandler(
-            my_chat_member_handler,
-            chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER,
-        )
-    )
+    profile.setup_membership_handlers(application)
 
 
 def register_staking_and_crypto_handlers(application) -> None:
@@ -123,7 +84,7 @@ def register_staking_and_crypto_handlers(application) -> None:
 
 
 def register_translation_handlers(application) -> None:
-    application.add_handler(CommandHandler("tl", tl_command))
+    translate_handlers.setup_translation_handlers(application)
 
 
 def register_moderation_handlers(application) -> None:
@@ -158,7 +119,7 @@ def register_media_and_chart_handlers(application) -> None:
 
 
 def register_rpg_handlers(application) -> None:
-    application.add_handler(CommandHandler("rpg", rpg.rpg_command_handler))
+    rpg.setup_rpg_handlers(application)
 
 
 def register_admin_handlers(application) -> None:
@@ -167,13 +128,5 @@ def register_admin_handlers(application) -> None:
 
 
 def register_ai_jobs(application) -> None:
-    application.job_queue.run_repeating(
-        scheduler.run_ai_schedule_job,
-        interval=scheduler.SCHEDULE_POLL_INTERVAL,
-        first=5,
-    )
-    application.job_queue.run_repeating(
-        idle_followup.run_idle_followup_job,
-        interval=idle_followup.IDLE_FOLLOWUP_POLL_INTERVAL,
-        first=15,
-    )
+    scheduler.setup_schedule_jobs(application)
+    idle_followup.setup_idle_followup_jobs(application)

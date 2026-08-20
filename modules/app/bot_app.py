@@ -4,7 +4,7 @@ from telegram.ext import ApplicationBuilder
 from telegram.request import HTTPXRequest
 
 from core import config
-from core.bot_conversation import post_init
+from features.conversation.lifecycle import post_init
 from core.telegram_history import HistoryTrackingExtBot, flush_all_pending_events
 
 from .handler_registry import register_handlers

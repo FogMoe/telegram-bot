@@ -1,20 +1,20 @@
 import asyncio
 import base64
-import json
 import logging
 import time
-from collections import OrderedDict, deque
-from dataclasses import dataclass, field
 
-import telegram
 from telegram import Update
-from telegram.ext import ContextTypes
+from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
 
-from core import config, db, group_chat_history, mysql_connection, process_user, stake_reward_pool
-from core.archive_utils import send_permanent_records_archive
-from core.prompt_utils import (
-    format_user_state_prompt,
+from core import (
+    config,
+    group_chat_history,
+    mysql_connection,
+    process_user,
+    stake_reward_pool,
 )
+from core.archive_utils import send_permanent_records_archive
+from core.prompt_utils import format_user_state_prompt
 from core.telegram_history import (
     capture_telegram_history_events,
     format_user_message as _format_xml_message,
@@ -23,61 +23,26 @@ from core.telegram_history import (
     suppress_telegram_history,
     telegram_history_scope,
 )
-from core.telegram_utils import (
-    describe_forward_for_context,
-    describe_message_for_context,
-    partial_send,
-    safe_send_markdown,
-)
+from core.telegram_utils import partial_send, safe_send_markdown
 from features.ai import ai_chat, idle_followup, summary
 from features.ai.conversation_locks import get_conversation_lock
-from features.ai.generated_audio_sender import send_generated_audio_from_tool_logs
-from features.ai.generated_image_sender import send_generated_images_from_tool_logs
+from features.ai.outbound import send_generated_media
 from features.ai.reply_filter import normalize_ai_reply_text
-from features.ai.sticker_sender import normalize_sticker_directives, send_ai_reply_with_stickers
+from features.ai.sticker_sender import (
+    normalize_sticker_directives,
+    send_ai_reply_with_stickers,
+)
 from features.ai.telegram_visible_sender import TelegramVisibleContentHandler
-from features.ai.task_runner import run_ai_task
 from features.ai.tool_history import (
     tool_logs_completed_clear,
     tool_logs_to_record_entries,
 )
 
+from . import batching, lifecycle, messages, triggers
+from .history_hooks import handle_history_overflow
+
 logger = logging.getLogger(__name__)
-
-
-_BOT_ID: int | None = None
-_BOT_USERNAME: str = "FogMoeBot"
 MAX_MEDIA_DOWNLOAD_BYTES = 8 * 1024 * 1024
-
-
-@dataclass
-class _QueuedUpdate:
-    update: Update
-    context: ContextTypes.DEFAULT_TYPE
-
-
-@dataclass
-class _MessageBatch:
-    items: list[_QueuedUpdate] = field(default_factory=list)
-    future: asyncio.Future | None = None
-
-
-_MESSAGE_BATCHES: dict[tuple[int, int], _MessageBatch] = {}
-_MESSAGE_BATCHES_LOCK = asyncio.Lock()
-_MESSAGE_CONTENT_FINGERPRINT_LIMIT = 4096
-_MESSAGE_CONTENT_FINGERPRINTS: OrderedDict[
-    tuple[int, int],
-    tuple[str, str, tuple[str, ...], str, str],
-] = OrderedDict()
-
-
-def _consume_batch_future_exception(future: asyncio.Future) -> None:
-    if future.cancelled():
-        return
-    try:
-        future.exception()
-    except Exception:
-        return
 
 
 async def _archive_completed_clear_turn(
@@ -120,313 +85,11 @@ async def _archive_completed_clear_turn(
     summary.schedule_summary_generation(conversation_id)
 
 
-def _cache_bot_identity(bot_user: telegram.User) -> None:
-    """Cache bot identity globally and notify group history module."""
-    global _BOT_ID, _BOT_USERNAME
-    _BOT_ID = bot_user.id
-    _BOT_USERNAME = bot_user.username or "FogMoeBot"
-    group_chat_history.set_bot_identity(_BOT_ID, _BOT_USERNAME)
-
-
-async def _refresh_bot_identity(bot, *, source: str) -> bool:
-    try:
-        bot_user = await bot.get_me()
-    except telegram.error.NetworkError as exc:
-        logger.warning(
-            "Unable to fetch bot identity during %s; will retry later: %r",
-            source,
-            exc,
-        )
-        return False
-    _cache_bot_identity(bot_user)
-    return True
-
-
-async def post_init(application) -> None:
-    main_loop = asyncio.get_running_loop()
-    db.set_main_loop(main_loop)
-    from features.ai.telegram_command_executor import (
-        configure_telegram_command_executor,
-    )
-
-    configure_telegram_command_executor(application, main_loop)
-    await _refresh_bot_identity(application.bot, source="post_init")
-
-
-class RateLimiter:
-    def __init__(self, max_calls: int, time_window: float):
-        self.max_calls = max_calls
-        self.time_window = time_window
-        self.calls = deque()
-
-    def consume(self) -> bool:
-        now = time.time()
-        while self.calls and now - self.calls[0] > self.time_window:
-            self.calls.popleft()
-        if len(self.calls) < self.max_calls:
-            self.calls.append(now)
-            return True
-        return False
-
-
-_classifier_allowance = RateLimiter(max_calls=10, time_window=60.0)
-
-
 # 添加一个帮助函数来获取实际的消息对象
-def get_effective_message(update: Update):
-    """获取有效的消息对象，无论是普通消息还是编辑后的消息"""
-    return update.message or update.edited_message
-
-
-def _media_file_identifier(value) -> str:
-    if value is None:
-        return ""
-    return str(
-        getattr(value, "file_unique_id", None)
-        or getattr(value, "file_id", None)
-        or ""
-    )
-
-
-def _message_content_fingerprint(message) -> tuple[str, str, tuple[str, ...], str, str]:
-    photo_ids = tuple(
-        _media_file_identifier(photo)
-        for photo in (getattr(message, "photo", None) or ())
-    )
-    sticker = getattr(message, "sticker", None)
-    return (
-        str(getattr(message, "text", None) or ""),
-        str(getattr(message, "caption", None) or ""),
-        photo_ids,
-        _media_file_identifier(sticker),
-        str(getattr(sticker, "emoji", None) or ""),
-    )
-
-
-def _record_message_content_and_check_unchanged_edit(update: Update) -> bool:
-    message = get_effective_message(update)
-    chat = update.effective_chat
-    message_id = getattr(message, "message_id", None) if message else None
-    if not message or not chat or message_id is None:
-        return False
-
-    key = (chat.id, message_id)
-    fingerprint = _message_content_fingerprint(message)
-    previous_fingerprint = _MESSAGE_CONTENT_FINGERPRINTS.get(key)
-    _MESSAGE_CONTENT_FINGERPRINTS[key] = fingerprint
-    _MESSAGE_CONTENT_FINGERPRINTS.move_to_end(key)
-    while len(_MESSAGE_CONTENT_FINGERPRINTS) > _MESSAGE_CONTENT_FINGERPRINT_LIMIT:
-        _MESSAGE_CONTENT_FINGERPRINTS.popitem(last=False)
-
-    return (
-        update.edited_message is message
-        and previous_fingerprint is not None
-        and previous_fingerprint == fingerprint
-    )
-
-
-def _format_message_timestamp(value) -> str | None:
-    if not value:
-        return None
-    if hasattr(value, "strftime"):
-        return value.strftime('%Y-%m-%d %H:%M:%S')
-    return str(value)
-
-
-def _media_mime_type(media_type: str, effective_message) -> str | None:
-    if media_type == "photo":
-        return "image/jpeg"
-    if media_type == "sticker":
-        sticker = effective_message.sticker
-        if getattr(sticker, "is_animated", False) or getattr(sticker, "is_video", False):
-            return None
-        return "image/webp"
-    return None
-
-
-def _build_reply_format_kwargs(reply_message) -> dict[str, str | None]:
-    description = describe_message_for_context(reply_message)
-    quoted_user = (
-        getattr(getattr(reply_message, "from_user", None), "username", None)
-        or "EmptyUsername"
-    )
-
-    if description.get("type") == "text":
-        return {
-            "reply_user": quoted_user,
-            "reply_text": description.get("text") or "",
-        }
-
-    return {
-        "reply_user": quoted_user,
-        "reply_type": description.get("type") or "other",
-        "reply_caption": description.get("caption"),
-        "reply_summary": description.get("summary"),
-        "reply_emoji": description.get("emoji"),
-    }
-
-
-def _build_forward_format_kwargs(message) -> dict[str, str | None]:
-    description = describe_forward_for_context(message)
-    if not description:
-        return {}
-    return {
-        "forward_type": description.get("type"),
-        "forward_origin_timestamp": description.get("origin_timestamp"),
-        "forward_user": description.get("user"),
-        "forward_name": description.get("name"),
-        "forward_chat": description.get("chat"),
-        "forward_message_id": description.get("message_id"),
-        "forward_author_signature": description.get("author_signature"),
-    }
-
-
-def _build_multimodal_user_message(
-    formatted_message: str,
-    *,
-    base64_str: str,
-    mime_type: str | None,
-) -> dict | None:
-    if not mime_type:
-        return None
-    return {
-        "role": "user",
-        "content": [
-            {
-                "type": "text",
-                "text": formatted_message,
-            },
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:{mime_type};base64,{base64_str}",
-                },
-            },
-        ],
-    }
-
-
-def _replace_user_messages_for_ai(
-    messages: list,
-    replacements: list[tuple[str, dict]],
-) -> list:
-    if not replacements:
-        return list(messages)
-
-    messages_for_ai = list(messages)
-    search_end = len(messages_for_ai) - 1
-    for persisted_content, runtime_message in reversed(replacements):
-        for index in range(search_end, -1, -1):
-            message = messages_for_ai[index]
-            if not isinstance(message, dict):
-                continue
-            if (
-                message.get("role") == "user"
-                and message.get("content") == persisted_content
-            ):
-                messages_for_ai[index] = runtime_message
-                search_end = index - 1
-                break
-
-    return messages_for_ai
-
-
-async def should_trigger_ai_response(message_text: str) -> bool:
-    """
-    使用配置的 classifier AI 模型判断群聊消息是否需要调用主 AI 回复。
-    仅返回布尔结果，出现异常时默认不触发回复。
-    """
-    if not message_text:
-        return False
-
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        None,
-        lambda: _sync_should_trigger_ai_response(message_text)
-    )
-
-
-def _sync_should_trigger_ai_response(message_text: str) -> bool:
-    if not _classifier_allowance.consume():
-        logging.debug("AI classifier rate limiter blocked a request.")
-        return False
-    try:
-        response = run_ai_task(
-            "classifier",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "你是一个简洁的分类器。判断给定消息是否需要雾萌娘机器人主动回复。"
-                        "仅在遇到相关问题必要时才回复，例如和AI聊天、寻求帮助、提问或请求信息等。"
-                        "如果需要回复，请只回答 YES；如果不需要，请只回答 NO。"
-                        "不要输出任何额外解释。"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": message_text,
-                },
-            ],
-        )
-        content = response.choices[0].message.content.strip().lower()
-        return content.startswith("yes") or content.startswith("是")
-    except Exception as exc:
-        logging.error("AI 检测是否应回复失败: %s", exc)
-        return False
-
-
-def _message_trigger_text(message) -> str:
-    parts = []
-    text = getattr(message, "text", None)
-    caption = getattr(message, "caption", None)
-    if text:
-        parts.append(str(text))
-    if caption:
-        parts.append(str(caption))
-    return "\n".join(parts)
-
-
-def _direct_trigger_phrases() -> list[str]:
-    trigger_phrases = [
-        str(trigger).strip().lower()
-        for trigger in config.AI_DIRECT_TRIGGER_PHRASES
-        if str(trigger).strip()
-    ]
-    bot_username = (_BOT_USERNAME or "FogMoeBot").strip().lower()
-    if bot_username:
-        trigger_phrases.append(f"@{bot_username}")
-    return trigger_phrases
-
-
-def _message_contains_direct_ai_trigger(message) -> bool:
-    message_text = _message_trigger_text(message)
-    if not message_text:
-        return False
-
-    normalized_text = message_text.lower()
-    return any(trigger in normalized_text for trigger in _direct_trigger_phrases())
-
-
-def _message_batch_key(update: Update) -> tuple[int, int] | None:
-    chat = update.effective_chat
-    user = update.effective_user
-    if not chat or not user:
-        return None
-    return (chat.id, user.id)
-
-
-def _batch_item_sort_key(item_and_message) -> tuple[float, int, int]:
-    item, message = item_and_message
-    message_date = getattr(message, "date", None)
-    timestamp = message_date.timestamp() if message_date else 0.0
-    message_id = getattr(message, "message_id", 0) or 0
-    update_id = getattr(item.update, "update_id", 0) or 0
-    return (timestamp, message_id, update_id)
 
 
 async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if _record_message_content_and_check_unchanged_edit(update):
+    if messages._record_message_content_and_check_unchanged_edit(update):
         logger.debug(
             "Ignoring edited message with unchanged AI-visible content: chat_id=%s message_id=%s update_id=%s",
             getattr(update.effective_chat, "id", None),
@@ -442,7 +105,7 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     ):
         await idle_followup.note_incoming_private_message(update.effective_user.id)
 
-    batch_key = _message_batch_key(update)
+    batch_key = batching._message_batch_key(update)
     if not batch_key:
         await _reply_unlocked(update, context)
         return
@@ -453,23 +116,23 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     loop = asyncio.get_running_loop()
     is_owner = False
-    async with _MESSAGE_BATCHES_LOCK:
-        batch = _MESSAGE_BATCHES.get(batch_key)
+    async with batching._MESSAGE_BATCHES_LOCK:
+        batch = batching._MESSAGE_BATCHES.get(batch_key)
         if batch is None:
             future = loop.create_future()
-            future.add_done_callback(_consume_batch_future_exception)
-            batch = _MessageBatch(future=future)
-            _MESSAGE_BATCHES[batch_key] = batch
+            future.add_done_callback(batching._consume_batch_future_exception)
+            batch = batching._MessageBatch(future=future)
+            batching._MESSAGE_BATCHES[batch_key] = batch
             is_owner = True
-        batch.items.append(_QueuedUpdate(update=update, context=context))
+        batch.items.append(batching._QueuedUpdate(update=update, context=context))
         future = batch.future
 
     if is_owner:
         ready_batch = None
         try:
             await asyncio.sleep(config.CHAT_BATCH_WINDOW_SECONDS)
-            async with _MESSAGE_BATCHES_LOCK:
-                ready_batch = _MESSAGE_BATCHES.pop(batch_key, batch)
+            async with batching._MESSAGE_BATCHES_LOCK:
+                ready_batch = batching._MESSAGE_BATCHES.pop(batch_key, batch)
 
             async with get_conversation_lock(batch_key[1]):
                 await _reply_batch_unlocked(ready_batch.items)
@@ -481,9 +144,9 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 future.set_exception(exc)
             raise
         finally:
-            async with _MESSAGE_BATCHES_LOCK:
-                if _MESSAGE_BATCHES.get(batch_key) is batch:
-                    _MESSAGE_BATCHES.pop(batch_key, None)
+            async with batching._MESSAGE_BATCHES_LOCK:
+                if batching._MESSAGE_BATCHES.get(batch_key) is batch:
+                    batching._MESSAGE_BATCHES.pop(batch_key, None)
         return
 
     if future:
@@ -491,16 +154,16 @@ async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _reply_unlocked(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _reply_batch_unlocked([_QueuedUpdate(update=update, context=context)])
+    await _reply_batch_unlocked([batching._QueuedUpdate(update=update, context=context)])
 
 
-async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
+async def _reply_batch_unlocked(batch_items: list[batching._QueuedUpdate]) -> None:
     if not batch_items:
         return
 
     valid_items = []
     for item in batch_items:
-        message = get_effective_message(item.update)
+        message = messages.get_effective_message(item.update)
         if not message:
             logging.warning("收到无效的消息更新，忽略处理")
             continue
@@ -508,7 +171,7 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
 
     if not valid_items:
         return
-    valid_items.sort(key=_batch_item_sort_key)
+    valid_items.sort(key=batching._batch_item_sort_key)
 
     update = valid_items[-1][0].update
     context = valid_items[-1][0].context
@@ -519,8 +182,11 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
 
     # 如果聊天是群组，则只对包含触发词时进行回复，
     if update.effective_chat.type in ("group", "supergroup"):
-        if _BOT_ID is None:
-            await _refresh_bot_identity(context.bot, source="group message handling")
+        if lifecycle._BOT_ID is None:
+            await lifecycle._refresh_bot_identity(
+                context.bot,
+                source="group message handling",
+            )
         # 记录群聊上下文
         should_process_group_batch = False
         for _, message in valid_items:
@@ -536,13 +202,13 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
             )
             if (
                 message.reply_to_message
-                and _BOT_ID is not None
-                and reply_from_user == _BOT_ID
+                and lifecycle._BOT_ID is not None
+                and reply_from_user == lifecycle._BOT_ID
             ):
                 should_process_group_batch = True
                 continue
 
-            if _message_contains_direct_ai_trigger(message):
+            if triggers.message_contains_direct_ai_trigger(message):
                 should_process_group_batch = True
 
         if not should_process_group_batch:
@@ -597,13 +263,28 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
     async def handle_overflow_summary(level: str | None) -> None:
         if level != "overflow":
             return
-        summary_text = await summary.generate_summary_immediately(conversation_id)
-        if summary_text:
-            await mysql_connection.async_update_latest_history_state_summary(
-                conversation_id,
-                summary_text,
+        await handle_history_overflow(conversation_id)
+
+    async def persist_records(insert_result, *, announce: bool = False) -> None:
+        """统一处理一次历史写入的收尾：归档、容量提示与摘要调度。
+
+        announce=True 时立即把容量提示发给用户，否则先记下、由本轮末尾统一提示。
+        """
+
+        snapshot_created, warning_level, archived_records = insert_result
+        if archived_records:
+            await send_permanent_records_archive(
+                context.bot,
+                user_id,
+                archived_records,
+                logger=logger,
             )
+        if announce:
+            await notify_history_warning(warning_level)
         else:
+            remember_history_warning(warning_level)
+        await handle_overflow_summary(warning_level)
+        if snapshot_created and warning_level != "overflow":
             summary.schedule_summary_generation(conversation_id)
 
     message_jobs = []
@@ -729,7 +410,7 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
 
     for job in message_jobs:
         message = job["message"]
-        current_message_time = _format_message_timestamp(message.date) or time.strftime(
+        current_message_time = messages._format_message_timestamp(message.date) or time.strftime(
             '%Y-%m-%d %H:%M:%S'
         )
         is_edited = bool(job.get("is_edited"))
@@ -737,7 +418,7 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
             "message_id": getattr(message, "message_id", None),
             "edited": is_edited,
             "edited_at": (
-                _format_message_timestamp(getattr(message, "edit_date", None))
+                messages._format_message_timestamp(getattr(message, "edit_date", None))
                 if is_edited
                 else None
             ),
@@ -750,9 +431,9 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
                     "command": command,
                 }
             )
-        forward_kwargs = _build_forward_format_kwargs(message)
+        forward_kwargs = messages._build_forward_format_kwargs(message)
         reply_kwargs = (
-            _build_reply_format_kwargs(message.reply_to_message)
+            messages._build_reply_format_kwargs(message.reply_to_message)
             if message.reply_to_message
             else {}
         )
@@ -821,10 +502,10 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
                     media_type=media_type,
                     media_emoji=media_emoji,
                 )
-                runtime_user_message = _build_multimodal_user_message(
+                runtime_user_message = messages._build_multimodal_user_message(
                     runtime_formatted_message,
                     base64_str=base64_str,
-                    mime_type=_media_mime_type(media_type, message),
+                    mime_type=messages._media_mime_type(media_type, message),
                 )
                 if runtime_user_message:
                     runtime_replacements.append(
@@ -856,31 +537,21 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
 
     if user_record_entries:
         # /fogmoebot 已由统一命令观察器写入；其他消息在这里批量写入。
-        user_snapshot_created, user_storage_warning, user_archived_records = await mysql_connection.async_insert_chat_records(
-            conversation_id,
-            user_record_entries,
-            system_prompt_extra=user_state_prompt,
-            allow_zero_balance=True,
-        )
-        if user_archived_records:
-            await send_permanent_records_archive(
-                context.bot,
-                user_id,
-                user_archived_records,
-                logger=logger,
+        await persist_records(
+            await mysql_connection.async_insert_chat_records(
+                conversation_id,
+                user_record_entries,
+                system_prompt_extra=user_state_prompt,
+                allow_zero_balance=True,
             )
-        if user_storage_warning:
-            remember_history_warning(user_storage_warning)
-        await handle_overflow_summary(user_storage_warning)
-        if user_snapshot_created and user_storage_warning != "overflow":
-            summary.schedule_summary_generation(conversation_id)
+        )
     if update.effective_chat.type == "private":
         await idle_followup.arm_from_private_turn(user_id)
 
     # 立即获取最新历史记录，以便AI能看到刚刚插入的消息
     chat_history = await mysql_connection.async_get_chat_history(conversation_id)
 
-    chat_history_for_ai = _replace_user_messages_for_ai(
+    chat_history_for_ai = messages._replace_user_messages_for_ai(
         chat_history,
         runtime_replacements,
     )
@@ -942,48 +613,24 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
     completed_clear = tool_logs_completed_clear(tool_logs)
 
     if tool_record_entries and not completed_clear:
-        tool_snapshot_created, tool_storage_warning, tool_archived_records = await mysql_connection.async_insert_chat_records(
-            conversation_id,
-            tool_record_entries,
-            allow_zero_balance=True,
-        )
-        if tool_archived_records:
-            await send_permanent_records_archive(
-                context.bot,
-                user_id,
-                tool_archived_records,
-                logger=logger,
+        await persist_records(
+            await mysql_connection.async_insert_chat_records(
+                conversation_id,
+                tool_record_entries,
+                allow_zero_balance=True,
             )
-        if tool_storage_warning:
-            remember_history_warning(tool_storage_warning)
-        await handle_overflow_summary(tool_storage_warning)
-        if tool_snapshot_created and tool_storage_warning != "overflow":
-            summary.schedule_summary_generation(conversation_id)
+        )
 
     if assistant_message.strip() and not runtime_error and not completed_clear:
         # 异步插入AI回复到聊天记录
-        (
-            assistant_snapshot_created,
-            assistant_storage_warning,
-            assistant_archived_records,
-        ) = await mysql_connection.async_insert_chat_record(
-            conversation_id,
-            "assistant",
-            assistant_message,
-            allow_zero_balance=True,
-        )
-        if assistant_archived_records:
-            await send_permanent_records_archive(
-                context.bot,
-                user_id,
-                assistant_archived_records,
-                logger=logger,
+        await persist_records(
+            await mysql_connection.async_insert_chat_record(
+                conversation_id,
+                "assistant",
+                assistant_message,
+                allow_zero_balance=True,
             )
-        if assistant_storage_warning:
-            remember_history_warning(assistant_storage_warning)
-        await handle_overflow_summary(assistant_storage_warning)
-        if assistant_snapshot_created and assistant_storage_warning != "overflow":
-            summary.schedule_summary_generation(conversation_id)
+        )
 
     if pending_history_warning:
         await notify_history_warning(pending_history_warning)
@@ -1022,23 +669,14 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
                 for sent_message in reply_messages
                 if (message_id := getattr(sent_message, "message_id", None)) is not None
             )
-    with suppress_telegram_history():
-        sent_messages.extend(
-            await send_generated_audio_from_tool_logs(
-                bot=context.bot,
-                chat_id=update.effective_chat.id,
-                tool_logs=tool_logs,
-                logger=logger,
-            )
+    sent_messages.extend(
+        await send_generated_media(
+            bot=context.bot,
+            chat_id=update.effective_chat.id,
+            tool_logs=tool_logs,
+            logger=logger,
         )
-        sent_messages.extend(
-            await send_generated_images_from_tool_logs(
-                bot=context.bot,
-                chat_id=update.effective_chat.id,
-                tool_logs=tool_logs,
-                logger=logger,
-            )
-        )
+    )
     if not sent_messages and not assistant_message.strip():
         tool_log_types = [
             str(tool_log.get("type", "tool_result"))
@@ -1072,24 +710,26 @@ async def _reply_batch_unlocked(batch_items: list[_QueuedUpdate]) -> None:
 
     # 先保存本轮所有成功显示的结果，再把零余额状态作为严格写入边界。
     await flush_pending_events(conversation_id)
-    (
-        suspension_snapshot_created,
-        suspension_warning,
-        suspension_archived_records,
-    ) = await mysql_connection.async_insert_chat_records(
-        conversation_id,
-        [],
-        suspend_if_zero=True,
+    await persist_records(
+        await mysql_connection.async_insert_chat_records(
+            conversation_id,
+            [],
+            suspend_if_zero=True,
+        ),
+        announce=True,
     )
-    if suspension_archived_records:
-        await send_permanent_records_archive(
-            context.bot,
-            user_id,
-            suspension_archived_records,
-            logger=logger,
+
+
+def setup_conversation_handlers(application) -> None:
+    """注册 AI 对话入口：显式命令与被动消息两条路径共用同一个 handler。"""
+
+    application.add_handler(CommandHandler("fogmoebot", reply))
+    application.add_handler(
+        MessageHandler(
+            (filters.TEXT | filters.PHOTO | filters.Sticker.ALL)
+            & ~filters.COMMAND
+            & ~filters.VIA_BOT
+            & (filters.UpdateType.MESSAGE | filters.UpdateType.EDITED_MESSAGE),
+            reply,
         )
-    if suspension_warning:
-        await notify_history_warning(suspension_warning)
-    await handle_overflow_summary(suspension_warning)
-    if suspension_snapshot_created and suspension_warning != "overflow":
-        summary.schedule_summary_generation(conversation_id)
+    )

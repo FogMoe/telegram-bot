@@ -3,7 +3,7 @@ import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
-from core import mysql_connection
+from core import chat_records
 
 
 def test_new_session_event_follows_first_user_action(monkeypatch):
@@ -20,12 +20,12 @@ def test_new_session_event_follows_first_user_action(monkeypatch):
     async def fake_fetch_one(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(mysql_connection, "transaction", fake_transaction)
-    monkeypatch.setattr(mysql_connection, "fetch_one", fake_fetch_one)
-    monkeypatch.setattr(mysql_connection, "estimate_conversation_tokens", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(chat_records, "transaction", fake_transaction)
+    monkeypatch.setattr(chat_records, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(chat_records, "estimate_conversation_tokens", lambda *args, **kwargs: 1)
 
     asyncio.run(
-        mysql_connection.insert_chat_records(
+        chat_records.insert_chat_records(
             123,
             [("user", '<metadata><message>hello</message></metadata>')],
         )
@@ -57,12 +57,12 @@ def test_clear_archives_final_records_and_leaves_only_new_session(monkeypatch):
     async def fake_prune(*args, **kwargs):
         return []
 
-    monkeypatch.setattr(mysql_connection, "transaction", fake_transaction)
-    monkeypatch.setattr(mysql_connection, "fetch_one", fake_fetch_one)
-    monkeypatch.setattr(mysql_connection, "prune_permanent_records", fake_prune)
+    monkeypatch.setattr(chat_records, "transaction", fake_transaction)
+    monkeypatch.setattr(chat_records, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(chat_records, "prune_permanent_records", fake_prune)
 
     record_id, archived_records = asyncio.run(
-        mysql_connection.archive_chat_and_start_new_session(
+        chat_records.archive_chat_and_start_new_session(
             123,
             [
                 (
@@ -130,7 +130,7 @@ def test_clear_archives_final_records_and_leaves_only_new_session(monkeypatch):
 
 def test_clear_keeps_zero_balance_history_suspended(monkeypatch):
     executed = []
-    suspended = mysql_connection._build_coin_service_state_event("suspended")
+    suspended = chat_records._build_coin_service_state_event("suspended")
 
     class FakeConnection:
         async def exec_driver_sql(self, sql, params):
@@ -151,11 +151,11 @@ def test_clear_keeps_zero_balance_history_suspended(monkeypatch):
     async def fake_prune(*args, **kwargs):
         return []
 
-    monkeypatch.setattr(mysql_connection, "transaction", fake_transaction)
-    monkeypatch.setattr(mysql_connection, "fetch_one", fake_fetch_one)
-    monkeypatch.setattr(mysql_connection, "prune_permanent_records", fake_prune)
+    monkeypatch.setattr(chat_records, "transaction", fake_transaction)
+    monkeypatch.setattr(chat_records, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(chat_records, "prune_permanent_records", fake_prune)
 
-    asyncio.run(mysql_connection.archive_chat_and_start_new_session(123, []))
+    asyncio.run(chat_records.archive_chat_and_start_new_session(123, []))
 
     active_update = next(
         params
@@ -182,11 +182,11 @@ def test_append_permanent_chat_record_extends_the_clear_archive(monkeypatch):
     async def fake_fetch_one(*args, **kwargs):
         return ('[{"role":"user","content":"clear-event"}]',)
 
-    monkeypatch.setattr(mysql_connection, "transaction", fake_transaction)
-    monkeypatch.setattr(mysql_connection, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(chat_records, "transaction", fake_transaction)
+    monkeypatch.setattr(chat_records, "fetch_one", fake_fetch_one)
 
     asyncio.run(
-        mysql_connection.append_permanent_chat_record(
+        chat_records.append_permanent_chat_record(
             123,
             77,
             [("user", "reply-event")],
@@ -229,16 +229,16 @@ def _run_history_insert(
             return coin_balances
         return None
 
-    monkeypatch.setattr(mysql_connection, "transaction", fake_transaction)
-    monkeypatch.setattr(mysql_connection, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(chat_records, "transaction", fake_transaction)
+    monkeypatch.setattr(chat_records, "fetch_one", fake_fetch_one)
     monkeypatch.setattr(
-        mysql_connection,
+        chat_records,
         "estimate_conversation_tokens",
         lambda *args, **kwargs: 1,
     )
 
     result = asyncio.run(
-        mysql_connection.insert_chat_records(
+        chat_records.insert_chat_records(
             123,
             records,
             **insert_kwargs,
@@ -268,7 +268,7 @@ def test_zero_balance_writes_terminal_action_then_suspends_history(monkeypatch):
 
 
 def test_suspended_zero_balance_drops_all_later_history(monkeypatch):
-    suspended = mysql_connection._build_coin_service_state_event("suspended")
+    suspended = chat_records._build_coin_service_state_event("suspended")
 
     result, messages = _run_history_insert(
         monkeypatch,
@@ -282,7 +282,7 @@ def test_suspended_zero_balance_drops_all_later_history(monkeypatch):
 
 
 def test_positive_balance_writes_resume_marker_before_new_action(monkeypatch):
-    suspended = mysql_connection._build_coin_service_state_event("suspended")
+    suspended = chat_records._build_coin_service_state_event("suspended")
 
     _, messages = _run_history_insert(
         monkeypatch,
