@@ -99,8 +99,6 @@ async def update_character_stats(user_id: int, updates: dict) -> bool:
 
 # --- 设置是否允许被挑战 ---
 async def set_battle_allowance(update, context, allow: bool):
-    from telegram import Update
-    from telegram.ext import ContextTypes
     
     user_id = update.effective_user.id
     username = update.effective_user.username or update.effective_user.first_name
@@ -126,7 +124,6 @@ async def check_and_process_level_up(user_id: int, context):
     if not character:
         return
 
-    from .utils import get_level_from_exp
     current_level = get_level_from_exp(character['experience'])
 
     # 检查数据库记录的等级是否需要更新（例如，如果之前因为某种原因没更新）

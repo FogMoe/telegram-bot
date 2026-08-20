@@ -9,6 +9,8 @@ from telegram.constants import ParseMode
 import time
 from core.command_cooldown import cooldown
 
+
+logger = logging.getLogger(__name__)
 # 用户级别的锁，而非全局锁，避免不同用户操作互相阻塞
 user_locks = {}
 # 每个用户的预测任务，防止重复开启
@@ -31,7 +33,7 @@ async def get_btc_price():
         return btc_price, None
     except Exception as e:
         error_msg = f"获取比特币价格失败: {str(e)}"
-        logging.error(error_msg)
+        logger.error(error_msg)
         return None, error_msg
 
 @cooldown
@@ -179,7 +181,7 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await query.answer("这不是您的预测，您不能操作他人的预测。", show_alert=True)
                     return
             except (IndexError, ValueError) as e:
-                logging.error(f"解析用户ID时出错: {e}, 数据: {query.data}")
+                logger.error(f"解析用户ID时出错: {e}, 数据: {query.data}")
                 await query.answer("按钮数据格式错误", show_alert=True)
                 return
         
@@ -199,7 +201,7 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parts = query.data.split("_user_")[0].split("_")
                     amount_str = parts[2] if len(parts) > 2 else None
                 except (IndexError, ValueError) as e:
-                    logging.error(f"解析金额字符串时出错: {e}, 数据: {query.data}")
+                    logger.error(f"解析金额字符串时出错: {e}, 数据: {query.data}")
                     await query.edit_message_text("解析金额时发生错误，请使用 /btc_predict 重新开始。")
                     return
             else:
@@ -256,7 +258,7 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         parse_mode=ParseMode.MARKDOWN
                     )
                 except ValueError as e:
-                    logging.error(f"处理金额回调时出错: {e}")
+                    logger.error(f"处理金额回调时出错: {e}")
                     await query.edit_message_text("解析金额时发生错误，请使用 /btc_predict 重新开始。")
                     return
         
@@ -281,14 +283,14 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         
                     amount = int(user_parts[1])
                 except (IndexError, ValueError) as e:
-                    logging.error(f"解析预测数据时出错: {e}, 数据: {original_data}")
+                    logger.error(f"解析预测数据时出错: {e}, 数据: {original_data}")
                     await query.edit_message_text("解析预测数据时发生错误，请使用 /btc_predict 重新开始。")
                     return
             else:
                 # 如果没有user_id部分（旧格式），保持原有解析逻辑
                 parts = original_data.split("_")
                 if len(parts) < 4:
-                    logging.error(f"预测回调数据格式错误: {original_data}")
+                    logger.error(f"预测回调数据格式错误: {original_data}")
                     await query.edit_message_text("回调数据格式错误，请使用 /btc_predict 重新开始。")
                     return
                     
@@ -296,7 +298,7 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     amount = int(parts[3])
                 except (ValueError, IndexError) as e:
-                    logging.error(f"解析预测金额时出错: {e}, 数据: {original_data}")
+                    logger.error(f"解析预测金额时出错: {e}, 数据: {original_data}")
                     await query.edit_message_text("解析预测数据时发生错误，请使用 /btc_predict 重新开始。")
                     return
             
@@ -352,19 +354,19 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if not success:
                         return  # 如果操作失败，locked_operation内部已经处理了错误消息
                 except asyncio.TimeoutError:
-                    logging.warning(f"用户 {user_id} 的预测操作超时")
+                    logger.warning(f"用户 {user_id} 的预测操作超时")
                     await query.edit_message_text("操作超时，请使用 /btc_predict 重新开始。")
                     return
             except Exception as e:
-                logging.error(f"锁操作时出错: {e}")
-                await query.edit_message_text(f"处理预测时出错，请使用 /btc_predict 重新开始。")
+                logger.error(f"锁操作时出错: {e}")
+                await query.edit_message_text("处理预测时出错，请使用 /btc_predict 重新开始。")
                 return
         else:
-            logging.warning(f"未知回调数据: {query.data}")
+            logger.warning(f"未知回调数据: {query.data}")
             await query.answer("未知操作，请使用 /btc_predict 重新开始。", show_alert=True)
             
     except Exception as e:
-        logging.error(f"处理预测回调时发生未处理异常: {str(e)}")
+        logger.error(f"处理预测回调时发生未处理异常: {str(e)}")
         try:
             await query.edit_message_text("处理您的请求时发生错误，请使用 /btc_predict 重新开始。")
         except Exception:
@@ -391,7 +393,7 @@ async def get_user_active_prediction(user_id):
             'end_time': result[4]
         }
     except Exception as e:
-        logging.error(f"获取用户活跃预测失败: {str(e)}")
+        logger.error(f"获取用户活跃预测失败: {str(e)}")
         return None
 
 async def create_prediction(user_id, predict_type, amount, start_price):
@@ -407,7 +409,7 @@ async def create_prediction(user_id, predict_type, amount, start_price):
             if existing_prediction:
                 _, _, existing_amount, _, end_time = existing_prediction
                 if end_time < datetime.now():
-                    logging.warning(f"用户 {user_id} 有过期未结算的预测, 正在进行结算处理")
+                    logger.warning(f"用户 {user_id} 有过期未结算的预测, 正在进行结算处理")
                     await process_user.add_free_coins(
                         user_id,
                         existing_amount,
@@ -417,7 +419,7 @@ async def create_prediction(user_id, predict_type, amount, start_price):
                         "UPDATE user_btc_predictions SET is_completed = TRUE WHERE user_id = %s",
                         (user_id,),
                     )
-                    logging.info(f"检测到过期未结算的预测，已返还用户 {user_id} 的本金 {existing_amount} 金币")
+                    logger.info(f"检测到过期未结算的预测，已返还用户 {user_id} 的本金 {existing_amount} 金币")
                 else:
                     return False, "您已经有一个正在进行的预测"
 
@@ -455,7 +457,7 @@ async def create_prediction(user_id, predict_type, amount, start_price):
         return True, None
     except Exception as e:
         error_msg = f"创建预测时出错: {str(e)}"
-        logging.error(error_msg)
+        logger.error(error_msg)
         return False, error_msg
 
 async def check_prediction_result(user_id):
@@ -506,7 +508,7 @@ async def check_prediction_result(user_id):
             'reward': reward
         }
     except Exception as e:
-        logging.error(f"检查预测结果失败: {str(e)}")
+        logger.error(f"检查预测结果失败: {str(e)}")
         return None
 
 async def schedule_prediction_check(context, chat_id, user_id):
@@ -521,7 +523,7 @@ async def schedule_prediction_check(context, chat_id, user_id):
             # 如果获取结果失败，发送通知
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"⚠️ 无法检查您的比特币价格预测结果，请联系管理员。"
+                text="⚠️ 无法检查您的比特币价格预测结果，请联系管理员。"
             )
             return
         
@@ -562,17 +564,17 @@ async def schedule_prediction_check(context, chat_id, user_id):
         )
     except asyncio.CancelledError:
         # 处理任务被取消的情况
-        logging.info(f"用户 {user_id} 的预测检查任务被取消")
+        logger.info(f"用户 {user_id} 的预测检查任务被取消")
     except Exception as e:
-        logging.error(f"调度预测结果检查失败: {str(e)}")
+        logger.error(f"调度预测结果检查失败: {str(e)}")
         # 尝试发送错误通知
         try:
             await context.bot.send_message(
                 chat_id=chat_id,
                 text="在处理您的比特币价格预测时发生错误，请联系管理员。"
             )
-        except:
-            pass
+        except Exception as exc:
+            logger.debug("预测失败提示发送失败: %s", exc)
     finally:
         # 清除任务记录
         active_predict_tasks.pop(user_id, None)
@@ -585,7 +587,7 @@ async def get_username_by_user_id(user_id, context):
         if user and user.user and user.user.username:
             return user.user.username
     except Exception as e:
-        logging.error(f"从Telegram获取用户名失败: {str(e)}")
+        logger.error(f"从Telegram获取用户名失败: {str(e)}")
     
     # 如果从Telegram获取失败，尝试从数据库获取
     try:
@@ -596,7 +598,7 @@ async def get_username_by_user_id(user_id, context):
         if result and result[0]:
             return result[0]
     except Exception as e:
-        logging.error(f"从数据库获取用户名失败: {str(e)}")
+        logger.error(f"从数据库获取用户名失败: {str(e)}")
     
     return None
 

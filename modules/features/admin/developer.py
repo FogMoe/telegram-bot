@@ -90,7 +90,7 @@ async def get_bot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         # --- 构建统计信息消息 ---
-        stats_message = f"🤖 *机器人统计信息*\n\n"
+        stats_message = "🤖 *机器人统计信息*\n\n"
         stats_message += f"👤 总用户数: {user_count}\n"
         stats_message += f"💬 配置关键词群组: {keyword_group_count}\n"
         stats_message += f"✅ 启用验证群组: {verify_group_count}\n"

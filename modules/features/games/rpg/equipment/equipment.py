@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, List, Optional, Union, Tuple
+from typing import Dict, Tuple
 
 from core import mysql_connection
 

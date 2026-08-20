@@ -8,7 +8,6 @@ from core import config
 from core.litellm_models import litellm_model_name, normalize_provider
 from .context_budget import enforce_messages_context_budget
 from .litellm_message_sanitizer import (
-    PROVIDER_SPECIFIC_KEYS,
     sanitize_message_for_provider,
     sanitize_messages_for_provider,
     sanitize_tool_call_for_provider,

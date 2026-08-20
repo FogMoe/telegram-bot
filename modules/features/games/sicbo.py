@@ -1,12 +1,12 @@
 import asyncio
 import logging
 import random
-from typing import Dict, List, Tuple, Union, Optional
+from typing import Dict, List, Tuple
 from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, ContextTypes
+    CommandHandler, CallbackQueryHandler, ContextTypes
 )
 from core import mysql_connection, process_user
 from core.command_cooldown import cooldown

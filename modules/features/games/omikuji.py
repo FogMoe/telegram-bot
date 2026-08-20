@@ -581,8 +581,8 @@ async def omikuji_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         logger.error(f"处理回调时出错: {str(e)}")
         try:
             await query.answer("处理您的请求时出错，请稍后再试。", show_alert=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("回调错误提示发送失败: %s", exc)
 
 
 def setup_omikuji_handlers(application):

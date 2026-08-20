@@ -1,6 +1,6 @@
 import json
 import re
-from typing import Dict, Optional
+from typing import Optional
 
 from core import config, group_chat_history, mysql_connection
 

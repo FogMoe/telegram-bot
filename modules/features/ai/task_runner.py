@@ -4,8 +4,6 @@ from typing import Any, Dict, List
 from .context_budget import ContextBudgetExceededError
 from .litellm_client import create_chat_completion
 from .provider_resolver import (
-    TASKS,
-    _dedupe,
     completion_kwargs_for_task,
     get_models_for_task,
     get_provider_order_for_task,

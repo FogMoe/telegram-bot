@@ -10,7 +10,6 @@ import time
 import threading
 from collections import defaultdict
 from core.command_cooldown import cooldown
-from pathlib import Path
 from core.config import BASE_DIR
 
 SPAM_FILE_PATH = BASE_DIR / "resources" / "spam_words.txt"

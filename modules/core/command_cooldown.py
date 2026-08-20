@@ -1,6 +1,5 @@
 import time
 import logging
-import asyncio
 import functools
 from threading import RLock
 from telegram import Update

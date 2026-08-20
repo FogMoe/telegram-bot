@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 from telegram import Update
 from telegram.constants import ParseMode
-from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import CommandHandler, ContextTypes
 
 from core import mysql_connection, process_user
 from core.command_cooldown import cooldown

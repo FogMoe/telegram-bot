@@ -71,3 +71,20 @@ $env:ENV_API_CONNECTIVITY_PROVIDERS = "gemini"
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 ```
+
+## 静态检查
+
+用 ruff 做静态检查，配置在仓库根的 `ruff.toml`：
+
+```powershell
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m ruff check . --fix
+```
+
+当前只启用 `E4` / `E7` / `E9` / `F` 四组规则，盯的是真问题——未使用的 import、
+未定义的名字、语法错误——而不是代码风格。`ruff.toml` 里注释掉了 `I`（import 排序）、
+`W`（空白）、`UP`（语法现代化）、`BLE`（裸 except）、`LOG`（logging 用法）几组，
+想扩展时打开一组、修一组，别一次全开。
+
+`ruff check` 报出的问题应该清零后再提交；确实需要保留的写 `per-file-ignores`，
+不要用零散的 `# noqa`。

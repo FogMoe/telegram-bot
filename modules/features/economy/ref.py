@@ -1,5 +1,5 @@
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
 
@@ -97,7 +97,6 @@ async def ref_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 没有参数，显示用户的邀请信息
         try:
             user_id = update.effective_user.id
-            user_name = update.effective_user.full_name
             # 从数据库获取该用户邀请的信息
             invited_count, invited_users = await async_get_invited_users(user_id)
             

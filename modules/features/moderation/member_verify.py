@@ -206,7 +206,6 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         timer_task = task_info.get("timer")
         if timer_task and not timer_task.done():
             timer_task.cancel()
-        message_id = task_info["message_id"]
         verify_tasks.pop(user_id, None)
         try:
             # 解除禁言（恢复发送消息权限）

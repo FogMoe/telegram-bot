@@ -1,0 +1,25 @@
+# 起步配置：先只盯真问题（未使用 import、未定义名、语法错误），
+# 不做风格大扫除。想扩展时把 select 里注释掉的规则打开再逐块修。
+target-version = "py313"
+line-length = 100
+
+exclude = [
+    ".venv",
+    ".venv-linux",
+    "alembic/versions",
+]
+
+[lint]
+# E4 import 相关 / E7 语句相关 / E9 语法与 IO 错误 / F pyflakes
+select = ["E4", "E7", "E9", "F"]
+
+# 后续可考虑逐步打开：
+#   "I"    import 排序（会一次性重排 95 个文件）
+#   "W"    尾随空格等空白问题（diff 噪音大，但可全自动修）
+#   "UP"   语法现代化（Optional[x] -> x | None 等）
+#   "BLE"  裸 except Exception
+#   "LOG"  logging 用法（项目有 236 处直接调用 root logger）
+
+[lint.per-file-ignores]
+# conftest 必须先改 sys.path 再 import 项目模块
+"tests/conftest.py" = ["E402"]

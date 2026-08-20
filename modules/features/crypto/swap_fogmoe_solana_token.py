@@ -1,6 +1,5 @@
 import asyncio
 import re
-from datetime import datetime
 from core import mysql_connection, process_user
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler

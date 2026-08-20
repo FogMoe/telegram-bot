@@ -1,14 +1,11 @@
-import logging
 import time
-from typing import Dict, Any, Optional
-import asyncio
 
 from telegram.constants import ParseMode
 
 # 导入自定义模块
 from core import process_user
 
-from .utils import calculate_damage, get_level_from_exp
+from .utils import calculate_damage
 from .characters import check_and_process_level_up, get_character, update_character_stats
 
 # 怪物数据字典，包含各种怪物的属性

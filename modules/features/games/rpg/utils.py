@@ -1,8 +1,5 @@
 import logging
 import math
-import re
-from typing import Optional, Tuple, Dict
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 # 创建线程池执行器用于异步数据库操作
@@ -18,7 +15,8 @@ def get_exp_for_level(level: int) -> int:
 
 def get_level_from_exp(exp: int) -> int:
     """根据总经验值计算当前等级"""
-    if exp < 0: return 1 # 经验不能为负
+    if exp < 0:
+        return 1  # 经验不能为负
     
     level = 1
     while True:

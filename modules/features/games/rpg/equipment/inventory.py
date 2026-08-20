@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, List, Optional, Union, Tuple
+from typing import Dict, List, Tuple
 
 from core import mysql_connection
 
@@ -149,7 +149,6 @@ async def use_item(user_id: int, item_id: int) -> Tuple[bool, str]:
             return False, "你没有这个道具"
             
         # 根据道具效果执行相应操作
-        effect = item['effect']
         result_message = f"使用了 {item['name']}"
         
         # 这里可以根据不同道具类型执行不同的逻辑

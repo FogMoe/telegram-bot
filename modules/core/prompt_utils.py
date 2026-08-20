@@ -1,5 +1,5 @@
 import re
-from typing import Iterable, Optional
+from typing import Iterable
 
 
 _XML_ELEMENT_TAG_PATTERN = re.compile(

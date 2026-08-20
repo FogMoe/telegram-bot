@@ -2,7 +2,6 @@ import logging
 import asyncio
 import math
 import time
-from typing import Tuple
 
 # 导入自定义模块
 from core import process_user
@@ -107,7 +106,7 @@ async def run_battle(update, context, attacker_id: int, defender_id: int):
         winner_id = defender_id
         loser_id = attacker_id
     elif turn_counter >= max_turns:
-         battle_log.append(f"\n**战斗结果：平局！** (超过最大回合数)")
+         battle_log.append("\n**战斗结果：平局！** (超过最大回合数)")
 
     # 发送战斗日志
     # 为了避免消息过长，可以分段发送或只显示最后几回合
@@ -169,8 +168,6 @@ async def run_battle(update, context, attacker_id: int, defender_id: int):
 async def initiate_battle(update, context, target_username: str):
     """处理 /rpg battle <用户名> 命令"""
     attacker_id = update.effective_user.id
-    attacker_user = update.effective_user
-    attacker_name = attacker_user.username or attacker_user.first_name
 
     # 1. 检查发起者是否有角色
     attacker_char = await get_character(attacker_id)

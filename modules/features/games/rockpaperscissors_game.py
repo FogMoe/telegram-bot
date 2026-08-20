@@ -2,7 +2,7 @@ import asyncio
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CommandHandler, CallbackQueryHandler, ContextTypes
 import random
-from core import mysql_connection, process_user
+from core import process_user
 from core.command_cooldown import cooldown
 import logging
 
@@ -11,6 +11,8 @@ WAITING_PLAYER = "waiting_player"
 CHOOSING = "choosing"
 GAME_OVER = "game_over"
 
+
+logger = logging.getLogger(__name__)
 # 选择常量
 ROCK = "rock"
 PAPER = "paper"
@@ -37,9 +39,9 @@ EMOJI_MAP = {ROCK: "👊", PAPER: "✋", SCISSORS: "✌️"}
 def get_choice_keyboard(user_id):
     keyboard = [
         [
-            InlineKeyboardButton(f"石头 👊", callback_data=f"rps_choice_{ROCK}_{user_id}"),
-            InlineKeyboardButton(f"剪刀 ✌️", callback_data=f"rps_choice_{SCISSORS}_{user_id}"),
-            InlineKeyboardButton(f"布 ✋", callback_data=f"rps_choice_{PAPER}_{user_id}")
+            InlineKeyboardButton("石头 👊", callback_data=f"rps_choice_{ROCK}_{user_id}"),
+            InlineKeyboardButton("剪刀 ✌️", callback_data=f"rps_choice_{SCISSORS}_{user_id}"),
+            InlineKeyboardButton("布 ✋", callback_data=f"rps_choice_{PAPER}_{user_id}")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -111,7 +113,7 @@ async def rps_game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     active_games[game_id]['player2']['message_id'] = waiting_message_id
                 except Exception as e:
-                    logging.error(f"编辑群组消息失败: {str(e)}")
+                    logger.error(f"编辑群组消息失败: {str(e)}")
                     await process_user.async_update_user_coins(user_id, 1)
                     await process_user.async_update_user_coins(waiting_player_id, 1)
                     del active_games[game_id]
@@ -134,7 +136,7 @@ async def rps_game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     active_games[game_id]['player1']['private_msg_id'] = p1_msg.message_id
                     active_games[game_id]['player2']['private_msg_id'] = p2_msg.message_id
                 except Exception as e:
-                    logging.error(f"发送私聊消息失败: {str(e)}")
+                    logger.error(f"发送私聊消息失败: {str(e)}")
             else:
                 try:
                     await context.bot.edit_message_text(
@@ -149,7 +151,7 @@ async def rps_game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     active_games[game_id]['player2']['message_id'] = p2_msg.message_id
                 except Exception as e:
-                    logging.error(f"消息处理失败: {str(e)}")
+                    logger.error(f"消息处理失败: {str(e)}")
                     await process_user.async_update_user_coins(user_id, 1)
                     await process_user.async_update_user_coins(waiting_player_id, 1)
                     del active_games[game_id]
@@ -163,7 +165,7 @@ async def rps_game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # 创建等待房间
         waiting_msg = await update.message.reply_text(
-            text=f"🎲 等待其他玩家加入石头剪刀布游戏...\n输入 /rps_game 或点击下方按钮加入\n\n游戏规则: 每位玩家消耗1金币，获胜者获得2金币奖励，平局各退还1金币。",
+            text="🎲 等待其他玩家加入石头剪刀布游戏...\n输入 /rps_game 或点击下方按钮加入\n\n游戏规则: 每位玩家消耗1金币，获胜者获得2金币奖励，平局各退还1金币。",
             reply_markup=get_waiting_keyboard()
         )
         waiting_room = {'player_id': user_id, 'player_name': username, 'chat_id': chat_id, 'message_id': waiting_msg.message_id}
@@ -253,7 +255,7 @@ async def handle_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 active_games[game_id]['player1']['private_msg_id'] = p1_msg.message_id
                 active_games[game_id]['player2']['private_msg_id'] = p2_msg.message_id
             except Exception as e:
-                logging.error(f"创建游戏失败: {str(e)}")
+                logger.error(f"创建游戏失败: {str(e)}")
                 await process_user.async_update_user_coins(user_id, 1)
                 await process_user.async_update_user_coins(waiting_player_id, 1)
                 del active_games[game_id]
@@ -273,7 +275,7 @@ async def handle_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                     reply_markup=get_choice_keyboard(user_id)
                 )
             except Exception as e:
-                logging.error(f"消息处理失败: {str(e)}")
+                logger.error(f"消息处理失败: {str(e)}")
                 await process_user.async_update_user_coins(user_id, 1)
                 await process_user.async_update_user_coins(waiting_player_id, 1)
                 del active_games[game_id]
@@ -339,7 +341,7 @@ async def handle_choice_callback(update: Update, context: ContextTypes.DEFAULT_T
                     reply_markup=None
                 )
             except Exception as e:
-                logging.error(f"更新消息失败: {str(e)}")
+                logger.error(f"更新消息失败: {str(e)}")
         else:
             try:
                 await query.edit_message_text(
@@ -347,7 +349,7 @@ async def handle_choice_callback(update: Update, context: ContextTypes.DEFAULT_T
                     reply_markup=None
                 )
             except Exception as e:
-                logging.error(f"更新消息失败: {str(e)}")
+                logger.error(f"更新消息失败: {str(e)}")
 
         if game['player1']['choice'] and game['player2']['choice']:
             if game_id in game_timeouts and not game_timeouts[game_id].done():
@@ -381,13 +383,13 @@ async def determine_winner(context: ContextTypes.DEFAULT_TYPE, game_id: int):
             for player_key in ['player1', 'player2']:
                 await context.bot.edit_message_text(chat_id=game[player_key]['id'], message_id=game[player_key]['private_msg_id'], text=result_text, reply_markup=None)
         except Exception as e:
-            logging.error(f"更新结果失败: {str(e)}")
+            logger.error(f"更新结果失败: {str(e)}")
     else:
         for player_key in ['player1', 'player2']:
             try:
                 await context.bot.edit_message_text(chat_id=game[player_key]['chat_id'], message_id=game[player_key]['message_id'], text=result_text, reply_markup=None)
             except Exception as e:
-                logging.error(f"更新结果失败: {str(e)}")
+                logger.error(f"更新结果失败: {str(e)}")
 
     asyncio.create_task(clean_game(game_id))
 
@@ -404,7 +406,7 @@ async def clean_game(game_id: int):
         if game_id in game_locks:
             del game_locks[game_id]
     except Exception as e:
-        logging.error(f"清理游戏资源出错: {str(e)}")
+        logger.error(f"清理游戏资源出错: {str(e)}")
 
 async def game_timeout(context: ContextTypes.DEFAULT_TYPE, game_id: int, seconds: int):
     """游戏超时处理"""
@@ -426,13 +428,13 @@ async def game_timeout(context: ContextTypes.DEFAULT_TYPE, game_id: int, seconds
                 for player_key in ['player1', 'player2']:
                     await context.bot.edit_message_text(chat_id=game[player_key]['id'], message_id=game[player_key]['private_msg_id'], text=f"{timeout_message}\n请重新发起游戏。", reply_markup=None)
             except Exception as e:
-                logging.error(f"超时消息更新失败: {str(e)}")
+                logger.error(f"超时消息更新失败: {str(e)}")
         else:
             for player_key in ['player1', 'player2']:
                 try:
                     await context.bot.edit_message_text(chat_id=game[player_key]['chat_id'], message_id=game[player_key]['message_id'], text=timeout_message, reply_markup=None)
                 except Exception as e:
-                    logging.error(f"超时消息更新失败: {str(e)}")
+                    logger.error(f"超时消息更新失败: {str(e)}")
 
         game['state'] = GAME_OVER
         asyncio.create_task(clean_game(game_id))
@@ -445,8 +447,8 @@ async def cancel_waiting_game(context: ContextTypes.DEFAULT_TYPE, user_id: int, 
         if waiting_room and waiting_room['player_id'] == user_id and waiting_room['message_id'] == message_id:
             try:
                 await context.bot.edit_message_text(chat_id=waiting_room['chat_id'], message_id=message_id, text="⌛ 石头剪刀布游戏邀请已超时取消。", reply_markup=None)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("更新超时邀请消息失败: %s", exc)
             waiting_room = None
 
 def setup_rps_game_handlers(application):

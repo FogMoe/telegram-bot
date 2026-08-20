@@ -1,7 +1,6 @@
 import logging
 import asyncio
 import aiohttp
-import re
 import time
 import html
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -358,7 +357,7 @@ async def display_songs_page(update, context, message, songs, song_name, platfor
         
         # 当前页/总页数
         page_buttons.append(
-            InlineKeyboardButton(f"{page}/{total_pages}", callback_data=f"music_info_page")
+            InlineKeyboardButton(f"{page}/{total_pages}", callback_data="music_info_page")
         )
         
         # 下一页按钮
