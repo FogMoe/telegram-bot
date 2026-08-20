@@ -3,12 +3,10 @@ import asyncio
 import random
 import aiohttp
 import time
-import json
 from datetime import datetime, timedelta
-from functools import lru_cache
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CommandHandler, ContextTypes, CallbackQueryHandler
-from core import mysql_connection, process_user, stake_reward_pool
+from core import process_user, stake_reward_pool
 from core.command_cooldown import cooldown
 
 # 创建一个日志记录器
@@ -363,6 +361,8 @@ async def hd_pic_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     # 添加一个完成标志，确保不会同时发送多个回复
     processing_completed = False
+    # 金币是否已经退还，避免异常分支和 finally 兜底重复退款
+    refund_issued = False
     
     # 解析回调数据
     try:
@@ -553,6 +553,7 @@ async def hd_pic_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 
                 # 如果所有尝试都失败，退还金币
                 await process_user.async_update_user_coins(user_id, HD_COIN_COST)
+                refund_issued = True
                 await query.answer("发送高清图片时出错，请稍后再试。您的金币已退还。", show_alert=True)
         
     finally:
@@ -566,8 +567,9 @@ async def hd_pic_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             except Exception as pool_error:
                 logger.error("奖励池入账失败: %s", pool_error)
         else:
-            # 只有当没有成功处理且没有明确返回（如金币不足）时才记录处理失败
-            if image_id in PROCESSING_IMAGES and not any(text in str(e) for text in ["金币不足", "图片数据已过期", "高清图片不可用"]):
+            # 金币不足、数据过期、URL 缺失这些分支都在扣币前就 discard 了 image_id，
+            # 所以集合里还在，就说明币已经扣了却没交付内容。
+            if image_id in PROCESSING_IMAGES and not refund_issued:
                 logger.warning(f"图片 {image_id} 处理失败，已退还金币")
                 # 如果处理未完成且尚未退还金币，确保退还
                 try:
