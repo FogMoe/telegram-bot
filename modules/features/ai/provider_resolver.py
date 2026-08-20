@@ -89,10 +89,4 @@ def get_models_for_task(provider: str, task: str) -> List[str]:
 
 
 def completion_kwargs_for_task(provider: str, task: str) -> Dict[str, Any]:
-    provider_name = normalize_provider(provider)
-    task_name = task.lower()
-    if provider_name == "fogmoe":
-        return {
-            "reasoning_effort": "high" if task_name == "advisor" else "low"
-        }
     return {}

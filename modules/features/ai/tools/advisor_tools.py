@@ -146,7 +146,6 @@ def advisor_tool(task: str, case_facts: str | None = None) -> dict[str, Any]:
         response = run_ai_task(
             "advisor",
             messages=_advisor_messages(task.strip(), case_facts),
-            max_tokens=config.AI_ADVISOR_MAX_OUTPUT_TOKENS,
             timeout=config.AI_ADVISOR_TIMEOUT_SECONDS,
         )
         advice = _response_text(response)

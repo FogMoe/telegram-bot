@@ -353,7 +353,6 @@ def _run_summary_agent(
                         messages,
                         tool_context,
                         provider_name="Summary",
-                        max_tokens=SUMMARY_MAX_TOKENS,
                         context_hard_limit_ratio=SUMMARY_CONTEXT_HARD_LIMIT_RATIO,
                         max_iterations=SUMMARY_TOOL_MAX_ITERATIONS,
                         completion_kwargs=completion_kwargs_for_task(

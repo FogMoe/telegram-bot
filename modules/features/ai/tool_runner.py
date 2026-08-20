@@ -566,7 +566,6 @@ def run_tool_loop(
     *,
     provider_name: str = "AI",
     tool_choice: str | Dict[str, object] = "auto",
-    max_tokens: int = 4096,
     context_hard_limit_ratio: float | None = None,
     max_iterations: int = 10,
     completion_timeout: int | None = None,
@@ -611,7 +610,6 @@ def run_tool_loop(
         request_tool_choice = tool_choice
         try:
             request_kwargs = {
-                "max_tokens": max_tokens,
                 **(completion_kwargs or {}),
                 "context_hard_limit_ratio": context_hard_limit_ratio,
                 "timeout": request_timeout,
@@ -818,7 +816,6 @@ def run_tool_loop(
     logging.warning("%s 工具调用次数超限（%s轮）", provider_name, max_iterations)
     try:
         request_kwargs = {
-            "max_tokens": max_tokens,
             **(completion_kwargs or {}),
             "context_hard_limit_ratio": context_hard_limit_ratio,
             "timeout": request_timeout,

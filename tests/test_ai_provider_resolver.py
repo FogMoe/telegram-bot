@@ -106,27 +106,20 @@ def test_get_models_for_task_deduplicates_identical_primary_and_fallback(monkeyp
     assert provider_resolver.get_models_for_task("gemini", "chat") == ["gemini-chat"]
 
 
-def test_completion_kwargs_omits_reasoning_effort_for_gemini(monkeypatch):
+def test_completion_kwargs_are_empty_for_all_providers(monkeypatch):
     monkeypatch.setattr(config, "GEMINI_OPENAI_COMPATIBLE", False)
 
     assert provider_resolver.completion_kwargs_for_task("gemini", "vision") == {}
     assert provider_resolver.completion_kwargs_for_task("gemini", "summary") == {}
+    assert provider_resolver.completion_kwargs_for_task("gemini", "recap") == {}
+    assert provider_resolver.completion_kwargs_for_task("fogmoe", "chat") == {}
+    assert provider_resolver.completion_kwargs_for_task("fogmoe", "summary") == {}
+    assert provider_resolver.completion_kwargs_for_task("fogmoe", "advisor") == {}
 
     monkeypatch.setattr(config, "GEMINI_OPENAI_COMPATIBLE", True)
 
     assert provider_resolver.completion_kwargs_for_task("gemini", "summary") == {}
-
-
-def test_completion_kwargs_uses_fixed_fogmoe_default_and_advisor_effort():
-    assert provider_resolver.completion_kwargs_for_task("fogmoe", "chat") == {
-        "reasoning_effort": "low"
-    }
-    assert provider_resolver.completion_kwargs_for_task("fogmoe", "summary") == {
-        "reasoning_effort": "low"
-    }
-    assert provider_resolver.completion_kwargs_for_task("fogmoe", "advisor") == {
-        "reasoning_effort": "high"
-    }
+    assert provider_resolver.completion_kwargs_for_task("gemini", "recap") == {}
 
 
 def test_run_ai_task_uses_resolved_models_with_fallback_and_kwarg_override(monkeypatch):
@@ -146,7 +139,7 @@ def test_run_ai_task_uses_resolved_models_with_fallback_and_kwarg_override(monke
     monkeypatch.setattr(
         task_runner,
         "_provider_completion_kwargs",
-        lambda provider, task: {"reasoning_effort": "high", "temperature": 1},
+        lambda provider, task: {"temperature": 1},
     )
 
     def fake_create_chat_completion(provider, model, request_messages, **kwargs):
@@ -174,7 +167,6 @@ def test_run_ai_task_uses_resolved_models_with_fallback_and_kwarg_override(monke
     assert [call["model"] for call in calls] == ["primary-model", "fallback-model"]
     assert calls[0]["messages"] is messages
     assert calls[0]["kwargs"] == {
-        "reasoning_effort": "high",
         "temperature": 0,
     }
 

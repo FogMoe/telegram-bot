@@ -3,7 +3,6 @@ from typing import Dict, Optional
 
 from core import config
 
-from ..provider_resolver import completion_kwargs_for_task
 from ..tool_runner import run_tool_loop
 from ..types import AIResponse, VisibleContentHandler
 
@@ -26,7 +25,6 @@ def get_ai_response(
             messages,
             tool_context,
             provider_name="FOGMOE",
-            completion_kwargs=completion_kwargs_for_task("fogmoe", "chat"),
             visible_content_handler=visible_content_handler,
         )
     except Exception as exc:

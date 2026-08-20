@@ -109,6 +109,9 @@ def test_parse_recap_response_requires_exact_schema():
             '"memory_suggestion":{"impression":"","diary":""}}\n```'
         )
 
+    with pytest.raises(ValueError, match="was empty"):
+        idle_followup._parse_recap_response("")
+
 
 def test_format_idle_recap_event_escapes_output_without_internal_version():
     result = idle_followup._format_idle_recap_event(
@@ -279,7 +282,7 @@ def test_run_recap_agent_exposes_only_read_only_memory_tools(monkeypatch):
     assert "read_diary_page" not in {
         tool["function"]["name"] for tool in idle_followup.OPENAI_TOOLS
     }
-    assert captured["kwargs"]["max_tokens"] == 1000
+    assert "max_tokens" not in captured["kwargs"]
     assert captured["kwargs"]["completion_timeout"] == 120
     assert captured["kwargs"]["completion_kwargs"] == {
         "response_format": response_format,

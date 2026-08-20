@@ -97,7 +97,6 @@ adapter = get_ai_adapter_for_task("summary")
 response = adapter.create_completion(AIRequest(
     task="summary",
     messages=messages,
-    max_tokens=2500,
 ))
 ```
 
@@ -126,7 +125,6 @@ from typing import Any, Dict, List, Optional
 class AIRequest:
     task: str
     messages: List[Dict[str, Any]]
-    max_tokens: Optional[int] = None
     tools: Optional[List[Dict[str, Any]]] = None
     tool_choice: Optional[str | Dict[str, object]] = None
 ```
@@ -179,8 +177,6 @@ class OpenAIAdapter(BaseAIAdapter):
             "model": self.model_for(request.task),
             "messages": request.messages,
         }
-        if request.max_tokens is not None:
-            kwargs["max_tokens"] = request.max_tokens
         if request.tools:
             kwargs["tools"] = request.tools
         if request.tool_choice is not None and self.capabilities.tool_choice:
@@ -346,7 +342,6 @@ ZHIPU_CLASSIFIER_MODEL=...
 response = run_ai_task(
     "summary",
     messages=messages,
-    max_tokens=SUMMARY_MAX_TOKENS,
 )
 ```
 
@@ -407,7 +402,6 @@ adapter.create_completion(AIRequest(
     messages=filtered_messages,
     tools=tools,
     tool_choice=request_tool_choice,
-    max_tokens=max_tokens,
 ))
 ```
 

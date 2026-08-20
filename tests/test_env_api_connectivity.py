@@ -11,7 +11,6 @@ from features.ai.provider_resolver import completion_kwargs_for_task
 
 
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
-CONNECTIVITY_MAX_TOKENS = 512
 
 
 def _enabled(value: str | None) -> bool:
@@ -170,7 +169,6 @@ def test_configured_chat_provider_apis_are_reachable():
                     provider,
                     model,
                     [{"role": "user", "content": "Reply with exactly: ok"}],
-                    max_tokens=CONNECTIVITY_MAX_TOKENS,
                     temperature=0,
                     timeout=timeout_seconds,
                     **completion_kwargs_for_task(provider, "chat"),

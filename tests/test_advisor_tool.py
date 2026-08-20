@@ -74,7 +74,6 @@ def test_advisor_argument_validation_rejects_invalid_lengths(arguments):
 def test_advisor_calls_model_without_tools_or_chat_history(monkeypatch):
     _prepare_advisor(monkeypatch)
     monkeypatch.setattr(advisor_tools.config, "AI_ADVISOR_TIMEOUT_SECONDS", 42)
-    monkeypatch.setattr(advisor_tools.config, "AI_ADVISOR_MAX_OUTPUT_TOKENS", 1234)
     set_tool_request_context({"user_id": 123, "private_value": "do-not-forward"})
     recorded = {}
 
@@ -91,7 +90,7 @@ def test_advisor_calls_model_without_tools_or_chat_history(monkeypatch):
 
     assert result == {"status": "ok", "advice": "Use option B."}
     assert recorded["task"] == "advisor"
-    assert recorded["kwargs"] == {"max_tokens": 1234, "timeout": 42}
+    assert recorded["kwargs"] == {"timeout": 42}
     assert [message["role"] for message in recorded["messages"]] == [
         "system",
         "user",

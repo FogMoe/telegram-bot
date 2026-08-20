@@ -62,7 +62,6 @@ IDLE_FOLLOWUP_CLAIM_MINUTES = 15
 IDLE_FOLLOWUP_RETRY_MINUTES = 15
 IDLE_FOLLOWUP_MAX_RETRIES = 3
 IDLE_RECAP_MAX_DIALOGUE_MESSAGES = 20
-IDLE_RECAP_MAX_TOKENS = 1000
 IDLE_RECAP_RETRY_LIMIT = 2
 IDLE_RECAP_TIMEOUT_SECONDS = 120
 IDLE_RECAP_TOOL_NAMES = frozenset(
@@ -216,6 +215,8 @@ def _normalize_recap_text(value: object) -> str:
 
 def _parse_recap_response(value: object) -> dict[str, Any]:
     text = str(value or "").strip()
+    if not text:
+        raise ValueError("idle recap response was empty")
     try:
         parsed = IdleRecapOutput.model_validate_json(text)
     except ValidationError as exc:
@@ -316,7 +317,6 @@ def _run_recap_agent(
                     messages,
                     {"user_id": user_id},
                     provider_name="Idle recap",
-                    max_tokens=IDLE_RECAP_MAX_TOKENS,
                     completion_timeout=IDLE_RECAP_TIMEOUT_SECONDS,
                     completion_kwargs=completion_kwargs,
                     tool_definitions=IDLE_RECAP_TOOLS,

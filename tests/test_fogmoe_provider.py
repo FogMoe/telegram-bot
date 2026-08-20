@@ -2,7 +2,7 @@ from core import config
 from features.ai.providers import fogmoe
 
 
-def test_fogmoe_chat_uses_fixed_reasoning_effort(monkeypatch):
+def test_fogmoe_chat_does_not_set_completion_kwargs(monkeypatch):
     captured = {}
     messages = [{"role": "user", "content": "hello"}]
     monkeypatch.setattr(config, "FOGMOE_CHAT_MODEL", "gpt-5.6-luna")
@@ -23,6 +23,4 @@ def test_fogmoe_chat_uses_fixed_reasoning_effort(monkeypatch):
     assert captured["provider"] == "fogmoe"
     assert captured["model"] == "gpt-5.6-luna"
     assert captured["messages"] is messages
-    assert captured["kwargs"]["completion_kwargs"] == {
-        "reasoning_effort": "low"
-    }
+    assert "completion_kwargs" not in captured["kwargs"]

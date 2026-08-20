@@ -251,7 +251,7 @@ def test_create_chat_completion_normalizes_provider_and_filters_none_kwargs(
             "glm-test",
             messages,
             temperature=None,
-            max_tokens=128,
+            timeout=30,
         )
         == "ok"
     )
@@ -261,7 +261,7 @@ def test_create_chat_completion_normalizes_provider_and_filters_none_kwargs(
             "messages": messages,
             "api_key": "zai-key",
             "api_base": "https://zai.test/v4",
-            "max_tokens": 128,
+            "timeout": 30,
             "drop_params": True,
         }
     ]
@@ -350,14 +350,13 @@ def test_create_chat_completion_uses_twenty_five_percent_hard_limit(monkeypatch)
             "test-model",
             messages,
             tools=tools,
-            max_tokens=4096,
         )
         == "ok"
     )
     assert recorded == {
         "messages": messages,
         "token_limit": 150_000,
-        "max_output_tokens": 4096,
+        "max_output_tokens": 0,
         "safety_tokens": config.CHAT_CONTEXT_SAFETY_TOKENS,
         "model": "test-model",
         "tools": tools,
@@ -396,7 +395,6 @@ def test_create_chat_completion_accepts_summary_hard_limit_override(monkeypatch)
             "summary-model",
             messages,
             context_hard_limit_ratio=1.5,
-            max_tokens=2500,
         )
         == "ok"
     )

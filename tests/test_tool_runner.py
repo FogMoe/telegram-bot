@@ -52,6 +52,7 @@ def test_run_tool_loop_forwards_context_hard_limit_ratio(monkeypatch):
 
     assert message == "done"
     assert calls[0]["context_hard_limit_ratio"] == 1.5
+    assert "max_tokens" not in calls[0]
 
 
 def test_run_tool_loop_uses_fogmoe_tool_calls_from_later_choice(monkeypatch):

@@ -134,7 +134,7 @@ def test_run_summary_agent_exposes_only_summary_search_tool(monkeypatch):
     assert "search_prior_context" not in {
         tool["function"]["name"] for tool in OPENAI_TOOLS
     }
-    assert captured["kwargs"]["max_tokens"] == 2500
+    assert "max_tokens" not in captured["kwargs"]
     assert captured["kwargs"]["context_hard_limit_ratio"] == 1.5
     assert captured["kwargs"]["max_iterations"] == 4
     assert captured["kwargs"]["completion_kwargs"] == {}
