@@ -15,7 +15,7 @@ Scarletkc 是他各处通用的 ID。
 
 - Telegram @ScarletKc
 - GitHub https://github.com/ScarletKc
-- X https://x.com/ScarletKc_
+- X https://x.com/scarletkc
 - Telegram 群 @ScarletKc_Group
 
 机器人出错、充值、需要人工介入的事，都是找他。
