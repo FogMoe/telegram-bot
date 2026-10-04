@@ -76,6 +76,14 @@ files = [
     "modules/features/games/rps_games.py",
     "modules/features/games/panels.py",
     "modules/features/games/rpg/settlement.py",
+    "modules/core/metrics.py",
+    "modules/core/deadline.py",
+    "modules/core/admission.py",
+    "modules/core/blocking.py",
+    "modules/core/background.py",
+    "modules/core/http_sessions.py",
+    "modules/features/ai/tools/dispatch.py",
+    "modules/app/runtime_lifecycle.py",
 ]
 # 其余模块只用来取类型信息，不报告它们自己的错误。
 follow_imports = "silent"

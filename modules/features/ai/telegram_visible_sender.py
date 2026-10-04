@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import threading
 from typing import Any, Awaitable, Callable
@@ -17,10 +16,15 @@ AsyncSendFunc = Callable[..., Awaitable[Any]]
 
 
 class TelegramVisibleContentHandler:
+    """工具循环向用户即时发送可见内容的处理器：在事件循环里直接 `await`，没有跨线程投递。
+
+    调用顺序与 E 的撤销语义不变：每次发送前检查 `abort_event`，已置位就抛 `JobAbortedError`，
+    之后不再向用户发送任何内容（定时任务与空闲跟进失去 claim 时靠它阻止后续投递）。
+    """
+
     def __init__(
         self,
         *,
-        loop: asyncio.AbstractEventLoop,
         bot: Any,
         chat_id: int,
         first_text_send: AsyncSendFunc,
@@ -29,7 +33,6 @@ class TelegramVisibleContentHandler:
         reply_to_message_id: int | None = None,
         abort_event: threading.Event | None = None,
     ) -> None:
-        self.loop = loop
         self.bot = bot
         self.chat_id = chat_id
         self.first_text_send = first_text_send
@@ -87,10 +90,9 @@ class TelegramVisibleContentHandler:
         if self.abort_event is not None and self.abort_event.is_set():
             raise JobAbortedError("visible content send aborted")
 
-    def __call__(self, content: str) -> str | None:
+    async def __call__(self, content: str) -> str | None:
         self._raise_if_aborted()
-        future = asyncio.run_coroutine_threadsafe(self._send(content), self.loop)
-        return future.result()
+        return await self._send(content)
 
     async def _send_tool_media(self, tool_name: str, result: dict[str, Any]) -> list[Any]:
         action = "upload_photo" if tool_name == "generate_image" else "upload_voice"
@@ -119,13 +121,9 @@ class TelegramVisibleContentHandler:
         self.sent_messages.extend(sent_messages)
         return sent_messages
 
-    def send_tool_media(self, tool_name: str, result: dict[str, Any]) -> list[Any]:
+    async def send_tool_media(self, tool_name: str, result: dict[str, Any]) -> list[Any]:
         self._raise_if_aborted()
-        future = asyncio.run_coroutine_threadsafe(
-            self._send_tool_media(tool_name, result),
-            self.loop,
-        )
-        return future.result()
+        return await self._send_tool_media(tool_name, result)
 
     def visible_events(self) -> list[dict[str, str]]:
         return [

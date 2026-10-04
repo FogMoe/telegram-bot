@@ -2,11 +2,13 @@
 
 import asyncio
 import dataclasses
+import time
 from types import SimpleNamespace
 
 import pytest
 
 from core import telegram_history
+from core.deadline import Deadline
 from features.ai import router
 from features.conversation import billing, turn
 from features.conversation.turn_services import TurnServices
@@ -287,7 +289,9 @@ async def _bot_send_message(*args, **kwargs):
     return None
 
 
-def make_request(*messages, chat_type="private", edited=(), queue_seconds=0.0) -> TurnRequest:
+def make_request(
+    *messages, chat_type="private", edited=(), queue_seconds=0.0, deadline=None
+) -> TurnRequest:
     return TurnRequest(
         chat=ChatRef(chat_id=100, chat_type=chat_type, title="群" if chat_type != "private" else None),
         sender=SenderRef(user_id=7, username="kc", first_name="K", language_code="zh"),
@@ -297,6 +301,7 @@ def make_request(*messages, chat_type="private", edited=(), queue_seconds=0.0) -
         ),
         bot=SimpleNamespace(send_message=_bot_send_message),
         queue_seconds=queue_seconds,
+        deadline=deadline,
     )
 
 
@@ -738,3 +743,107 @@ def test_the_model_stage_is_one_replaceable_call_returning_typed_data():
     assert len(calls) == 1
     assert world.calls("run_model") == []
     assert world.calls("insert_record")[0][3] == "换了一个模型"
+
+
+# ---------------------------------------------------------------------------
+# 整轮截止时间：扣费之后到期的收尾，行为都是「提示用户、不退款、历史保持一致」
+# ---------------------------------------------------------------------------
+
+
+class TestDeadline:
+    @pytest.fixture
+    def hung_provider(self, monkeypatch, settings_override):
+        """真实的 router 与工具循环，模型调用永远不返回。"""
+        from features.ai import tool_runner
+        from features.conversation import turn_services
+
+        settings_override(AI_CHAT_ORDER="openai", OPENAI_CHAT_MODEL="gpt")
+        router._provider_failure_streaks.clear()
+        router._provider_circuit_open_until.clear()
+
+        async def hang(*args, **kwargs):
+            await asyncio.sleep(30)
+
+        monkeypatch.setattr(tool_runner, "create_chat_completion", hang)
+        yield turn_services._run_model
+        router._provider_failure_streaks.clear()
+        router._provider_circuit_open_until.clear()
+
+    def test_the_deadline_reaches_the_model_stage(self):
+        world = World()
+        deadline = Deadline(60)
+
+        run_turn(make_request(text_message(), deadline=deadline), make_services(world))
+
+        assert world.model_requests[0].deadline is deadline
+
+    def test_a_hung_provider_ends_the_turn_at_the_deadline_without_refunding(self, hung_provider):
+        world = World()
+        request = make_request(text_message(5, "你好"), deadline=Deadline(0.15))
+
+        started = time.monotonic()
+        result = run_turn(request, make_services(world, run_model=hung_provider))
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 2.0
+        assert result.status is TurnStatus.COMPLETED
+        assert result.runtime_error == "turn_deadline_exceeded"
+        # 用户收到明确提示；提示是运行时错误通知，不当作 AI 回复写进历史。
+        (send,) = world.calls("send_reply")
+        assert send[1]["text"] == router.TURN_DEADLINE_ERROR_MESSAGE
+        assert "insert_record" not in world.names()
+        # 扣费规则不变：整轮只扣一次，没有任何退款或回滚。
+        assert len(world.calls("charge")) == 1
+        assert not any("refund" in name for name in world.names())
+        # 收尾照常进行：零余额边界仍然写入。
+        assert world.names()[-1] == "insert_records"
+
+    def test_a_deadline_while_preparing_media_replies_and_stops_after_the_charge(self):
+        world = World()
+
+        async def hanging_get_file():
+            await asyncio.sleep(30)
+
+        hanging_photo = text_message(
+            2,
+            text=None,
+            photo=[SimpleNamespace(get_file=hanging_get_file)],
+        )
+        request = make_request(hanging_photo, deadline=Deadline(0.1))
+
+        started = time.monotonic()
+        result = run_turn(request, make_services(world))
+
+        assert time.monotonic() - started < 2.0
+        assert result.status is TurnStatus.DEADLINE_EXCEEDED
+        assert result.charge is not None  # 已经扣费，这一轮不退
+        assert world.calls("reply_text")[0][2] == router.TURN_DEADLINE_ERROR_MESSAGE
+        assert "run_model" not in world.names()
+        assert "insert_records" not in world.names()
+
+    def test_delivery_that_hangs_past_the_deadline_is_cut_off_and_the_turn_still_finishes(
+        self, monkeypatch
+    ):
+        world = World()
+        monkeypatch.setattr(turn, "DELIVERY_GRACE_SECONDS", 0.05)
+
+        async def stuck_send_reply(**kwargs):
+            await asyncio.sleep(30)
+
+        started = time.monotonic()
+        result = run_turn(
+            make_request(text_message(), deadline=Deadline(0.05)),
+            make_services(world, send_reply=stuck_send_reply),
+        )
+
+        assert time.monotonic() - started < 2.0
+        assert result.status is TurnStatus.COMPLETED
+        assert world.names()[-1] == "insert_records"  # finalize 仍然执行
+
+    def test_without_a_deadline_nothing_changes(self):
+        world = World()
+
+        result = run_turn(make_request(text_message()), make_services(world))
+
+        assert result.status is TurnStatus.COMPLETED
+        assert world.model_requests[0].deadline is None

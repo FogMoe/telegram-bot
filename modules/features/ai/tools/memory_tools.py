@@ -5,6 +5,7 @@ from typing import Optional
 from core import config, group_chat_history, mysql_connection
 
 from .context import get_tool_request_context
+from .dispatch import inline_tool
 
 MAX_USER_DIARY_PAGE_CHARS = 10000
 MAX_USER_DIARY_PAGES = 100
@@ -46,12 +47,13 @@ def _diary_page_metadata(
     }
 
 
+@inline_tool
 def get_help_text_tool() -> dict:
     """Return the configured help command list for the bot."""
     return {"help_text": config.HELP_TEXT}
 
 
-def fetch_group_context_tool(
+async def fetch_group_context_tool(
     window_size: int = 10,
     **kwargs,
 ) -> dict:
@@ -73,7 +75,7 @@ def fetch_group_context_tool(
 
     around_message_id = current_message_id
 
-    context_messages = group_chat_history.get_group_context(
+    context_messages = await group_chat_history.async_get_group_context(
         target_group_id,
         around_message_id,
         window_size,
@@ -86,7 +88,7 @@ def fetch_group_context_tool(
     }
 
 
-def fetch_permanent_summaries_tool(
+async def fetch_permanent_summaries_tool(
     start: Optional[int] = None,
     end: Optional[int] = None,
     **kwargs,
@@ -116,25 +118,21 @@ def fetch_permanent_summaries_tool(
     window_size = max(1, min(window_size, 5))
     offset = start_idx - 1
 
-    total_row = mysql_connection.run_sync(
-        mysql_connection.fetch_one(
-            "SELECT COUNT(*) FROM permanent_chat_records WHERE user_id = %s AND summary IS NOT NULL AND summary != ''",
-            (user_id,),
-        )
+    total_row = await mysql_connection.fetch_one(
+        "SELECT COUNT(*) FROM permanent_chat_records WHERE user_id = %s AND summary IS NOT NULL AND summary != ''",
+        (user_id,),
     )
     total_rows = total_row[0] if total_row and total_row[0] is not None else 0
 
-    rows = mysql_connection.run_sync(
-        mysql_connection.fetch_all(
-            """
-            SELECT id, summary, created_at
-            FROM permanent_chat_records
-            WHERE user_id = %s AND summary IS NOT NULL AND summary != ''
-            ORDER BY created_at DESC, id DESC
-            LIMIT %s OFFSET %s
-            """,
-            (user_id, window_size, offset),
-        )
+    rows = await mysql_connection.fetch_all(
+        """
+        SELECT id, summary, created_at
+        FROM permanent_chat_records
+        WHERE user_id = %s AND summary IS NOT NULL AND summary != ''
+        ORDER BY created_at DESC, id DESC
+        LIMIT %s OFFSET %s
+        """,
+        (user_id, window_size, offset),
     )
 
     records = []
@@ -157,7 +155,7 @@ def fetch_permanent_summaries_tool(
     }
 
 
-def search_permanent_records_tool(
+async def search_permanent_records_tool(
     pattern: str,
     limit: Optional[int] = None,
     oldest_first: Optional[bool] = None,
@@ -191,11 +189,9 @@ def search_permanent_records_tool(
         warning = "Invalid regex pattern, treated as literal string"
         matcher = re.compile(re.escape(pattern), re.IGNORECASE | re.DOTALL)
 
-    total_row = mysql_connection.run_sync(
-        mysql_connection.fetch_one(
-            "SELECT COUNT(*) FROM permanent_chat_records WHERE user_id = %s",
-            (user_id,),
-        )
+    total_row = await mysql_connection.fetch_one(
+        "SELECT COUNT(*) FROM permanent_chat_records WHERE user_id = %s",
+        (user_id,),
     )
     total_rows = total_row[0] if total_row and total_row[0] is not None else 0
     if total_rows <= 0:
@@ -212,11 +208,9 @@ def search_permanent_records_tool(
 
     max_records = mysql_connection.PERMANENT_RECORDS_KEEP
     try:
-        limit_row = mysql_connection.run_sync(
-            mysql_connection.fetch_one(
-                "SELECT permanent_records_limit FROM user WHERE id = %s",
-                (user_id,),
-            )
+        limit_row = await mysql_connection.fetch_one(
+            "SELECT permanent_records_limit FROM user WHERE id = %s",
+            (user_id,),
         )
     except Exception:
         limit_row = None
@@ -235,18 +229,16 @@ def search_permanent_records_tool(
 
     batch_size = 50
 
-    def _fetch_rows(offset: int, size: int) -> list[tuple]:
-        return mysql_connection.run_sync(
-            mysql_connection.fetch_all(
-                f"""
-                SELECT id, conversation_snapshot, created_at
-                FROM permanent_chat_records
-                WHERE user_id = %s
-                {order_clause}
-                LIMIT %s OFFSET %s
-                """,
-                (user_id, size, offset),
-            )
+    async def _fetch_rows(offset: int, size: int) -> list[tuple]:
+        return await mysql_connection.fetch_all(
+            f"""
+            SELECT id, conversation_snapshot, created_at
+            FROM permanent_chat_records
+            WHERE user_id = %s
+            {order_clause}
+            LIMIT %s OFFSET %s
+            """,
+            (user_id, size, offset),
         )
 
     def _record_position(offset: int, row_index: int) -> int:
@@ -328,7 +320,7 @@ def search_permanent_records_tool(
     remaining = scan_limit
     while remaining > 0 and len(results) < limit_value:
         fetch_size = min(batch_size, remaining)
-        rows = _fetch_rows(offset, fetch_size)
+        rows = await _fetch_rows(offset, fetch_size)
         if not rows:
             break
         results = _scan_rows(rows, results, offset)
@@ -350,7 +342,7 @@ def search_permanent_records_tool(
     return response
 
 
-def read_diary_page_tool(page: Optional[int] = None) -> dict:
+async def read_diary_page_tool(page: Optional[int] = None) -> dict:
     """Read one diary page through the recap agent's read-only interface."""
     context = get_tool_request_context()
     user_id = context.get("user_id")
@@ -369,12 +361,10 @@ def read_diary_page_tool(page: Optional[int] = None) -> dict:
     # Keep this query separate from user_diary_tool: that handler also has write
     # paths, while this recap-only facade accepts no action or content arguments
     # and can therefore execute only this SELECT.
-    row = mysql_connection.run_sync(
-        mysql_connection.fetch_one(
-            "SELECT content, title, summary FROM ai_user_diary_pages "
-            "WHERE user_id = %s AND page_no = %s",
-            (user_id, page_value),
-        )
+    row = await mysql_connection.fetch_one(
+        "SELECT content, title, summary FROM ai_user_diary_pages "
+        "WHERE user_id = %s AND page_no = %s",
+        (user_id, page_value),
     )
     if not row:
         return {"page": page_value, "error": "Diary page does not exist"}
@@ -387,7 +377,7 @@ def read_diary_page_tool(page: Optional[int] = None) -> dict:
     }
 
 
-def user_diary_tool(
+async def user_diary_tool(
     action: Optional[str] = None,
     content: Optional[str] = None,
     start_line: Optional[int] = None,
@@ -419,13 +409,11 @@ def user_diary_tool(
         return {"user_id": user_id, "error": f"Unknown action: {action}"}
 
     if action_value == "index":
-        rows = mysql_connection.run_sync(
-            mysql_connection.fetch_all(
-                "SELECT page_no, title, summary, CHAR_LENGTH(content), "
-                "created_at, updated_at, LEFT(content, %s) "
-                "FROM ai_user_diary_pages WHERE user_id = %s ORDER BY page_no ASC",
-                (USER_DIARY_INDEX_PREVIEW_CHARS, user_id),
-            )
+        rows = await mysql_connection.fetch_all(
+            "SELECT page_no, title, summary, CHAR_LENGTH(content), "
+            "created_at, updated_at, LEFT(content, %s) "
+            "FROM ai_user_diary_pages WHERE user_id = %s ORDER BY page_no ASC",
+            (USER_DIARY_INDEX_PREVIEW_CHARS, user_id),
         )
         pages = []
         max_page = 0
@@ -487,20 +475,16 @@ def user_diary_tool(
     if page_value < 1 or page_value > MAX_USER_DIARY_PAGES:
         return {"user_id": user_id, "error": f"Page number out of range (max={MAX_USER_DIARY_PAGES})"}
 
-    max_page_row = mysql_connection.run_sync(
-        mysql_connection.fetch_one(
-            "SELECT MAX(page_no) FROM ai_user_diary_pages WHERE user_id = %s",
-            (user_id,),
-        )
+    max_page_row = await mysql_connection.fetch_one(
+        "SELECT MAX(page_no) FROM ai_user_diary_pages WHERE user_id = %s",
+        (user_id,),
     )
     max_page = max_page_row[0] if max_page_row and max_page_row[0] is not None else 0
 
-    row = mysql_connection.run_sync(
-        mysql_connection.fetch_one(
-            "SELECT content, title, summary, created_at, updated_at FROM ai_user_diary_pages "
-            "WHERE user_id = %s AND page_no = %s",
-            (user_id, page_value),
-        )
+    row = await mysql_connection.fetch_one(
+        "SELECT content, title, summary, created_at, updated_at FROM ai_user_diary_pages "
+        "WHERE user_id = %s AND page_no = %s",
+        (user_id, page_value),
     )
 
     diary_content = ""
@@ -692,19 +676,17 @@ def user_diary_tool(
         merged_content = merged_content[-MAX_USER_DIARY_PAGE_CHARS:]
         truncated = True
 
-    mysql_connection.run_sync(
-        mysql_connection.execute(
-            """
-            INSERT INTO ai_user_diary_pages (user_id, page_no, title, summary, content)
-            VALUES (%s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                title = VALUES(title),
-                summary = VALUES(summary),
-                content = VALUES(content),
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (user_id, page_value, effective_title, summary_value, merged_content),
-        )
+    await mysql_connection.execute(
+        """
+        INSERT INTO ai_user_diary_pages (user_id, page_no, title, summary, content)
+        VALUES (%s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            title = VALUES(title),
+            summary = VALUES(summary),
+            content = VALUES(content),
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (user_id, page_value, effective_title, summary_value, merged_content),
     )
 
     total_lines = len(merged_content.splitlines())

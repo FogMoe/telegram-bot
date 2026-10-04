@@ -1,5 +1,6 @@
 """主聊天的统一 provider 入口：模型来自声明、provider 特有行为来自声明。"""
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -7,7 +8,8 @@ import pytest
 from features.ai import chat_provider
 from features.ai.context_budget import ContextBudgetExceededError
 from features.ai.errors import SafetyBlockError
-from features.ai.types import PartialAIResponseError
+from core.deadline import Deadline
+from features.ai.types import PartialAIResponseError, TurnDeadlineError
 
 
 @pytest.fixture
@@ -16,7 +18,7 @@ def tool_loop(monkeypatch):
     calls = []
     behaviour = SimpleNamespace(handler=lambda model: ("ok", []))
 
-    def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
+    async def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
         calls.append(
             {
                 "provider": provider,
@@ -37,9 +39,9 @@ def test_provider_runs_the_tool_loop_with_its_declared_chat_model(tool_loop):
     context = {"user_id": 123}
     settings = SimpleNamespace(FOGMOE_CHAT_MODEL="gpt-5.6-luna")
 
-    response = chat_provider.run_chat_provider(
+    response = asyncio.run(chat_provider.run_chat_provider(
         "fogmoe", messages, 123, context, settings=settings
-    )
+    ))
 
     assert response == ("ok", [])
     (call,) = tool_loop.calls
@@ -54,22 +56,38 @@ def test_provider_runs_the_tool_loop_with_its_declared_chat_model(tool_loop):
 def test_visible_content_handler_reaches_the_tool_loop(tool_loop):
     handler = object()
 
-    chat_provider.run_chat_provider(
+    asyncio.run(chat_provider.run_chat_provider(
         "openai",
         [],
         1,
         visible_content_handler=handler,
         settings=SimpleNamespace(OPENAI_CHAT_MODEL="gpt"),
-    )
+    ))
 
     assert tool_loop.calls[0]["kwargs"]["visible_content_handler"] is handler
+
+
+def test_the_turn_deadline_reaches_the_tool_loop(tool_loop):
+    deadline = Deadline(60)
+
+    asyncio.run(
+        chat_provider.run_chat_provider(
+            "openai",
+            [],
+            1,
+            settings=SimpleNamespace(OPENAI_CHAT_MODEL="gpt"),
+            deadline=deadline,
+        )
+    )
+
+    assert tool_loop.calls[0]["kwargs"]["deadline"] is deadline
 
 
 def test_zai_hides_web_tools_and_zhipu_resolves_to_it(tool_loop):
     settings = SimpleNamespace(ZHIPU_CHAT_MODEL="glm-chat")
 
-    chat_provider.run_chat_provider("zhipu", [], 1, settings=settings)
-    chat_provider.run_chat_provider("zai", [], 1, settings=settings)
+    asyncio.run(chat_provider.run_chat_provider("zhipu", [], 1, settings=settings))
+    asyncio.run(chat_provider.run_chat_provider("zai", [], 1, settings=settings))
 
     for call in tool_loop.calls:
         assert call["provider"] == "zai"
@@ -79,23 +97,23 @@ def test_zai_hides_web_tools_and_zhipu_resolves_to_it(tool_loop):
 
 
 def test_other_providers_hide_no_tools(tool_loop):
-    chat_provider.run_chat_provider(
+    asyncio.run(chat_provider.run_chat_provider(
         "openai", [], 1, settings=SimpleNamespace(OPENAI_CHAT_MODEL="gpt")
-    )
+    ))
 
     assert not tool_loop.calls[0]["kwargs"]["skip_tools"]
 
 
 def test_missing_chat_model_fails_before_calling_the_model(tool_loop):
     with pytest.raises(RuntimeError, match="Missing OPENAI_CHAT_MODEL configuration"):
-        chat_provider.run_chat_provider("openai", [], 1, settings=SimpleNamespace())
+        asyncio.run(chat_provider.run_chat_provider("openai", [], 1, settings=SimpleNamespace()))
 
     assert tool_loop.calls == []
 
 
 def test_unknown_provider_is_rejected(tool_loop):
     with pytest.raises(RuntimeError, match="Unsupported AI provider"):
-        chat_provider.run_chat_provider("nope", [], 1, settings=SimpleNamespace())
+        asyncio.run(chat_provider.run_chat_provider("nope", [], 1, settings=SimpleNamespace()))
 
 
 def test_gemini_retries_with_its_fallback_model(tool_loop):
@@ -109,7 +127,7 @@ def test_gemini_retries_with_its_fallback_model(tool_loop):
         GEMINI_CHAT_MODEL="primary", GEMINI_CHAT_FALLBACK_MODEL="fallback"
     )
 
-    response = chat_provider.run_chat_provider("gemini", [], 1, settings=settings)
+    response = asyncio.run(chat_provider.run_chat_provider("gemini", [], 1, settings=settings))
 
     assert response == ("from fallback", [])
     assert [call["model"] for call in tool_loop.calls] == ["primary", "fallback"]
@@ -118,7 +136,7 @@ def test_gemini_retries_with_its_fallback_model(tool_loop):
 def test_gemini_uses_the_fallback_when_the_primary_model_is_not_configured(tool_loop):
     settings = SimpleNamespace(GEMINI_CHAT_MODEL=None, GEMINI_CHAT_FALLBACK_MODEL="fallback")
 
-    chat_provider.run_chat_provider("gemini", [], 1, settings=settings)
+    asyncio.run(chat_provider.run_chat_provider("gemini", [], 1, settings=settings))
 
     assert [call["model"] for call in tool_loop.calls] == ["fallback"]
 
@@ -128,6 +146,7 @@ def test_gemini_uses_the_fallback_when_the_primary_model_is_not_configured(tool_
     [
         ContextBudgetExceededError(150_001, 150_000),
         PartialAIResponseError("after tools", [{"type": "tool_result"}]),
+        TurnDeadlineError("deadline", "model", []),
     ],
 )
 def test_context_and_partial_errors_skip_the_fallback_model(tool_loop, error):
@@ -140,7 +159,7 @@ def test_context_and_partial_errors_skip_the_fallback_model(tool_loop, error):
     )
 
     with pytest.raises(type(error)):
-        chat_provider.run_chat_provider("gemini", [], 1, settings=settings)
+        asyncio.run(chat_provider.run_chat_provider("gemini", [], 1, settings=settings))
 
     assert [call["model"] for call in tool_loop.calls] == ["primary"]
 
@@ -156,7 +175,7 @@ def test_gemini_safety_block_without_a_fallback_becomes_safety_block_error(tool_
     settings = SimpleNamespace(GEMINI_CHAT_MODEL="primary", GEMINI_CHAT_FALLBACK_MODEL=None)
 
     with pytest.raises(SafetyBlockError):
-        chat_provider.run_chat_provider("gemini", [], 1, settings=settings)
+        asyncio.run(chat_provider.run_chat_provider("gemini", [], 1, settings=settings))
 
 
 def test_gemini_fallback_failure_propagates_unchanged(tool_loop):
@@ -169,7 +188,7 @@ def test_gemini_fallback_failure_propagates_unchanged(tool_loop):
     )
 
     with pytest.raises(RuntimeError) as exc_info:
-        chat_provider.run_chat_provider("gemini", [], 1, settings=settings)
+        asyncio.run(chat_provider.run_chat_provider("gemini", [], 1, settings=settings))
 
     assert not isinstance(exc_info.value, SafetyBlockError)
 
@@ -181,8 +200,8 @@ def test_other_providers_do_not_translate_safety_text(tool_loop):
     tool_loop.behaviour.handler = behave
 
     with pytest.raises(RuntimeError) as exc_info:
-        chat_provider.run_chat_provider(
+        asyncio.run(chat_provider.run_chat_provider(
             "openai", [], 1, settings=SimpleNamespace(OPENAI_CHAT_MODEL="gpt")
-        )
+        ))
 
     assert not isinstance(exc_info.value, SafetyBlockError)

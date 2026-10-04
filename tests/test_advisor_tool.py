@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from types import SimpleNamespace
 
@@ -13,6 +14,10 @@ from features.ai.tools.context import (
 from features.ai.tools.models import AdvisorArgs, parameters_schema
 from features.ai.tools.registry import AI_TOOL_HANDLERS
 from features.ai.tools.schemas import OPENAI_TOOLS
+
+
+def _run(coro):
+    return asyncio.run(coro)
 
 
 def _response(content: str = "Use option B.") -> SimpleNamespace:
@@ -34,6 +39,10 @@ def _clear_advisor_state():
     yield
     advisor_tools._RATE_LIMITS.clear()
     clear_tool_request_context()
+
+
+async def _fake_run_ai_task(*args, **kwargs):
+    return _response()
 
 
 def _prepare_advisor(monkeypatch):
@@ -77,16 +86,16 @@ def test_advisor_calls_model_without_tools_or_chat_history(monkeypatch):
     set_tool_request_context({"user_id": 123, "private_value": "do-not-forward"})
     recorded = {}
 
-    def fake_run_ai_task(task, messages, **kwargs):
+    async def fake_run_ai_task(task, messages, **kwargs):
         recorded.update({"task": task, "messages": messages, "kwargs": kwargs})
         return _response()
 
     monkeypatch.setattr(advisor_tools, "run_ai_task", fake_run_ai_task)
 
-    result = advisor_tools.advisor_tool(
+    result = _run(advisor_tools.advisor_tool(
         "  Compare option A and option B.  ",
         "A is faster; B is safer.",
-    )
+    ))
 
     assert result == {"status": "ok", "advice": "Use option B."}
     assert recorded["task"] == "advisor"
@@ -105,11 +114,11 @@ def test_advisor_calls_model_without_tools_or_chat_history(monkeypatch):
 
 def test_advisor_enforces_one_call_per_request(monkeypatch):
     _prepare_advisor(monkeypatch)
-    monkeypatch.setattr(advisor_tools, "run_ai_task", lambda *args, **kwargs: _response())
+    monkeypatch.setattr(advisor_tools, "run_ai_task", _fake_run_ai_task)
     set_tool_request_context({"user_id": 123})
 
-    first = advisor_tools.advisor_tool("Review this plan")
-    second = advisor_tools.advisor_tool("Review it again")
+    first = _run(advisor_tools.advisor_tool("Review this plan"))
+    second = _run(advisor_tools.advisor_tool("Review it again"))
 
     assert first["status"] == "ok"
     assert second == {
@@ -123,12 +132,12 @@ def test_advisor_rate_limits_across_requests_for_same_user(monkeypatch):
     _prepare_advisor(monkeypatch)
     monkeypatch.setattr(advisor_tools.config, "AI_ADVISOR_RATE_LIMIT_MAX_CALLS", 1)
     monkeypatch.setattr(advisor_tools.time, "monotonic", lambda: 1000.0)
-    monkeypatch.setattr(advisor_tools, "run_ai_task", lambda *args, **kwargs: _response())
+    monkeypatch.setattr(advisor_tools, "run_ai_task", _fake_run_ai_task)
 
     set_tool_request_context({"user_id": 123})
-    first = advisor_tools.advisor_tool("First review")
+    first = _run(advisor_tools.advisor_tool("First review"))
     set_tool_request_context({"user_id": 123})
-    second = advisor_tools.advisor_tool("Second review")
+    second = _run(advisor_tools.advisor_tool("Second review"))
 
     assert first["status"] == "ok"
     assert second == {
@@ -143,15 +152,15 @@ def test_advisor_rate_limit_prunes_expired_users(monkeypatch):
     _prepare_advisor(monkeypatch)
     now = 1000.0
     monkeypatch.setattr(advisor_tools.time, "monotonic", lambda: now)
-    monkeypatch.setattr(advisor_tools, "run_ai_task", lambda *args, **kwargs: _response())
+    monkeypatch.setattr(advisor_tools, "run_ai_task", _fake_run_ai_task)
 
     set_tool_request_context({"user_id": 123})
-    assert advisor_tools.advisor_tool("First review")["status"] == "ok"
+    assert _run(advisor_tools.advisor_tool("First review"))["status"] == "ok"
     assert "123" in advisor_tools._RATE_LIMITS
 
     now += advisor_tools.config.AI_ADVISOR_RATE_LIMIT_WINDOW_SECONDS + 1
     set_tool_request_context({"user_id": 456})
-    assert advisor_tools.advisor_tool("Second review")["status"] == "ok"
+    assert _run(advisor_tools.advisor_tool("Second review"))["status"] == "ok"
 
     assert "123" not in advisor_tools._RATE_LIMITS
     assert "456" in advisor_tools._RATE_LIMITS
@@ -184,7 +193,7 @@ def test_advisor_busy_response_does_not_consume_user_rate_limit(monkeypatch):
 
     monkeypatch.setattr(advisor_tools, "_ADVISOR_SEMAPHORE", _BusySemaphore())
 
-    result = advisor_tools.advisor_tool("Review this")
+    result = _run(advisor_tools.advisor_tool("Review this"))
 
     assert result == {
         "status": "busy",
@@ -197,12 +206,12 @@ def test_advisor_returns_sanitized_error(monkeypatch):
     _prepare_advisor(monkeypatch)
     set_tool_request_context({"user_id": 123})
 
-    def fail(*args, **kwargs):
+    async def fail(*args, **kwargs):
         raise RuntimeError("secret endpoint and credential details")
 
     monkeypatch.setattr(advisor_tools, "run_ai_task", fail)
 
-    result = advisor_tools.advisor_tool("Review this")
+    result = _run(advisor_tools.advisor_tool("Review this"))
 
     assert result == {
         "status": "error",
@@ -216,7 +225,7 @@ def test_advisor_timeout_logs_warning_without_traceback(monkeypatch, caplog):
     monkeypatch.setattr(advisor_tools.config, "AI_ADVISOR_TIMEOUT_SECONDS", 120)
     set_tool_request_context({"user_id": 123})
 
-    def fail(*args, **kwargs):
+    async def fail(*args, **kwargs):
         timeout = LiteLLMTimeout(
             "Request timed out",
             model="advisor-model",
@@ -227,7 +236,7 @@ def test_advisor_timeout_logs_warning_without_traceback(monkeypatch, caplog):
     monkeypatch.setattr(advisor_tools, "run_ai_task", fail)
 
     with caplog.at_level(logging.WARNING):
-        result = advisor_tools.advisor_tool("Review this")
+        result = _run(advisor_tools.advisor_tool("Review this"))
 
     timeout_records = [
         record

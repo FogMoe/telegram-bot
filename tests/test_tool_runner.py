@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from features.ai import tool_runner
@@ -37,18 +39,18 @@ def _response_with_choices(*messages):
 def test_run_tool_loop_forwards_context_hard_limit_ratio(monkeypatch):
     calls = []
 
-    def fake_create_chat_completion(*args, **kwargs):
+    async def fake_create_chat_completion(*args, **kwargs):
         calls.append(kwargs)
         return _Response(_Message("done", None))
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
 
-    message, _ = tool_runner.run_tool_loop(
+    message, _ = asyncio.run(tool_runner.run_tool_loop(
         "test_provider",
         "test_model",
         [{"role": "user", "content": "summarize"}],
         context_hard_limit_ratio=1.5,
-    )
+    ))
 
     assert message == "done"
     assert calls[0]["context_hard_limit_ratio"] == 1.5
@@ -74,7 +76,7 @@ def test_run_tool_loop_uses_fogmoe_tool_calls_from_later_choice(monkeypatch):
     completion_calls = []
     handler_calls = []
 
-    def fake_create_chat_completion(*args, **kwargs):
+    async def fake_create_chat_completion(*args, **kwargs):
         completion_calls.append(kwargs)
         return responses.pop(0)
 
@@ -85,12 +87,12 @@ def test_run_tool_loop_uses_fogmoe_tool_calls_from_later_choice(monkeypatch):
         lambda **kwargs: handler_calls.append(kwargs) or {"organic_results": []},
     )
 
-    message, _ = tool_runner.run_tool_loop(
+    message, _ = asyncio.run(tool_runner.run_tool_loop(
         "fogmoe",
         "test_model",
         [{"role": "user", "content": "search example"}],
         provider_name="FOGMOE",
-    )
+    ))
 
     assert message == "done"
     assert handler_calls == [{"query": "example"}]
@@ -168,7 +170,7 @@ def test_run_tool_loop_uses_custom_prompt_and_tool_subset(monkeypatch):
     global_handler_calls = []
     custom_handler_calls = []
 
-    def fake_create_chat_completion(*args, **kwargs):
+    async def fake_create_chat_completion(*args, **kwargs):
         calls.append(kwargs)
         return responses.pop(0)
 
@@ -179,7 +181,7 @@ def test_run_tool_loop_uses_custom_prompt_and_tool_subset(monkeypatch):
         lambda **kwargs: global_handler_calls.append(kwargs) or {"records": []},
     )
 
-    message, _ = tool_runner.run_tool_loop(
+    message, _ = asyncio.run(tool_runner.run_tool_loop(
         "test_provider",
         "test_model",
         [{"role": "user", "content": "review"}],
@@ -192,7 +194,7 @@ def test_run_tool_loop_uses_custom_prompt_and_tool_subset(monkeypatch):
             )
         },
         system_prompt_override="recap system prompt",
-    )
+    ))
 
     assert message == "done"
     assert calls[0]["tools"] == [tool_definition]
@@ -226,7 +228,7 @@ def test_run_tool_loop_rejects_tool_outside_custom_subset(monkeypatch):
     calls = []
     handler_calls = []
 
-    def fake_create_chat_completion(*args, **kwargs):
+    async def fake_create_chat_completion(*args, **kwargs):
         calls.append(kwargs)
         return responses.pop(0)
 
@@ -237,14 +239,14 @@ def test_run_tool_loop_rejects_tool_outside_custom_subset(monkeypatch):
         lambda **kwargs: handler_calls.append(kwargs) or {"status": "updated"},
     )
 
-    message, _ = tool_runner.run_tool_loop(
+    message, _ = asyncio.run(tool_runner.run_tool_loop(
         "test_provider",
         "test_model",
         [{"role": "user", "content": "review"}],
         provider_name="Recap",
         tool_definitions=[],
         system_prompt_override="recap system prompt",
-    )
+    ))
 
     assert message == "done"
     assert handler_calls == []
@@ -273,7 +275,7 @@ def test_run_tool_loop_does_not_synthesize_tool_result_reply(monkeypatch):
 
     calls = []
 
-    def fake_create_chat_completion(*args, **kwargs):
+    async def fake_create_chat_completion(*args, **kwargs):
         calls.append(kwargs)
         return responses.pop(0)
 
@@ -296,12 +298,12 @@ def test_run_tool_loop_does_not_synthesize_tool_result_reply(monkeypatch):
         },
     )
 
-    message, tool_logs = tool_runner.run_tool_loop(
+    message, tool_logs = asyncio.run(tool_runner.run_tool_loop(
         "test_provider",
         "test_model",
         [{"role": "user", "content": "search example"}],
         provider_name="Test",
-    )
+    ))
 
     assert message == ""
     assert any(
@@ -333,7 +335,7 @@ def test_run_tool_loop_generates_final_reply_after_tool_limit(monkeypatch):
     ]
     calls = []
 
-    def fake_create_chat_completion(*args, **kwargs):
+    async def fake_create_chat_completion(*args, **kwargs):
         calls.append(kwargs)
         return responses.pop(0)
 
@@ -356,13 +358,13 @@ def test_run_tool_loop_generates_final_reply_after_tool_limit(monkeypatch):
         },
     )
 
-    message, tool_logs = tool_runner.run_tool_loop(
+    message, tool_logs = asyncio.run(tool_runner.run_tool_loop(
         "test_provider",
         "test_model",
         [{"role": "user", "content": "search example"}],
         provider_name="Test",
         max_iterations=1,
-    )
+    ))
 
     assert message == "根据已有搜索结果，Example result 是相关结果。"
     assert "抱歉，处理您的请求时遇到了问题" not in message
@@ -402,7 +404,7 @@ def test_run_tool_loop_raises_partial_response_when_followup_times_out(monkeypat
     calls = []
     sleeps = []
 
-    def fake_create_chat_completion(*args, **kwargs):
+    async def fake_create_chat_completion(*args, **kwargs):
         calls.append(kwargs)
         if len(calls) == 1:
             return first_response
@@ -413,7 +415,10 @@ def test_run_tool_loop_raises_partial_response_when_followup_times_out(monkeypat
         "create_chat_completion",
         fake_create_chat_completion,
     )
-    monkeypatch.setattr(tool_runner.time, "sleep", sleeps.append)
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(tool_runner.asyncio, "sleep", fake_sleep)
     monkeypatch.setitem(
         tool_runner.AI_TOOL_HANDLERS,
         "google_search",
@@ -421,12 +426,12 @@ def test_run_tool_loop_raises_partial_response_when_followup_times_out(monkeypat
     )
 
     with pytest.raises(tool_runner.PartialAIResponseError) as exc_info:
-        tool_runner.run_tool_loop(
+        asyncio.run(tool_runner.run_tool_loop(
             "test_provider",
             "test_model",
             [{"role": "user", "content": "search example"}],
             provider_name="Test",
-        )
+        ))
 
     assert [call["timeout"] for call in calls] == [300, 300, 300, 300]
     assert sleeps == list(tool_runner.POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS)
@@ -461,7 +466,7 @@ def test_run_tool_loop_retries_transient_followup_without_reexecuting_tool(monke
     class ServiceUnavailableError(Exception):
         status_code = 503
 
-    def fake_create_chat_completion(*args, **kwargs):
+    async def fake_create_chat_completion(*args, **kwargs):
         calls.append(kwargs)
         if len(calls) == 1:
             return first_response
@@ -474,19 +479,22 @@ def test_run_tool_loop_retries_transient_followup_without_reexecuting_tool(monke
         "create_chat_completion",
         fake_create_chat_completion,
     )
-    monkeypatch.setattr(tool_runner.time, "sleep", sleeps.append)
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(tool_runner.asyncio, "sleep", fake_sleep)
     monkeypatch.setitem(
         tool_runner.AI_TOOL_HANDLERS,
         "google_search",
         lambda **kwargs: tool_calls.append(kwargs) or {"organic_results": []},
     )
 
-    message, tool_logs = tool_runner.run_tool_loop(
+    message, tool_logs = asyncio.run(tool_runner.run_tool_loop(
         "test_provider",
         "test_model",
         [{"role": "user", "content": "search example"}],
         provider_name="Test",
-    )
+    ))
 
     assert message == "done"
     assert len(calls) == 3
@@ -516,7 +524,7 @@ def test_run_tool_loop_injects_telegram_events_before_final_reply(monkeypatch):
     ]
     calls = []
 
-    def fake_create_chat_completion(*args, **kwargs):
+    async def fake_create_chat_completion(*args, **kwargs):
         calls.append(kwargs)
         return responses.pop(0)
 
@@ -537,12 +545,12 @@ def test_run_tool_loop_injects_telegram_events_before_final_reply(monkeypatch):
         },
     )
 
-    message, tool_logs = tool_runner.run_tool_loop(
+    message, tool_logs = asyncio.run(tool_runner.run_tool_loop(
         "test_provider",
         "test_model",
         [{"role": "user", "content": "替我执行 /me"}],
         provider_name="Test",
-    )
+    ))
 
     assert message == "已经执行好了。"
     followup_messages = calls[1]["messages"]
@@ -601,7 +609,7 @@ def test_run_tool_loop_exposes_command_error_for_model_retry(monkeypatch):
     completion_calls = []
     tool_calls = []
 
-    def fake_create_chat_completion(*args, **kwargs):
+    async def fake_create_chat_completion(*args, **kwargs):
         completion_calls.append(kwargs)
         return responses.pop(0)
 
@@ -628,12 +636,12 @@ def test_run_tool_loop_exposes_command_error_for_model_retry(monkeypatch):
         fake_execute,
     )
 
-    message, _ = tool_runner.run_tool_loop(
+    message, _ = asyncio.run(tool_runner.run_tool_loop(
         "test_provider",
         "test_model",
         [{"role": "user", "content": "替我执行 /me"}],
         provider_name="Test",
-    )
+    ))
 
     assert message == "完成。"
     assert tool_calls == [{"command": "/mee"}, {"command": "/me"}]
@@ -666,7 +674,7 @@ def test_run_tool_loop_does_not_retry_non_transient_followup_error(monkeypatch):
     class BadRequestError(Exception):
         status_code = 400
 
-    def fake_create_chat_completion(*args, **kwargs):
+    async def fake_create_chat_completion(*args, **kwargs):
         calls.append(kwargs)
         if len(calls) == 1:
             return first_response
@@ -677,7 +685,10 @@ def test_run_tool_loop_does_not_retry_non_transient_followup_error(monkeypatch):
         "create_chat_completion",
         fake_create_chat_completion,
     )
-    monkeypatch.setattr(tool_runner.time, "sleep", sleeps.append)
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(tool_runner.asyncio, "sleep", fake_sleep)
     monkeypatch.setitem(
         tool_runner.AI_TOOL_HANDLERS,
         "google_search",
@@ -685,12 +696,12 @@ def test_run_tool_loop_does_not_retry_non_transient_followup_error(monkeypatch):
     )
 
     with pytest.raises(tool_runner.PartialAIResponseError):
-        tool_runner.run_tool_loop(
+        asyncio.run(tool_runner.run_tool_loop(
             "test_provider",
             "test_model",
             [{"role": "user", "content": "search example"}],
             provider_name="Test",
-        )
+        ))
 
     assert len(calls) == 2
     assert sleeps == []
@@ -716,14 +727,14 @@ def test_run_tool_loop_sends_generated_voice_immediately(monkeypatch):
         _Response(_Message("", None)),
     ]
 
-    def fake_create_chat_completion(*args, **kwargs):
+    async def fake_create_chat_completion(*args, **kwargs):
         return responses.pop(0)
 
     class _VisibleHandler:
         def __init__(self):
             self.calls = []
 
-        def send_tool_media(self, tool_name, result):
+        async def send_tool_media(self, tool_name, result):
             self.calls.append((tool_name, result))
             return ["sent_message"]
 
@@ -743,13 +754,13 @@ def test_run_tool_loop_sends_generated_voice_immediately(monkeypatch):
         },
     )
 
-    message, tool_logs = tool_runner.run_tool_loop(
+    message, tool_logs = asyncio.run(tool_runner.run_tool_loop(
         "test_provider",
         "test_model",
         [{"role": "user", "content": "say hello"}],
         provider_name="Test",
         visible_content_handler=visible_handler,
-    )
+    ))
 
     voice_results = [
         log

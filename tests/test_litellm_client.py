@@ -1,5 +1,7 @@
+import asyncio
+
 import pytest
-from litellm.llms.custom_httpx.http_handler import HTTPHandler
+from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 
 from core import config
 from core.litellm_models import litellm_model_name
@@ -11,6 +13,14 @@ from features.ai.litellm_provider_config import (
     openai_compatible_api_base,
     provider_params,
 )
+
+
+def _async_recorder(calls, result="ok"):
+    async def fake(**kwargs):
+        calls.append(kwargs)
+        return result
+
+    return fake
 
 
 def test_openai_compatible_api_base_strips_chat_completions_suffix():
@@ -239,20 +249,20 @@ def test_create_chat_completion_normalizes_provider_and_filters_none_kwargs(
     monkeypatch.setattr(config, "ZAI_API_KEY", "zai-key")
     monkeypatch.setattr(config, "ZAI_API_BASE", "https://zai.test/v4")
 
-    def fake_completion(**kwargs):
+    async def fake_completion(**kwargs):
         calls.append(kwargs)
         return "ok"
 
-    monkeypatch.setattr(litellm_client.litellm, "completion", fake_completion)
+    monkeypatch.setattr(litellm_client.litellm, "acompletion", fake_completion)
 
     assert (
-        litellm_client.create_chat_completion(
+        asyncio.run(litellm_client.create_chat_completion(
             "zhipu",
             "glm-test",
             messages,
             temperature=None,
             timeout=30,
-        )
+        ))
         == "ok"
     )
     assert calls == [
@@ -305,12 +315,12 @@ def test_create_chat_completion_routes_new_providers(
     )
     monkeypatch.setattr(
         litellm_client.litellm,
-        "completion",
-        lambda **kwargs: calls.append(kwargs) or "ok",
+        "acompletion",
+        _async_recorder(calls),
     )
 
     messages = [{"role": "user", "content": "hello"}]
-    assert litellm_client.create_chat_completion(provider, model, messages) == "ok"
+    assert asyncio.run(litellm_client.create_chat_completion(provider, model, messages)) == "ok"
     assert calls == [
         {
             "model": expected_model,
@@ -342,15 +352,15 @@ def test_create_chat_completion_uses_twenty_five_percent_hard_limit(monkeypatch)
         fake_enforce,
     )
     monkeypatch.setattr(litellm_client, "_provider_params", lambda provider: {})
-    monkeypatch.setattr(litellm_client.litellm, "completion", lambda **kwargs: "ok")
+    monkeypatch.setattr(litellm_client.litellm, "acompletion", _async_recorder([]))
 
     assert (
-        litellm_client.create_chat_completion(
+        asyncio.run(litellm_client.create_chat_completion(
             "openai",
             "test-model",
             messages,
             tools=tools,
-        )
+        ))
         == "ok"
     )
     assert recorded == {
@@ -385,17 +395,17 @@ def test_create_chat_completion_accepts_summary_hard_limit_override(monkeypatch)
     monkeypatch.setattr(litellm_client, "_provider_params", lambda provider: {})
     monkeypatch.setattr(
         litellm_client.litellm,
-        "completion",
-        lambda **kwargs: provider_calls.append(kwargs) or "ok",
+        "acompletion",
+        _async_recorder(provider_calls),
     )
 
     assert (
-        litellm_client.create_chat_completion(
+        asyncio.run(litellm_client.create_chat_completion(
             "openai",
             "summary-model",
             messages,
             context_hard_limit_ratio=1.5,
-        )
+        ))
         == "ok"
     )
     assert recorded["token_limit"] == 180_000
@@ -408,7 +418,7 @@ def test_create_chat_completion_blocks_before_provider_call(monkeypatch):
     def reject_request(messages, **kwargs):
         raise context_budget.ContextBudgetExceededError(150_001, 150_000)
 
-    def fake_completion(**kwargs):
+    async def fake_completion(**kwargs):
         nonlocal provider_called
         provider_called = True
 
@@ -417,14 +427,14 @@ def test_create_chat_completion_blocks_before_provider_call(monkeypatch):
         "enforce_messages_context_budget",
         reject_request,
     )
-    monkeypatch.setattr(litellm_client.litellm, "completion", fake_completion)
+    monkeypatch.setattr(litellm_client.litellm, "acompletion", fake_completion)
 
     with pytest.raises(context_budget.ContextBudgetExceededError):
-        litellm_client.create_chat_completion(
+        asyncio.run(litellm_client.create_chat_completion(
             "openai",
             "test-model",
             [{"role": "user", "content": "oversized"}],
-        )
+        ))
 
     assert provider_called is False
 
@@ -451,13 +461,13 @@ def test_create_chat_completion_uses_openai_history_shape_for_compatible_gemini(
     monkeypatch.setattr(config, "GEMINI_OPENAI_COMPATIBLE", True)
     monkeypatch.setattr(config, "GEMINI_API_BASE", "https://gemini-compatible.test/v1")
 
-    def fake_completion(**kwargs):
+    async def fake_completion(**kwargs):
         calls.append(kwargs)
         return "ok"
 
-    monkeypatch.setattr(litellm_client.litellm, "completion", fake_completion)
+    monkeypatch.setattr(litellm_client.litellm, "acompletion", fake_completion)
 
-    assert litellm_client.create_chat_completion("gemini", "gemini-test", messages) == "ok"
+    assert asyncio.run(litellm_client.create_chat_completion("gemini", "gemini-test", messages)) == "ok"
     assert calls[0]["model"] == "openai/gemini-test"
     assert calls[0]["messages"] == [
         {
@@ -478,19 +488,21 @@ def test_gemini_native_http_handler_uses_canonical_system_instruction_key(
 ):
     recorded = {}
 
-    def fake_post(self, *args, **kwargs):
+    async def fake_post(self, *args, **kwargs):
         recorded.update(kwargs)
         return "ok"
 
-    monkeypatch.setattr(HTTPHandler, "post", fake_post)
-    handler = object.__new__(litellm_client._GeminiNativeHTTPHandler)
+    monkeypatch.setattr(AsyncHTTPHandler, "post", fake_post)
+    handler = object.__new__(litellm_client._GeminiNativeAsyncHTTPHandler)
 
     assert (
-        handler.post(
-            json={
-                "system_instruction": {"parts": [{"text": "system"}]},
-                "contents": [],
-            }
+        asyncio.run(
+            handler.post(
+                json={
+                    "system_instruction": {"parts": [{"text": "system"}]},
+                    "contents": [],
+                }
+            )
         )
         == "ok"
     )
@@ -512,7 +524,7 @@ def test_create_chat_completion_uses_compat_client_for_custom_native_gemini(
             self.closed = False
             clients.append(self)
 
-        def close(self):
+        async def close(self):
             self.closed = True
 
     monkeypatch.setattr(config, "GEMINI_API_KEY", "gemini-key")
@@ -520,13 +532,13 @@ def test_create_chat_completion_uses_compat_client_for_custom_native_gemini(
     monkeypatch.setattr(config, "GEMINI_API_BASE", "https://gemini-native.test/v1beta")
     monkeypatch.setattr(
         litellm_client,
-        "_GeminiNativeHTTPHandler",
+        "_GeminiNativeAsyncHTTPHandler",
         FakeCompatClient,
     )
     monkeypatch.setattr(
         litellm_client.litellm,
-        "completion",
-        lambda **kwargs: calls.append(kwargs) or "ok",
+        "acompletion",
+        _async_recorder(calls),
     )
 
     messages = [
@@ -534,12 +546,12 @@ def test_create_chat_completion_uses_compat_client_for_custom_native_gemini(
         {"role": "user", "content": "hello"},
     ]
     assert (
-        litellm_client.create_chat_completion(
+        asyncio.run(litellm_client.create_chat_completion(
             "gemini",
             "gemini-test",
             messages,
             timeout=17,
-        )
+        ))
         == "ok"
     )
     assert calls[0]["client"] is clients[0]

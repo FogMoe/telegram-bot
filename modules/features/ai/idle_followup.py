@@ -40,7 +40,6 @@ from features.ai.provider_resolver import (
 )
 from features.ai.reply_filter import normalize_ai_reply_text
 from features.ai.router import runtime_error_cause
-from features.ai.runtime import EXECUTOR
 from features.ai.sticker_sender import (
     PartialAIReplySendError,
     normalize_sticker_directives,
@@ -289,7 +288,7 @@ def _parse_recap_response(value: object) -> dict[str, Any]:
     return result
 
 
-def _generate_recap_sync(
+async def _generate_recap_with_retries(
     user_id: int,
     dialogue: list[dict[str, str]],
     memory_context: dict[str, Any],
@@ -315,7 +314,7 @@ def _generate_recap_sync(
     last_error: Exception | None = None
     for attempt in range(1, IDLE_RECAP_RETRY_LIMIT + 1):
         try:
-            content = _run_recap_agent(messages, user_id, response_format)
+            content = await _run_recap_agent(messages, user_id, response_format)
             return _parse_recap_response(content)
         except Exception as exc:
             last_error = exc
@@ -328,7 +327,7 @@ def _generate_recap_sync(
     raise RuntimeError("Idle recap generation failed after retries") from last_error
 
 
-def _run_recap_agent(
+async def _run_recap_agent(
     messages: list[dict[str, Any]],
     user_id: int,
     response_format: dict[str, Any],
@@ -354,7 +353,7 @@ def _run_recap_agent(
                     "response_format": response_format,
                     "drop_params": False,
                 }
-                content, _ = run_tool_loop(
+                content, _ = await run_tool_loop(
                     provider,
                     model,
                     messages,
@@ -386,14 +385,7 @@ async def _generate_recap(
     dialogue: list[dict[str, str]],
     memory_context: dict[str, Any],
 ) -> dict[str, Any]:
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        EXECUTOR,
-        _generate_recap_sync,
-        user_id,
-        dialogue,
-        memory_context,
-    )
+    return await _generate_recap_with_retries(user_id, dialogue, memory_context)
 
 
 async def _load_recap_memory_context(user_id: int) -> dict[str, Any]:

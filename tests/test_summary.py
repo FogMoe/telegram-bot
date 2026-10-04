@@ -1,4 +1,9 @@
+import asyncio
 import json
+
+import pytest
+
+from core import background
 
 from features.ai import summary
 from features.ai.tools.context import get_tool_request_context
@@ -9,7 +14,7 @@ def test_generate_summary_counts_with_response_model(monkeypatch):
     recorded = {}
     agent_call = {}
 
-    def fake_run_summary_agent(messages, user_id, record_id):
+    async def fake_run_summary_agent(messages, user_id, record_id):
         agent_call.update(
             messages=messages,
             user_id=user_id,
@@ -29,7 +34,7 @@ def test_generate_summary_counts_with_response_model(monkeypatch):
 
     monkeypatch.setattr(summary, "_trim_summary_to_tokens", fake_trim)
 
-    assert summary._generate_summary(123, 456, "[]", "previous summary") == (
+    assert asyncio.run(summary._generate_summary(123, 456, "[]", "previous summary")) == (
         "generated summary"
     )
     assert recorded == {
@@ -68,14 +73,13 @@ def test_trim_summary_passes_model_to_token_estimator(monkeypatch):
 def test_fetch_previous_summary_uses_only_earlier_valid_record(monkeypatch):
     captured = {}
 
-    def fake_fetch_one(sql, params):
+    async def fake_fetch_one(sql, params):
         captured.update(sql=sql, params=params)
         return (b" previous summary ",)
 
     monkeypatch.setattr(summary.mysql_connection, "fetch_one", fake_fetch_one)
-    monkeypatch.setattr(summary.mysql_connection, "run_sync", lambda value: value)
 
-    assert summary._fetch_previous_summary(123, 456) == "previous summary"
+    assert asyncio.run(summary._fetch_previous_summary(123, 456)) == "previous summary"
     assert captured["params"] == (123, 456)
     assert "id < %s" in captured["sql"]
     assert "summary IS NOT NULL" in captured["sql"]
@@ -100,7 +104,7 @@ def test_run_summary_agent_exposes_only_summary_search_tool(monkeypatch):
         lambda provider, task: {},
     )
 
-    def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
+    async def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
         captured.update(
             provider=provider,
             model=model,
@@ -113,11 +117,11 @@ def test_run_summary_agent_exposes_only_summary_search_tool(monkeypatch):
 
     monkeypatch.setattr(summary, "run_tool_loop", fake_run_tool_loop)
 
-    result = summary._run_summary_agent(
+    result = asyncio.run(summary._run_summary_agent(
         [{"role": "user", "content": "summarize"}],
         123,
         456,
-    )
+    ))
 
     tool_names = {
         tool["function"]["name"]
@@ -225,3 +229,91 @@ def test_format_history_replaces_idle_recap_with_trigger_marker():
     assert "likes concise replies" not in result
     assert "preparing a presentation" not in result
     assert "USER:" not in result
+
+
+# -- 后台摘要：有界并发、关停取消、即时摘要的超时 ----------------------------------------------
+
+
+@pytest.fixture
+def clean_background():
+    background.BACKGROUND.reopen()
+    summary._slot_state = None
+    yield
+    background.BACKGROUND.reopen()
+    summary._slot_state = None
+
+
+def test_background_summaries_run_with_bounded_concurrency(monkeypatch, clean_background):
+    state = {"running": 0, "peak": 0, "done": []}
+
+    async def fake_generate(user_id):
+        state["running"] += 1
+        state["peak"] = max(state["peak"], state["running"])
+        await asyncio.sleep(0.03)
+        state["running"] -= 1
+        state["done"].append(user_id)
+        return None  # 没有摘要可更新：不碰数据库
+
+    monkeypatch.setattr(summary, "_generate_and_store_summary", fake_generate)
+
+    async def scenario():
+        for user_id in range(6):
+            summary.schedule_summary_generation(user_id)
+        assert background.BACKGROUND.pending == 6
+        await background.BACKGROUND.shutdown(grace_seconds=5)
+
+    asyncio.run(scenario())
+
+    assert sorted(state["done"]) == list(range(6))
+    assert state["peak"] == summary.SUMMARY_CONCURRENCY == 2
+    assert background.BACKGROUND.pending == 0
+
+
+def test_shutdown_cancels_summaries_that_are_still_running(monkeypatch, clean_background):
+    cancelled = []
+
+    async def hanging_generate(user_id):
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.append(user_id)
+            raise
+
+    monkeypatch.setattr(summary, "_generate_and_store_summary", hanging_generate)
+
+    async def scenario():
+        summary.schedule_summary_generation(1)
+        summary.schedule_summary_generation(2)
+        await asyncio.sleep(0.02)
+        return await background.BACKGROUND.shutdown()
+
+    assert asyncio.run(scenario()) == 2
+    assert sorted(cancelled) == [1, 2]
+
+
+def test_scheduling_without_a_user_or_without_a_running_loop_is_harmless(clean_background):
+    summary.schedule_summary_generation(None)
+    summary.schedule_summary_generation(5)  # 没有运行中的事件循环：丢弃，不抛异常
+
+    assert background.BACKGROUND.pending == 0
+
+
+def test_an_immediate_summary_that_takes_too_long_falls_back_to_the_background(
+    monkeypatch, clean_background
+):
+    async def hanging_generate(user_id):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(summary, "_generate_and_store_summary", hanging_generate)
+    monkeypatch.setattr(summary, "SUMMARY_IMMEDIATE_TIMEOUT_SECONDS", 0.05)
+
+    assert asyncio.run(summary.generate_summary_immediately(1)) is None
+
+
+def test_an_immediate_summary_returns_the_generated_text(monkeypatch, clean_background):
+    async def fake_generate(user_id):
+        return f"summary for {user_id}"
+
+    monkeypatch.setattr(summary, "_generate_and_store_summary", fake_generate)
+
+    assert asyncio.run(summary.generate_summary_immediately(9)) == "summary for 9"

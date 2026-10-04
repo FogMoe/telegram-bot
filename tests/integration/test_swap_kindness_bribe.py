@@ -1,6 +1,5 @@
 """代币兑换、AI 善意赠币与贿赂：扣款/入账与业务记录同事务，重复执行与并发不重复变动（真实 MySQL）。"""
 
-import asyncio
 
 import pytest
 from economy_support import (
@@ -14,7 +13,7 @@ from economy_support import (
 )
 from mysql_support import execute, fetch, fetch_scalar, run
 
-from core import balance, db, mysql_connection, process_user
+from core import balance, mysql_connection, process_user
 from features.ai.tools import context as tool_context
 from features.ai.tools import user_tools
 from features.crypto import swap_fogmoe_solana_token as swap
@@ -255,11 +254,10 @@ class TestKindnessGift:
         seed_user(app_database, 1, free=3, name="alice")
 
         async def scenario():
-            db.set_main_loop(asyncio.get_running_loop())
             tool_context.set_tool_request_context({"user_id": 1})
-            # 工具是同步函数，在工作线程里通过 run_sync 回到主事件循环。
-            first = await asyncio.to_thread(user_tools.kindness_gift_tool, amount=5)
-            second = await asyncio.to_thread(user_tools.kindness_gift_tool, amount=5)
+            # 工具是 async 函数，直接在事件循环里 await，不再绕工作线程与 run_sync。
+            first = await user_tools.kindness_gift_tool(amount=5)
+            second = await user_tools.kindness_gift_tool(amount=5)
             return first, second
 
         first, second = run(scenario())
@@ -279,11 +277,10 @@ class TestKindnessGift:
         seed_user(app_database, 1, free=0)
 
         async def scenario():
-            db.set_main_loop(asyncio.get_running_loop())
             tool_context.set_tool_request_context({"user_id": 1})
-            granted = await asyncio.to_thread(user_tools.kindness_gift_tool, amount=999)
+            granted = await user_tools.kindness_gift_tool(amount=999)
             tool_context.set_tool_request_context({"user_id": 404})
-            missing = await asyncio.to_thread(user_tools.kindness_gift_tool, amount=5)
+            missing = await user_tools.kindness_gift_tool(amount=5)
             return granted, missing
 
         granted, missing = run(scenario())

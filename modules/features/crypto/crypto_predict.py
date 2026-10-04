@@ -1,5 +1,5 @@
 import asyncio
-from core import balance, mysql_connection, process_user
+from core import balance, blocking, mysql_connection, process_user
 import logging
 from datetime import datetime, timedelta
 from binance.um_futures import UMFutures
@@ -26,11 +26,16 @@ async def get_user_lock(user_id):
         user_locks[user_id] = asyncio.Lock()
     return user_locks[user_id]
 
+def _fetch_btc_mark_price() -> float:
+    """同步的 binance 请求（requests 实现）：只能在线程适配器里调用。"""
+    client = UMFutures()
+    return float(client.mark_price("BTCUSDT")['markPrice'])
+
+
 async def get_btc_price():
     """获取比特币当前价格"""
     try:
-        client = UMFutures()
-        btc_price = float(client.mark_price("BTCUSDT")['markPrice'])
+        btc_price = await blocking.io().run(_fetch_btc_mark_price)
         return btc_price, None
     except Exception as e:
         error_ref = log_exception(logger, "获取比特币价格失败", e)

@@ -1,5 +1,6 @@
 """provider 声明表：声明的配置键真实存在，名字与别名解析一致，声明驱动的各项行为。"""
 
+import asyncio
 from dataclasses import replace
 from types import MappingProxyType, SimpleNamespace
 
@@ -201,13 +202,13 @@ def test_a_provider_without_vision_is_skipped_for_the_vision_task(monkeypatch):
     )
     monkeypatch.setattr(task_runner, "get_models_for_task", lambda p, t: [f"{p}-model"])
 
-    def fake_create(provider, model, messages, **kwargs):
+    async def fake_create(provider, model, messages, **kwargs):
         calls.append(provider)
         return "ok"
 
     monkeypatch.setattr(task_runner, "create_chat_completion", fake_create)
 
-    assert task_runner.run_ai_task("vision", [{"role": "user", "content": "x"}]) == "ok"
+    assert asyncio.run(task_runner.run_ai_task("vision", [{"role": "user", "content": "x"}])) == "ok"
     assert calls == ["gemini"]
 
 

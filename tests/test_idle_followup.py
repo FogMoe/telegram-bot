@@ -188,7 +188,7 @@ def test_load_recap_memory_context_uses_saved_impression_and_diary_index(monkeyp
 def test_generate_recap_requests_strict_sdk_json_schema(monkeypatch):
     captured = {}
 
-    def fake_run_recap_agent(messages, user_id, response_format):
+    async def fake_run_recap_agent(messages, user_id, response_format):
         captured.update(
             messages=messages,
             user_id=user_id,
@@ -202,14 +202,14 @@ def test_generate_recap_requests_strict_sdk_json_schema(monkeypatch):
 
     monkeypatch.setattr(idle_followup, "_run_recap_agent", fake_run_recap_agent)
 
-    result = idle_followup._generate_recap_sync(
+    result = asyncio.run(idle_followup._generate_recap_with_retries(
         321,
         [{"role": "user", "content": "最近很忙"}],
         {
             "impression": "喜欢简洁回答",
             "diary_index": [{"page": 1, "title": "Projects", "summary": "旧项目"}],
         },
-    )
+    ))
 
     response_format = captured["response_format"]
     assert result["recap"] == "聊了计划"
@@ -245,7 +245,7 @@ def test_run_recap_agent_exposes_only_read_only_memory_tools(monkeypatch):
         lambda provider, task: {},
     )
 
-    def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
+    async def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
         captured.update(
             provider=provider,
             model=model,
@@ -259,11 +259,11 @@ def test_run_recap_agent_exposes_only_read_only_memory_tools(monkeypatch):
     monkeypatch.setattr(idle_followup, "run_tool_loop", fake_run_tool_loop)
 
     response_format = {"type": "json_schema"}
-    result = idle_followup._run_recap_agent(
+    result = asyncio.run(idle_followup._run_recap_agent(
         [{"role": "user", "content": "review"}],
         456,
         response_format,
-    )
+    ))
 
     tool_names = {
         tool["function"]["name"]

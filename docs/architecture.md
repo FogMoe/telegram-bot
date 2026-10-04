@@ -27,6 +27,7 @@ app → core
 | `handler_groups.py` | 按功能分组调用各 feature 的 `setup_*`，不实现业务 |
 | `error_handler.py` | 全局错误回复，属于运行时而非某个功能；日志与回复的脱敏规则见 [sensitive-data.md](sensitive-data.md) |
 | `smoke_check.py` | `main.py --check` 的启动冒烟检查：组装 Application 并注册 handler，不连接 Telegram 和数据库 |
+| `runtime_lifecycle.py` | 运行时的启动与关停顺序：准入、后台任务、HTTP 客户端、线程适配器、数据库引擎，见 [runtime.md](runtime.md) |
 
 `register_core_command_handlers` 仍在组装层直接 `add_handler`：那一组命令的注册顺序在历史上跨功能交错，
 而 `tests/test_handler_registry.py` 把最终顺序当作契约。要改成自注册必须先改这个契约。
@@ -45,6 +46,9 @@ app → core
 | `telegram_history.py` | Telegram 可见事件 → 对话历史的记录层，只写库并发信号 |
 | `balance.py` / `stake_reward_pool.py` | 金币与奖池变动的唯一入口：带 op_key 的幂等操作和账本，契约见 [balance-service.md](balance-service.md) |
 | `process_user.py` | 用户好感、印象、抽奖；旧的金币函数暂时保留并委托给余额服务（待移除） |
+| `admission.py` / `deadline.py` | 对话轮次的准入控制（全局并发、每用户待处理数、有界排队）与整轮截止时间，见 [runtime.md](runtime.md) |
+| `blocking.py` / `background.py` / `http_sessions.py` | 有界线程适配器（只给必须同步的代码用）、后台任务登记（关停时取消）、同步 HTTP 会话登记（关停时关闭） |
+| `metrics.py` | 进程内指标（计数器、仪表、直方图）与周期汇总日志 |
 | `redaction.py` / `command_privacy.py` | 敏感数据脱敏策略的单一来源、凭据类命令的私聊限制，契约见 [sensitive-data.md](sensitive-data.md) |
 | `telegram_utils.py` / `prompt_utils.py` / `token_estimator.py` / `archive_utils.py` / `command_cooldown.py` | 通用工具 |
 
@@ -81,8 +85,9 @@ app → core
 ## 一轮对话
 
 `ConversationTurn.run`（`features/conversation/turn.py`）按固定顺序执行 `turn_types.Stage` 里的阶段，
-每个阶段的耗时记录在 `TurnResult.timings`，整轮结束时记一行 INFO 日志。排队（等会话锁）发生在进入之前，
-由 `handlers._reply_locked` 测量后放进 `TurnRequest.queue_seconds`。
+每个阶段的耗时记录在 `TurnResult.timings`，整轮结束时记一行 INFO 日志并写入指标。排队（每用户待处理数、会话锁、全局槽位）
+发生在进入之前，由 `handlers` 测量后放进 `TurnRequest.queue_seconds`；排队被拒绝时这一轮没有开始，也就没有扣费。
+整轮截止时间 `TurnRequest.deadline` 从进入队列开始计时，覆盖排队、`prepare`、`model` 与 `delivery`，规则见 [runtime.md](runtime.md)。
 
 | 阶段 | 做什么 | 提前结束的状态（都已回复用户） |
 |---|---|---|
@@ -106,12 +111,14 @@ app → core
 - `delivery` 阶段只做 Telegram 发送与群聊历史记录。
 
 模型执行只有一个调用点：`TurnServices.run_model`，输入输出是 `ModelRequest` / `ModelResponse`。
-默认实现转给 `features/ai` 的 `get_ai_response`（路由、provider fallback、工具循环都在它后面）。
+默认实现转给 `features/ai` 的 `get_ai_response`（路由、provider fallback、工具循环都在它后面），它是原生 async：
+模型调用 `litellm.acompletion`，async 工具直接 `await`，同步工具走有界线程适配器，没有「事件循环 → 线程 → 事件循环」的往返。
 `model` 阶段在它外面设置「不记录 bot 自己发出的消息」的历史作用域，这属于一轮对话的历史语义，不属于模型执行。
 `TurnServices` 的其余字段是历史读写、投递与媒体识别；测试用 `dataclasses.replace(default_services(), ...)`
 替换需要的部分，不起 bot、不连数据库，见 `tests/test_conversation_turn.py`。
 
-提前结束的状态里，`MEDIA_TOO_LARGE` 与 `MEDIA_FAILED` 发生在扣费之后，这一轮不退款。
+提前结束的状态里，`MEDIA_TOO_LARGE`、`MEDIA_FAILED` 与 `DEADLINE_EXCEEDED`（准备阶段截止时间到期）发生在扣费之后，这一轮不退款。
+模型阶段与投递阶段到期不是提前结束：回复固定的超时提示，历史与收尾照常进行，同样不退款。
 
 ## core 与业务之间的回调
 
@@ -160,6 +167,7 @@ app → core
 | 文档 | 内容 |
 |---|---|
 | [balance-service.md](balance-service.md) | 金币与奖池变动的规则、`op_key`、账本 |
+| [runtime.md](runtime.md) | 执行模型、准入与整轮截止时间、线程适配器清单、取消与关停顺序、指标与基准 |
 | [job-recovery.md](job-recovery.md) | 定时任务与空闲跟进的 claim、租约、阶段与恢复 |
 | [sensitive-data.md](sensitive-data.md) | 脱敏策略的单一来源与覆盖路径 |
 | [database-migrations.md](database-migrations.md) | 迁移的安装、升级、恢复与编写规则，MySQL 集成测试夹具 |

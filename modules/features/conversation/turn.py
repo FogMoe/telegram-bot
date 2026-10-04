@@ -9,14 +9,14 @@ Telegram handler（`handlers.py`）负责把 `Update` 映射成 `TurnRequest`、
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from core import balance
+from core import balance, metrics
+from core.deadline import DeadlineExceeded
 from core.prompt_utils import format_user_state_prompt
 from core.redaction import redact_text
 from core.telegram_history import (
@@ -30,6 +30,7 @@ from core.telegram_history import (
 from core.telegram_utils import partial_send
 from features.ai import ai_chat
 from features.ai.reply_filter import normalize_ai_reply_text
+from features.ai.router import TURN_DEADLINE_ERROR_MESSAGE, TURN_SHUTDOWN_ERROR_MESSAGE
 from features.ai.tool_history import (
     tool_logs_completed_clear,
     tool_logs_to_record_entries,
@@ -77,6 +78,9 @@ OVERFLOW_WARNING_TEXT = (
 )
 
 OVERFLOW = "overflow"
+
+# 整轮截止时间到期之后，最终回复（超时提示）仍然可以用的投递宽限。
+DELIVERY_GRACE_SECONDS = 30.0
 
 
 def insufficient_balance_text(total_cost: int) -> str:
@@ -291,6 +295,24 @@ class ConversationTurn:
     # -- prepare ------------------------------------------------------------
 
     async def _prepare(self, planned: list[PlannedMessage]) -> _PreparedInput:
+        """下载并识别媒体：受整轮截止时间约束，到期时回复提示并结束这一轮（已扣的费不退）。"""
+        deadline = self.request.deadline
+        if deadline is None:
+            return await self._prepare_inputs(planned)
+        try:
+            async with deadline.guard():
+                return await self._prepare_inputs(planned)
+        except DeadlineExceeded as exc:
+            metrics.counter("turn.deadline_hits", reason=exc.reason, phase="prepare").inc()
+            await self.services.reply_text(
+                self.request.reply_target,
+                TURN_SHUTDOWN_ERROR_MESSAGE
+                if exc.reason == "shutdown"
+                else TURN_DEADLINE_ERROR_MESSAGE,
+            )
+            raise _Stop(TurnStatus.DEADLINE_EXCEEDED) from exc
+
+    async def _prepare_inputs(self, planned: list[PlannedMessage]) -> _PreparedInput:
         prepared = _PreparedInput()
         for item in planned:
             message: Any = item.message
@@ -457,7 +479,6 @@ class ConversationTurn:
             logger.debug("Failed to send typing action before AI request")
 
         visible_content_handler = services.make_visible_handler(
-            loop=asyncio.get_running_loop(),
             bot=request.bot,
             chat_id=chat_id,
             first_text_send=reply_target.reply_text,
@@ -477,6 +498,7 @@ class ConversationTurn:
                     user_id=request.sender.user_id,
                     tool_context=build_tool_context(request, user_state_prompt),
                     visible_content_handler=visible_content_handler,
+                    deadline=request.deadline,
                 )
             )
         self._sent_messages.extend(getattr(visible_content_handler, "sent_messages", []))
@@ -521,6 +543,24 @@ class ConversationTurn:
     # -- delivery -----------------------------------------------------------
 
     async def _deliver(self, reply: _Reply) -> None:
+        """投递：受整轮截止时间加上固定宽限约束（宽限让「超时提示」本身还能发出去）。"""
+        deadline = self.request.deadline
+        if deadline is None:
+            await self._deliver_messages(reply)
+            return
+        try:
+            async with deadline.guard(extra=DELIVERY_GRACE_SECONDS):
+                await self._deliver_messages(reply)
+        except DeadlineExceeded as exc:
+            metrics.counter("turn.deadline_hits", reason=exc.reason, phase="delivery").inc()
+            logger.warning(
+                "delivery was cut short by the turn deadline (%s): user_id=%s chat_id=%s",
+                exc.reason,
+                self.request.sender.user_id,
+                self.request.chat.chat_id,
+            )
+
+    async def _deliver_messages(self, reply: _Reply) -> None:
         request = self.request
         services = self.services
         chat_id = request.chat.chat_id
@@ -694,6 +734,13 @@ async def run_turn(
         status = result.status.value
         return result
     finally:
+        timings = turn.timer.snapshot()
+        metrics.counter("turn.finished", status=status).inc()
+        metrics.histogram("turn.queue_seconds").observe(timings.queue_seconds)
+        metrics.histogram("turn.run_seconds").observe(timings.run_seconds)
+        metrics.histogram("turn.total_seconds").observe(
+            timings.queue_seconds + timings.run_seconds
+        )
         logger.info(
             "conversation turn finished: user_id=%s chat_id=%s messages=%s status=%s %s",
             request.sender.user_id,

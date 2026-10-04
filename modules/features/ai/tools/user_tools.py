@@ -109,7 +109,7 @@ def _iso(moment: datetime) -> str:
     return moment.isoformat(sep=" ")
 
 
-def kindness_gift_tool(
+async def kindness_gift_tool(
     amount: Optional[int] = None,
     **kwargs,
 ) -> dict:
@@ -126,7 +126,7 @@ def kindness_gift_tool(
     amt = max(1, min(amt, 10))
 
     try:
-        outcome = mysql_connection.run_sync(grant_kindness(recipient_id, amt))
+        outcome = await grant_kindness(recipient_id, amt)
     except Exception as exc:
         logging.error("Failed to record kindness gift: %s", exc)
         return {"error": "Error recording gift, please try again later"}
@@ -156,7 +156,7 @@ def kindness_gift_tool(
     }
 
 
-def update_affection_tool(delta: int, **kwargs) -> dict:
+async def update_affection_tool(delta: int, **kwargs) -> dict:
     """Adjust the AI's affection towards the current user."""
     if not AFFECTION_TOOL_ENABLED:
         return {"error": "Affection tool is temporarily disabled"}
@@ -177,7 +177,7 @@ def update_affection_tool(delta: int, **kwargs) -> dict:
         change = -10
 
     try:
-        affection = process_user.get_user_affection_sync(user_id)
+        affection = await process_user.get_user_affection(user_id)
     except Exception as exc:
         logging.exception("Failed to fetch affection: %s", exc)
         return {"error": "Error querying affection level, please try again later"}
@@ -189,7 +189,7 @@ def update_affection_tool(delta: int, **kwargs) -> dict:
         return {"error": "Affection level has reached the limit, cannot adjust further"}
 
     try:
-        new_affection = process_user.update_user_affection_sync(user_id, change)
+        new_affection = await process_user.update_user_affection(user_id, change)
     except Exception as exc:
         logging.exception("Failed to update affection: %s", exc)
         return {"error": "Error updating affection level, please try again later"}
@@ -202,7 +202,7 @@ def update_affection_tool(delta: int, **kwargs) -> dict:
     }
 
 
-def update_impression_tool(impression: str, **kwargs) -> dict:
+async def update_impression_tool(impression: str, **kwargs) -> dict:
     """Write or overwrite the AI's impression of the current user."""
     context = get_tool_request_context()
     user_id = context.get("user_id")
@@ -219,7 +219,7 @@ def update_impression_tool(impression: str, **kwargs) -> dict:
         text = text[:500]
 
     try:
-        saved = process_user.update_user_impression_sync(user_id, text)
+        saved = await process_user.update_user_impression(user_id, text)
     except Exception as exc:
         logging.exception("Failed to update impression: %s", exc)
         return {"user_id": user_id, "error": "Error updating impression"}

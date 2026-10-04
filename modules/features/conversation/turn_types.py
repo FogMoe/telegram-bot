@@ -16,6 +16,7 @@ from typing import Any
 from telegram import Bot, Message
 
 from core import config
+from core.deadline import Deadline
 from features.ai.types import ToolLog, VisibleContentHandler
 
 from . import billing
@@ -79,8 +80,10 @@ class TurnRequest:
     sender: SenderRef
     messages: tuple[IncomingMessage, ...]
     bot: Bot
-    # 从进入对话入口到拿到会话锁的等待时间，只用于计时。
+    # 从进入对话入口到拿到会话锁、全局槽位的等待时间，只用于计时。
     queue_seconds: float = 0.0
+    # 整轮截止时间：从进入队列开始计时，覆盖排队、provider 回退、工具与投递。None 表示不设截止时间。
+    deadline: Deadline | None = None
 
     @property
     def conversation_id(self) -> int:
@@ -120,6 +123,7 @@ class ModelRequest:
     user_id: int
     tool_context: dict[str, object]
     visible_content_handler: VisibleContentHandler | None
+    deadline: Deadline | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +140,7 @@ class TurnStatus(StrEnum):
     INSUFFICIENT_BALANCE = "insufficient_balance"  # 已回复提示：整轮回滚，不扣费
     MEDIA_TOO_LARGE = "media_too_large"  # 已回复提示：这一轮已扣费，不退
     MEDIA_FAILED = "media_failed"  # 已回复提示：这一轮已扣费，不退
+    DEADLINE_EXCEEDED = "deadline_exceeded"  # 准备阶段截止时间到期：已回复提示，这一轮已扣费，不退
 
 
 class Stage(StrEnum):

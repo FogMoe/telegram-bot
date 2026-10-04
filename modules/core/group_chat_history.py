@@ -172,6 +172,7 @@ def get_group_context(
     around_message_id: Optional[int] = None,
     window_size: int = 5,
 ) -> List[Dict[str, object]]:
+    # 同步边界：只能在没有事件循环的线程里调用；AI 工具与主路径用 async_get_group_context，见 docs/runtime.md。
     if not group_id:
         return []
     return mysql_connection.run_sync(

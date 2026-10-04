@@ -1,5 +1,6 @@
 """工具结果持久化与工具执行错误里的凭据处理。"""
 
+import asyncio
 import json
 import logging
 
@@ -110,7 +111,7 @@ def _run_with_failing_tool(monkeypatch, error):
     responses = [_Response(_Message(None, [tool_call])), _Response(_Message("done"))]
     seen_messages = []
 
-    def fake_create_chat_completion(*args, **kwargs):
+    async def fake_create_chat_completion(*args, **kwargs):
         seen_messages.append(list(kwargs["messages"]))
         return responses.pop(0)
 
@@ -120,12 +121,12 @@ def _run_with_failing_tool(monkeypatch, error):
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
     monkeypatch.setitem(tool_runner.AI_TOOL_HANDLERS, "google_search", failing_handler)
 
-    _, tool_logs = tool_runner.run_tool_loop(
+    _, tool_logs = asyncio.run(tool_runner.run_tool_loop(
         "fogmoe",
         "test_model",
         [{"role": "user", "content": "search cat"}],
         provider_name="FOGMOE",
-    )
+    ))
     return tool_logs, seen_messages
 
 
@@ -168,24 +169,26 @@ def test_tool_call_logs_do_not_expose_credential_command_arguments(monkeypatch, 
         },
     }
     responses = [_Response(_Message(None, [tool_call])), _Response(_Message("done"))]
-    monkeypatch.setattr(
-        tool_runner,
-        "create_chat_completion",
-        lambda *args, **kwargs: responses.pop(0),
-    )
+    async def fake_create_chat_completion(*args, **kwargs):
+        return responses.pop(0)
+
+    async def fake_execute_telegram_command(**kwargs):
+        return {"success": True}
+
+    monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
     monkeypatch.setitem(
         tool_runner.AI_TOOL_HANDLERS,
         "execute_telegram_command",
-        lambda **kwargs: {"success": True},
+        fake_execute_telegram_command,
     )
 
     with caplog.at_level(logging.DEBUG):
-        tool_runner.run_tool_loop(
+        asyncio.run(tool_runner.run_tool_loop(
             "fogmoe",
             "test_model",
             [{"role": "user", "content": "charge it"}],
             provider_name="FOGMOE",
-        )
+        ))
 
     assert CODE not in caplog.text
 

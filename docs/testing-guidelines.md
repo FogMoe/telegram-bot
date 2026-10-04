@@ -107,6 +107,15 @@ uv sync
 
 CI 在构建出的镜像里运行同一条命令，实现见 `modules/app/smoke_check.py`。
 
+### 运行时基准
+
+`scripts/bench_runtime.py` 用 fake provider 与 fake Telegram（不连网、不连数据库）测 N 个并发对话的整轮耗时，可以指向不同版本的
+`modules/` 目录做改造前后的对比。它测的是本地合成负载，不在 CI 里运行，结果与解读见 [runtime.md](runtime.md) 的「基准」：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/bench_runtime.py --label after --concurrency 10,50,200
+```
+
 ### 验证 runBot.sh
 
 `scripts/verify_run_bot.sh` 在临时目录里复制 `runBot.sh`，用替身入口验证 start、status、restart、stop 使用同一套进程识别，包括 PID 文件过期、PID 指向无关进程和旧式启动的进程：

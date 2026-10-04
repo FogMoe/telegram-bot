@@ -4,7 +4,7 @@ import threading
 import time
 from typing import Any, Optional
 
-from core import config
+from core import blocking, config
 from core.redaction import describe_exception
 
 from .context import get_tool_request_context
@@ -323,4 +323,17 @@ def cleanup_linux_sandbox() -> None:
             _release_user_sandbox(request_context)
 
 
-__all__ = ["cleanup_linux_sandbox", "linux_sandbox_tool"]
+async def cleanup_linux_sandbox_async() -> None:
+    """`cleanup_linux_sandbox` 的 async 入口：没有沙箱时只清理字典，不占线程；
+    有沙箱时 `kill()` 是阻塞的网络调用，放进线程适配器。"""
+    request_context = get_tool_request_context()
+    if request_context.get(_SANDBOX_CONTEXT_KEY) is None:
+        cleanup_linux_sandbox()
+        return
+    try:
+        await blocking.tools().run(cleanup_linux_sandbox)
+    except blocking.AdapterClosedError:
+        logging.warning("Sandbox cleanup skipped: the tool thread pool is shut down")
+
+
+__all__ = ["cleanup_linux_sandbox", "cleanup_linux_sandbox_async", "linux_sandbox_tool"]

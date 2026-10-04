@@ -15,6 +15,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from core import ai_providers
+from core.deadline import Deadline
 
 from .context_budget import ContextBudgetExceededError
 from .errors import SafetyBlockError
@@ -22,15 +23,16 @@ from .tool_runner import run_tool_loop
 from .types import AIResponse, PartialAIResponseError, VisibleContentHandler
 
 
-def run_chat_provider(
+async def run_chat_provider(
     service_name: str,
     messages: Any,
     user_id: int,
     tool_context: Optional[Dict[str, object]] = None,
     visible_content_handler: Optional[VisibleContentHandler] = None,
     settings: Any = None,
+    deadline: Deadline | None = None,
 ) -> AIResponse:
-    """用 `service_name` 声明的 provider 运行一次主聊天的工具循环（同步，由 router 放进线程池）。"""
+    """用 `service_name` 声明的 provider 运行一次主聊天的工具循环（原生 async，由 router 直接 await）。"""
     spec = ai_providers.require(service_name)
     if not spec.supports("tools"):
         raise RuntimeError(f"{spec.display_name} does not support tool calling.")
@@ -38,8 +40,8 @@ def run_chat_provider(
     primary_model = ai_providers.configured_model(spec, "chat", settings)
     fallback_model = ai_providers.configured_fallback_model(spec, "chat", settings)
 
-    def _run(model_name: str) -> AIResponse:
-        return run_tool_loop(
+    async def _run(model_name: str) -> AIResponse:
+        return await run_tool_loop(
             spec.name,
             model_name,
             messages,
@@ -47,12 +49,13 @@ def run_chat_provider(
             provider_name=spec.display_name,
             skip_tools=spec.skip_tools,
             visible_content_handler=visible_content_handler,
+            deadline=deadline,
         )
 
     try:
         if not primary_model:
             raise RuntimeError(f"Missing {spec.model_key('chat')} configuration.")
-        return _run(primary_model)
+        return await _run(primary_model)
     except (ContextBudgetExceededError, PartialAIResponseError):
         raise
     except Exception as exc:
@@ -64,7 +67,7 @@ def run_chat_provider(
                 fallback_model,
                 error_text,
             )
-            return _run(fallback_model)
+            return await _run(fallback_model)
         if spec.translates_safety_blocks and "SAFETY" in error_text and "blocked" in error_text:
             logging.warning("%s safety block triggered: %s", spec.display_name, error_text)
             raise SafetyBlockError(error_text) from exc

@@ -165,7 +165,7 @@ def rank_prior_summaries(
     ]
 
 
-def search_prior_context_tool(query: str, limit: int | None = None) -> dict:
+async def search_prior_context_tool(query: str, limit: int | None = None) -> dict:
     """Search a bounded set of earlier summaries for the active summary task."""
     context = get_tool_request_context()
     user_id = context.get("user_id")
@@ -184,14 +184,12 @@ def search_prior_context_tool(query: str, limit: int | None = None) -> dict:
 
     # Both boundaries are injected by the runner. The model cannot select a
     # different user or search the snapshot currently being summarized.
-    rows = mysql_connection.run_sync(
-        mysql_connection.fetch_all(
-            "SELECT created_at, summary FROM permanent_chat_records "
-            "WHERE user_id = %s AND id < %s "
-            "AND summary IS NOT NULL AND summary <> '' "
-            "ORDER BY created_at DESC, id DESC LIMIT %s",
-            (int(user_id), int(record_id), SUMMARY_BM25_MAX_SUMMARIES),
-        )
+    rows = await mysql_connection.fetch_all(
+        "SELECT created_at, summary FROM permanent_chat_records "
+        "WHERE user_id = %s AND id < %s "
+        "AND summary IS NOT NULL AND summary <> '' "
+        "ORDER BY created_at DESC, id DESC LIMIT %s",
+        (int(user_id), int(record_id), SUMMARY_BM25_MAX_SUMMARIES),
     )
     documents = build_prior_summary_documents(rows)
     return {

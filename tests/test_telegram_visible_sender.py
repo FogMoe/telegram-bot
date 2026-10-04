@@ -15,7 +15,6 @@ async def _unused_send(*args, **kwargs):
 
 def _make_handler():
     return telegram_visible_sender.TelegramVisibleContentHandler(
-        loop=asyncio.get_running_loop(),
         bot=_Bot(),
         chat_id=123,
         first_text_send=_unused_send,

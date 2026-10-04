@@ -260,6 +260,25 @@ docker compose up -d --build bot
 
 ---
 
+## ⚙️ 运行时与容量
+
+AI 对话是原生 async：模型调用与数据库工具都在事件循环里 `await`，只有必须同步的 SDK（requests、e2b 等）放进有界线程池。
+对话有明确的容量与超时策略，默认值适合单进程小中型部署，需要时在 `.env` 里调整（均有默认值，见 [.env.example](.env.example) 的「运行时」一节）：
+
+| 配置 | 默认 | 作用 |
+| --- | --- | --- |
+| `CHAT_MAX_CONCURRENT_TURNS` | 32 | 同时运行的对话轮次上限 |
+| `CHAT_MAX_QUEUED_TURNS` / `CHAT_QUEUE_MAX_WAIT_SECONDS` | 32 / 20 | 排队的长度与最长等待；超过后用户会收到「繁忙」提示，**不扣硬币** |
+| `CHAT_MAX_PENDING_PER_USER` | 3 | 同一用户同时「处理中 + 排队」的轮次上限 |
+| `CHAT_TURN_DEADLINE_SECONDS` | 360 | 整轮截止时间，覆盖排队、provider 回退、工具与投递；到期后取消剩余工作并提示用户（已扣的硬币不退） |
+| `TELEGRAM_CONCURRENT_UPDATES` | 128 | Telegram 同时处理的 update 数 |
+| `BLOCKING_TOOL_THREADS` | 8 | 同步工具的线程池大小 |
+
+指标（排队深度、排队延迟、整轮耗时、超时、provider 与工具失败）每 5 分钟写一行日志：`grep "runtime metrics" logs/tgbot.log`。
+执行模型、过载行为、关停顺序与基准结果见 [docs/runtime.md](docs/runtime.md)。
+
+---
+
 ## 🧱 技术栈
 
 - [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot)：Telegram Bot API

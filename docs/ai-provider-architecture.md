@@ -89,13 +89,15 @@ provider 特有的协议要求由什么承载。权威定义是代码，本页�
    只有普通的 provider 失败计入，上下文超限、部分失败、已发送内容后的失败与安全拦截不计入。
 2. 消息含图片而该 provider 不支持视觉（`chat_service_supports_vision`）时，改用纯文本历史
    （`text_fallback_messages`，没有则去掉图片）。
-3. 在线程池里调用 `chat_provider.run_chat_provider`，并设置工具请求上下文，结束后清理沙箱与上下文。
+3. 直接 `await` `chat_provider.run_chat_provider`（原生 async，没有线程池），并设置工具请求上下文，结束后清理沙箱与上下文。
+   传入的整轮 `Deadline` 一路带到工具循环；到期时返回固定的超时提示（`TURN_DEADLINE_ERROR_MESSAGE`，进程停止时是
+   `TURN_SHUTDOWN_ERROR_MESSAGE`）与已有的工具日志，不再换下一个 provider，也不重试已经开始的工具。规则见 [runtime.md](runtime.md)。
 4. 失败分类：安全拦截按上一节处理；上下文超限返回固定的 `CONTEXT_BUDGET_ERROR_MESSAGE`；
    工具已经执行过的部分失败返回 `PARTIAL_AI_RESPONSE_ERROR_MESSAGE` 而不重试（避免重复工具副作用）；
    已发送可见内容后的失败不重试；其他失败记录后换下一个 provider。
 
 所有 provider 失败后，如果消息含图片，用纯文本历史把整个顺序再走一遍；仍然失败返回
-`AI_SERVICE_ERROR_MESSAGE`。`router.runtime_error_cause` 把这三条固定文案识别成错误通知，
+`AI_SERVICE_ERROR_MESSAGE`。截止时间到期时不再走这一遍。`router.runtime_error_cause` 把这三条固定文案（以及上面两条超时提示）识别成错误通知，
 对话入口据此不把它们写成 assistant 记录。
 
 ## 增加或修改 provider
