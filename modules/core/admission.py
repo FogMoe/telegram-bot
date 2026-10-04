@@ -58,7 +58,7 @@ class AdmissionSettings:
     max_pending_per_user: int = 3
     max_wait_seconds: float = 20.0
     turn_deadline_seconds: float = 360.0
-    shutdown_grace_seconds: float = 20.0
+    shutdown_grace_seconds: float = 8.0
 
     @classmethod
     def from_config(cls, source: Any = None) -> AdmissionSettings:

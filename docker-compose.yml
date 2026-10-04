@@ -19,4 +19,7 @@ services:
         max-size: "10m"
         max-file: "5"
     restart: unless-stopped
+    # 停止时给在途的对话留出宽限（RUNTIME_SHUTDOWN_GRACE_SECONDS，默认 8 秒）与收尾时间；
+    # Docker 默认只等 10 秒就强制终止，来不及提示用户和释放资源。
+    stop_grace_period: 30s
     # 如需使用代理，可在此添加 extra_hosts 或网络设置

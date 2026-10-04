@@ -79,7 +79,7 @@ PTB handler（concurrent_updates 有界）
 | `BLOCKING_TOOL_THREADS` | 8 | 同步工具线程池大小 |
 | `BLOCKING_IO_THREADS` | 4 | 事件循环回调里零星同步网络调用的线程池大小 |
 | `RUNTIME_METRICS_LOG_INTERVAL_SECONDS` | 300 | 指标汇总日志间隔，0 关闭 |
-| `RUNTIME_SHUTDOWN_GRACE_SECONDS` | 20 | 收到停止信号后给在途轮次的宽限 |
+| `RUNTIME_SHUTDOWN_GRACE_SECONDS` | 8 | 收到停止信号后给在途轮次的宽限；要小于进程管理器的停止超时（Compose 的 `stop_grace_period` 已设为 30 秒，`runBot.sh` 的 `BOT_STOP_TIMEOUT` 默认 15 秒） |
 
 **`TELEGRAM_CONCURRENT_UPDATES` 的取值依据。** 这个值限制「同时在执行的 handler」。被准入挂起的对话 handler 也占着名额
 （等槽位、等会话锁、等批处理窗口），如果名额被它们占满，`/lottery`、`/me` 这类与 AI 无关的命令也会排队。

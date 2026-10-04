@@ -165,7 +165,7 @@ class AppSettings(BaseSettings):
     BLOCKING_TOOL_THREADS: int = Field(default=8, ge=1, le=64)
     BLOCKING_IO_THREADS: int = Field(default=4, ge=1, le=32)
     RUNTIME_METRICS_LOG_INTERVAL_SECONDS: float = Field(default=300.0, ge=0, le=86400)
-    RUNTIME_SHUTDOWN_GRACE_SECONDS: float = Field(default=20.0, ge=0, le=300)
+    RUNTIME_SHUTDOWN_GRACE_SECONDS: float = Field(default=8.0, ge=0, le=300)
 
     TELEGRAM_HISTORY_RATE_WINDOW_SECONDS: float = Field(default=0.5, gt=0, le=60)
     TELEGRAM_HISTORY_RATE_MAX_EVENTS: int = Field(default=8, ge=1, le=100)
