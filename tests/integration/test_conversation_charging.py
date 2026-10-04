@@ -1,5 +1,6 @@
 """AI 对话扣费：扣费失败不进入本轮、不贡献奖池；同一 update 重放不重复扣费（真实 MySQL）。"""
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
@@ -20,7 +21,8 @@ from economy_support import (
 from mysql_support import run
 
 from core import command_cooldown
-from features.conversation import batching, billing, handlers
+from features.conversation import batching, billing, handlers, turn_services
+from features.conversation.turn_types import ModelResponse
 
 
 def turn(message_id, cost, *, chat_id=100, edit_stamp=None, update_id=None):
@@ -152,13 +154,13 @@ class TestChargeTurn:
 
 @pytest.fixture
 def conversation(monkeypatch):
-    """把 `_reply_batch_unlocked` 里与扣费无关的外部依赖替换成替身，返回调用记录。"""
+    """替换一轮对话里与扣费无关的外部依赖（模型、出站发送、空闲跟进），返回调用记录与服务集合。"""
     ai_calls = []
     sent = Recorder(result=[])
 
-    async def fake_ai_response(chat_history, user_id, **kwargs):
-        ai_calls.append((user_id, len(chat_history)))
-        return "你好呀", []
+    async def fake_run_model(request):
+        ai_calls.append((request.user_id, len(request.messages)))
+        return ModelResponse(text="你好呀", tool_logs=[])
 
     async def no_op(*args, **kwargs):
         return None
@@ -167,23 +169,27 @@ def conversation(monkeypatch):
         sent.calls.append(((), kwargs))
         return []
 
-    async def fake_normalize(text, **kwargs):
+    async def fake_normalize(text):
         return text
 
     async def fake_generated_media(**kwargs):
         return []
 
-    monkeypatch.setattr(handlers.ai_chat, "get_ai_response", fake_ai_response)
-    monkeypatch.setattr(handlers.idle_followup, "arm_from_private_turn", no_op)
-    monkeypatch.setattr(handlers, "send_ai_reply_with_stickers", fake_reply_sender)
-    monkeypatch.setattr(handlers, "normalize_sticker_directives", fake_normalize)
-    monkeypatch.setattr(handlers, "send_generated_media", fake_generated_media)
+    services = replace(
+        turn_services.default_services(),
+        run_model=fake_run_model,
+        arm_idle_followup=no_op,
+        send_reply=fake_reply_sender,
+        normalize_stickers=fake_normalize,
+        send_generated_media=fake_generated_media,
+    )
+
     # 聊天冷却是进程内状态，并发的两条消息会被它挡掉，这里只关心数据库层的扣费。
     async def always_allowed(update):
         return True
 
     monkeypatch.setattr(command_cooldown, "check_chat_cooldown", always_allowed)
-    return SimpleNamespace(ai_calls=ai_calls, sent=sent)
+    return SimpleNamespace(ai_calls=ai_calls, sent=sent, services=services)
 
 
 def chat_update(user_id, message_id, *, text="你好", edited_at=None, update_id=None):
@@ -198,9 +204,12 @@ def chat_update(user_id, message_id, *, text="你好", edited_at=None, update_id
     return update
 
 
-def drive(update):
+def drive(update, conversation):
     context = make_context()
-    return handlers._reply_batch_unlocked([batching._QueuedUpdate(update=update, context=context)])
+    return handlers._reply_batch_unlocked(
+        [batching._QueuedUpdate(update=update, context=context)],
+        services=conversation.services,
+    )
 
 
 def reply_texts(update):
@@ -215,7 +224,7 @@ class TestConversationTurn:
         seed_user(app_database, 1, free=3)
         update = chat_update(1, 50)
 
-        run(drive(update))
+        run(drive(update, conversation))
 
         assert len(conversation.ai_calls) == 1
         assert user_state(app_database, 1)["free"] == 2
@@ -228,7 +237,7 @@ class TestConversationTurn:
         seed_user(app_database, 1, free=0)
         update = chat_update(1, 50)
 
-        run(drive(update))
+        run(drive(update, conversation))
 
         assert conversation.ai_calls == []
         assert any("硬币不足" in text for text in reply_texts(update))
@@ -243,7 +252,7 @@ class TestConversationTurn:
         first, second = chat_update(1, 50), chat_update(1, 51)
 
         async def scenario():
-            await gather_all(drive(first), drive(second))
+            await gather_all(drive(first, conversation), drive(second, conversation))
 
         run(scenario())
 
@@ -257,8 +266,8 @@ class TestConversationTurn:
     def test_the_same_update_delivered_twice_is_charged_once(self, app_database, conversation):
         seed_user(app_database, 1, free=5)
 
-        run(drive(chat_update(1, 50, update_id=900)))
-        run(drive(chat_update(1, 50, update_id=900)))
+        run(drive(chat_update(1, 50, update_id=900), conversation))
+        run(drive(chat_update(1, 50, update_id=900), conversation))
 
         assert user_state(app_database, 1)["free"] == 4
         assert ledger_keys(app_database) == ["chat:1:50"]
@@ -270,8 +279,8 @@ class TestConversationTurn:
         seed_user(app_database, 1, free=5)
         edited_at = datetime(2026, 10, 5, 8, 0, 0, tzinfo=timezone.utc)
 
-        run(drive(chat_update(1, 50)))
-        run(drive(chat_update(1, 50, edited_at=edited_at)))
+        run(drive(chat_update(1, 50), conversation))
+        run(drive(chat_update(1, 50, edited_at=edited_at), conversation))
 
         assert user_state(app_database, 1)["free"] == 3
         assert ledger_keys(app_database) == [
@@ -292,7 +301,8 @@ class TestConversationTurn:
                 [
                     batching._QueuedUpdate(update=first, context=context),
                     batching._QueuedUpdate(update=second, context=context),
-                ]
+                ],
+                services=conversation.services,
             )
         )
 

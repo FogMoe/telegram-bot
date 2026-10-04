@@ -66,6 +66,10 @@ files = [
     "modules/core/balance.py",
     "modules/core/stake_reward_pool.py",
     "modules/features/conversation/billing.py",
+    "modules/features/conversation/turn_types.py",
+    "modules/features/conversation/turn_services.py",
+    "modules/features/conversation/turn.py",
+    "modules/features/conversation/handlers.py",
     "modules/app/smoke_check.py",
     "modules/features/ai/job_claims.py",
 ]
