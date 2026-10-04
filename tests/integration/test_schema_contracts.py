@@ -16,7 +16,7 @@ from mysql_support import (
 from sqlalchemy.exc import IntegrityError
 
 REV_0016 = "0016_add_ai_schedule_daily_limit"
-HEAD = "0018_privacy_retention"
+HEAD = "0021_job_claims"
 
 
 class TestFreshDatabase:

@@ -19,6 +19,7 @@ from .types import (
     TOOL_CONTEXT_MESSAGES_KEY,
     ToolLog,
     VisibleContentHandler,
+    raise_if_aborted,
 )
 
 POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS = (1.0, 3.0)
@@ -610,6 +611,7 @@ def run_tool_loop(
     )
 
     for iteration in range(max_iterations):
+        raise_if_aborted(tool_context)
         request_tool_choice = tool_choice
         try:
             request_kwargs = {
@@ -687,6 +689,9 @@ def run_tool_loop(
 
             if function_name in skip_set:
                 continue
+
+            # 后台任务被撤销后不再执行剩余的工具。
+            raise_if_aborted(tool_context)
 
             raw_args = function_payload.get("arguments") or "{}"
             try:

@@ -18,7 +18,7 @@ from mysql_support import (
     upgrade,
 )
 
-HEAD = "0018_privacy_retention"
+HEAD = "0021_job_claims"
 REV_0016 = "0016_add_ai_schedule_daily_limit"
 REV_0017 = "0017_schema_contracts"
 LONG_REVISIONS = [

@@ -40,7 +40,7 @@ def _offline_sql(revision_range: str) -> str:
 def test_migration_graph_has_a_single_head():
     script = ScriptDirectory.from_config(_config())
 
-    assert script.get_heads() == ["0018_privacy_retention"]
+    assert script.get_heads() == ["0021_job_claims"]
 
 
 def test_every_revision_id_fits_the_version_column():
@@ -61,7 +61,7 @@ def test_offline_sql_from_base_creates_a_wide_version_table():
     # 超长 revision 完整写入，没有被截断。
     assert "0014_add_ai_user_diary_page_index" in sql
     assert "0002_add_chat_records_last_rotated_at" in sql
-    assert "UPDATE alembic_version SET version_num='0018_privacy_retention'" in sql
+    assert "UPDATE alembic_version SET version_num='0021_job_claims'" in sql
 
 
 def test_offline_sql_from_a_revision_widens_the_existing_version_table_first():

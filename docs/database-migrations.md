@@ -150,6 +150,7 @@ MySQL 的 DDL 会隐式提交。迁移中途失败时，已执行的 DDL 保留�
 | `0016_add_ai_schedule_daily_limit` | `user.ai_schedule_trigger_date` / `ai_schedule_trigger_count` | — |
 | `0017_schema_contracts` | 见「升级后检查」 | 重复数据的对账见「备份表的处置」 |
 | `0018_privacy_retention` | 无新对象 | 删除旧密码哈希、脱敏群聊历史（SQL 在迁移文件里） |
+| `0021_job_claims` | `ai_schedules` / `ai_idle_followups` 的 `claim_token` / `claim_attempts` / `stage`（`ai_schedules` 另有 `claim_until`）、索引 `idx_ai_schedules_claim`、表 `ai_job_attempts` | 旧版本留下的 `executing` 行：`stage` 设为 `generating`，`ai_schedules.claim_until` 设为当前时间（语义见 [job-recovery.md](job-recovery.md)） |
 
 ## 离线 SQL
 

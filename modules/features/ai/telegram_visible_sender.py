@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import threading
 from typing import Any, Awaitable, Callable
 
 from .generated_audio_sender import send_generated_audio_from_tool_result
@@ -10,6 +11,7 @@ from .sticker_sender import (
     normalize_sticker_directives,
     send_ai_reply_with_stickers,
 )
+from .types import JobAbortedError
 
 AsyncSendFunc = Callable[..., Awaitable[Any]]
 
@@ -25,6 +27,7 @@ class TelegramVisibleContentHandler:
         fallback_send: AsyncSendFunc,
         logger: logging.Logger,
         reply_to_message_id: int | None = None,
+        abort_event: threading.Event | None = None,
     ) -> None:
         self.loop = loop
         self.bot = bot
@@ -33,6 +36,8 @@ class TelegramVisibleContentHandler:
         self.fallback_send = fallback_send
         self.logger = logger
         self.reply_to_message_id = reply_to_message_id
+        # 后台任务失去 claim 后置位：此后不再向用户发送任何内容。
+        self.abort_event = abort_event
         self.sent_messages: list[Any] = []
         self.sent_contents: list[str] = []
         self.sent_count = 0
@@ -78,7 +83,12 @@ class TelegramVisibleContentHandler:
         self.sent_count += 1
         return normalized
 
+    def _raise_if_aborted(self) -> None:
+        if self.abort_event is not None and self.abort_event.is_set():
+            raise JobAbortedError("visible content send aborted")
+
     def __call__(self, content: str) -> str | None:
+        self._raise_if_aborted()
         future = asyncio.run_coroutine_threadsafe(self._send(content), self.loop)
         return future.result()
 
@@ -110,6 +120,7 @@ class TelegramVisibleContentHandler:
         return sent_messages
 
     def send_tool_media(self, tool_name: str, result: dict[str, Any]) -> list[Any]:
+        self._raise_if_aborted()
         future = asyncio.run_coroutine_threadsafe(
             self._send_tool_media(tool_name, result),
             self.loop,

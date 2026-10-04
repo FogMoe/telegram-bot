@@ -113,7 +113,9 @@ async def _create_or_replace_schedule(
         schedule_id = None
         if total_count >= MAX_TOTAL_SCHEDULES:
             row = await mysql_connection.fetch_one(
-                "SELECT id FROM ai_schedules WHERE user_id = %s AND status != 'pending' "
+                # 正在执行的任务由 worker 持有 claim，不能被覆盖复用。
+                "SELECT id FROM ai_schedules WHERE user_id = %s "
+                "AND status NOT IN ('pending', 'executing') "
                 "ORDER BY created_at ASC, id ASC LIMIT 1",
                 (user_id,),
                 connection=connection,
@@ -125,7 +127,8 @@ async def _create_or_replace_schedule(
                     "SET run_at = %s, recurrence_unit = %s, recurrence_interval = %s, "
                     "trigger_reason = %s, context = %s, prompt = %s, "
                     "status = 'pending', created_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP(), "
-                    "executed_at = NULL, last_run_at = NULL, error = NULL "
+                    "executed_at = NULL, last_run_at = NULL, error = NULL, "
+                    "claim_token = NULL, claim_until = NULL, claim_attempts = 0, stage = 'idle' "
                     "WHERE id = %s",
                     (
                         run_at,

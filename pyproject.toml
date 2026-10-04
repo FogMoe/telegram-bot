@@ -57,6 +57,7 @@ files = [
     "modules/core/sql.py",
     "modules/core/db.py",
     "modules/app/smoke_check.py",
+    "modules/features/ai/job_claims.py",
 ]
 # 其余模块只用来取类型信息，不报告它们自己的错误。
 follow_imports = "silent"

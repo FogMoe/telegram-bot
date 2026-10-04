@@ -32,7 +32,7 @@
 | 诊断日志 | `core/bot_logging.py` 的 `configure_logging` | `RedactingFilter` 挂在根 logger 的所有 handler 上，处理格式化后的消息和异常 traceback，对第三方库的日志同样生效 |
 | 代码主动记录的异常 | 各模块 | 用 `log_exception` 或 `report_error`，细节在写入日志前已脱敏，不依赖 handler 上是否有 filter |
 | 用户与工具可见的错误 | `app/error_handler.py`、各 handler 的 `except` 分支、`features/ai/tools/` | 只返回异常类型加脱敏、截断的概要，或通用文案加错误参考 ID，不回显原始异常文本 |
-| 落库的失败原因 | `features/ai/scheduler.py`、`features/ai/idle_followup.py` | `describe_exception(limit=500)` |
+| 落库的失败原因（任务行与 `ai_job_attempts`） | `features/ai/scheduler.py`、`features/ai/idle_followup.py`，经 `features/ai/job_claims.py` 的 `error_summary` | `describe_exception(limit=500)` |
 | 全局错误处理 | `app/error_handler.py` | 日志只记 `update_id`、更新类型、chat 与 user 标识，不记完整 `Update` |
 
 不脱敏的内容：用户发给 AI 的普通消息保持原文写入个人历史，模型需要读到它们；
