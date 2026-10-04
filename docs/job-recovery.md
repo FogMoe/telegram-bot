@@ -35,7 +35,7 @@
 
 `abort_event` 是 `threading.Event`，放在 `tool_context[ABORT_EVENT_KEY]`。工具循环（`tool_runner.run_tool_loop`）在每一轮模型调用前和每个工具执行前检查它，`TelegramVisibleContentHandler` 在每次发送前检查它；置位后抛 `JobAbortedError`。它继承 `BaseException`，不会被 router 当成 provider 失败去累计熔断或换 provider 重跑。
 
-工具循环与可见内容发送都跑在事件循环里（原生 async，见 [runtime.md](runtime.md)），所以 `run_leased` 取消 worker 时，正在等待的模型调用与 async 工具会被**直接取消**，不必等到下一个检查点；`abort_event` 继续负责线程里的同步工具（它们读取同一个事件）和发送前的检查。已经在线程里执行的同步工具无法撤回，线程自己跑完、结果被丢弃。
+工具循环与可见内容发送都跑在事件循环里（原生 async，见 [runtime.md](runtime.md)），所以 `run_leased` 取消 worker 时，正在等待的模型调用与 async 工具会被**直接取消**，不必等到下一个检查点；`abort_event` 继续在每个检查点（模型调用前、工具执行前、每次发送前，包括发送准备期间的再次检查）阻止后续动作。已经在线程里执行的同步工具不检查它，无法撤回，线程自己跑完、结果被丢弃。
 
 常量名：`SCHEDULE_LEASE_SECONDS`、`SCHEDULE_HEARTBEAT_SECONDS`、`SCHEDULE_EXECUTION_TIMEOUT_SECONDS`、`SCHEDULE_MAX_CLAIM_ATTEMPTS`、`IDLE_FOLLOWUP_LEASE_SECONDS`、`IDLE_FOLLOWUP_HEARTBEAT_SECONDS`、`IDLE_FOLLOWUP_EXECUTION_TIMEOUT_SECONDS`、`IDLE_FOLLOWUP_MAX_CLAIM_ATTEMPTS`，默认值取自 `job_claims.DEFAULT_*`。
 

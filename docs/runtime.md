@@ -138,7 +138,7 @@ PTB handler（concurrent_updates 有界）
 - **与 E 的租约契约。** 定时任务与空闲跟进不使用整轮截止时间，沿用 `job_claims.run_leased` 的租约、续期与执行上限；
   `abort_event`（`threading.Event`）仍然在每次模型调用前、每个工具执行前、每次可见内容发送前被检查，租约丢失仍然阻止后续投递。
   不同的是：工具循环现在跑在事件循环里，租约丢失时 `run_leased` 对 worker 的**取消**会直接取消正在等待的模型调用与 async 工具，
-  不再要等到下一个检查点；`abort_event` 继续覆盖线程里的同步工具与发送前的检查。详见 [job-recovery.md](job-recovery.md)。
+  不再要等到下一个检查点；`abort_event` 继续在每个检查点（模型调用前、工具执行前、发送前）阻止后续动作，已经在线程里执行的同步工具不检查它、无法撤回。详见 [job-recovery.md](job-recovery.md)。
 
 ## 线程适配器清单
 
