@@ -190,7 +190,6 @@ async def _apply(
     op_key: str,
     reason: str,
     ref: str | None,
-    allow_negative: bool,
 ) -> PoolResult:
     delta = amount if kind is PoolKind.CREDIT else -amount
     # 先锁奖池行，所有奖池变动因此串行；之后的锁定读不会与其他事务争抢间隙。
@@ -201,7 +200,7 @@ async def _apply(
         _same_request(existing, kind=kind, delta=delta)
         return existing
 
-    if kind is PoolKind.DEBIT and not allow_negative and current < amount:
+    if kind is PoolKind.DEBIT and current < amount:
         raise PoolInsufficient(amount, current)
 
     new_balance = current + delta
@@ -255,7 +254,6 @@ async def credit_pool(
         op_key=_check_pool_op_key(op_key),
         reason=balance.check_reason(reason),
         ref=balance.check_ref(ref),
-        allow_negative=False,
     )
 
 
@@ -278,7 +276,6 @@ async def debit_pool(
         op_key=_check_pool_op_key(op_key),
         reason=balance.check_reason(reason),
         ref=balance.check_ref(ref),
-        allow_negative=False,
     )
 
 
@@ -345,53 +342,3 @@ async def credit_share_of_spend_standalone(
             connection, spent_coins, spend_op_key=spend_op_key, reason=reason
         )
     )
-
-
-# ---------------------------------------------------------------------------
-# 旧接口（待移除）
-# ---------------------------------------------------------------------------
-
-
-async def add_to_pool(amount: Any, *, connection: AsyncConnection | None = None) -> Decimal:
-    """待移除：旧调用方（stake_coin 等）尚未迁移到 `credit_pool`。
-
-    委托给奖池账本，每次调用生成一次性 op_key（reason 为 `legacy:add_to_pool`），
-    保证仍然留下账本记录，但**不提供**重放保护。
-    """
-    value = _normalize_amount(amount)
-    if value <= 0:
-        return Decimal("0")
-    op_key = balance.new_op_key("legacy:pool_add")
-    if connection is None:
-        await credit_pool_standalone(value, op_key=op_key, reason="legacy:add_to_pool")
-    else:
-        await credit_pool(connection, value, op_key=op_key, reason="legacy:add_to_pool")
-    return value
-
-
-async def subtract_from_pool(amount: Any, *, connection: AsyncConnection | None = None) -> Decimal:
-    """待移除：旧调用方尚未迁移到 `debit_pool`。
-
-    与旧行为一致，不检查余额（可以扣成负数）；同样写一条一次性 op_key 的账本记录。
-    """
-    value = _normalize_amount(amount)
-    if value <= 0:
-        return Decimal("0")
-    op_key = balance.new_op_key("legacy:pool_sub")
-
-    async def work(conn: AsyncConnection) -> PoolResult:
-        return await _apply(
-            conn,
-            kind=PoolKind.DEBIT,
-            amount=value,
-            op_key=op_key,
-            reason="legacy:subtract_from_pool",
-            ref=None,
-            allow_negative=True,
-        )
-
-    if connection is None:
-        await balance.run_in_transaction(work)
-    else:
-        await work(connection)
-    return value

@@ -11,7 +11,7 @@ from economy_support import (
 )
 from mysql_support import execute, fetch, fetch_scalar, run
 
-from core import balance, config, mysql_connection, process_user, stake_reward_pool
+from core import balance, config, mysql_connection, stake_reward_pool
 
 
 def credit(user_id, amount, key, **kwargs):
@@ -484,52 +484,6 @@ class TestAudit:
         seed_user(app_database, 1, free=5)
 
         assert run(balance.audit_ledger()).clean
-
-
-class TestLegacyDelegates:
-    def test_legacy_functions_still_write_the_ledger(self, app_database):
-        seed_user(app_database, 1, free=1)
-
-        run(process_user.add_free_coins(1, 4))
-        run(process_user.add_paid_coins(1, 10))
-        spent = run(process_user.spend_user_coins(1, 6))
-
-        assert spent is True
-        assert user_state(app_database, 1) == {"free": 0, "paid": 9, "plan": "paid"}
-        rows = ledger_rows(app_database, 1)
-        assert [row["kind"] for row in rows] == ["credit", "credit", "debit"]
-        assert all(row["reason"].startswith("legacy:") for row in rows)
-
-    def test_legacy_spend_reports_insufficient_balance_without_changes(self, app_database):
-        seed_user(app_database, 1, free=1)
-
-        assert run(process_user.spend_user_coins(1, 5)) is False
-        assert run(process_user.spend_user_coins(404, 1)) is False
-
-        assert user_state(app_database, 1)["free"] == 1
-        assert ledger_rows(app_database) == []
-
-    def test_legacy_update_user_coins_signs_the_amount(self, app_database):
-        seed_user(app_database, 1, free=5)
-
-        run(process_user.async_update_user_coins(1, 3))
-        run(process_user.async_update_user_coins(1, -6))
-
-        assert user_state(app_database, 1)["free"] == 2
-
-    def test_legacy_calls_with_a_connection_join_the_callers_transaction(self, app_database):
-        seed_user(app_database, 1, free=5)
-
-        async def scenario():
-            async with mysql_connection.transaction() as connection:
-                await process_user.spend_user_coins(1, 2, connection=connection)
-                raise RuntimeError("回滚")
-
-        with pytest.raises(RuntimeError):
-            run(scenario())
-
-        assert user_state(app_database, 1)["free"] == 5
-        assert ledger_rows(app_database) == []
 
 
 def test_ledger_keeps_rows_for_users_that_no_longer_exist(app_database):

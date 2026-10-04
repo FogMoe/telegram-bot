@@ -3,12 +3,15 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
-from core import balance, mysql_connection, process_user
+from core import balance, process_user
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
 from telegram.constants import ParseMode
 from core.command_cooldown import cooldown
 from core.redaction import report_error
+
+from .repositories import swaps as swaps_repository
+from .repositories.swaps import PendingSwap
 
 # 定义最低兑换数量
 MIN_SWAP_AMOUNT = 10000
@@ -22,31 +25,11 @@ def is_valid_solana_address(address):
 
 async def has_pending_swap_request(user_id):
     """检查用户是否有未完成的兑换请求"""
-    row = await mysql_connection.fetch_one(
-        "SELECT COUNT(*) FROM token_swap_requests WHERE user_id = %s AND status = 'pending'",
-        (user_id,),
-    )
-    return row[0] > 0 if row else False
+    return await swaps_repository.get_pending_swap(user_id) is not None
 
 async def get_pending_swap_request(user_id):
     """获取用户未完成的兑换请求详情"""
-    result = await mysql_connection.fetch_one(
-        """
-        SELECT amount, wallet_address, request_time 
-        FROM token_swap_requests 
-        WHERE user_id = %s AND status = 'pending'
-        ORDER BY request_time DESC
-        LIMIT 1
-        """,
-        (user_id,),
-    )
-    if result:
-        return {
-            "amount": result[0],
-            "wallet_address": result[1],
-            "request_time": result[2],
-        }
-    return None
+    return await swaps_repository.get_pending_swap(user_id)
 
 class SwapStatus(StrEnum):
     SUBMITTED = "submitted"
@@ -59,7 +42,7 @@ class SwapStatus(StrEnum):
 @dataclass(frozen=True)
 class SwapOutcome:
     status: SwapStatus
-    pending: dict | None = None  # PENDING_EXISTS 时已有请求的详情
+    pending: PendingSwap | None = None  # PENDING_EXISTS 时已有请求的详情
 
 
 def swap_op_key(chat_id: int, message_id: int) -> str:
@@ -67,7 +50,7 @@ def swap_op_key(chat_id: int, message_id: int) -> str:
     return balance.make_op_key("swap", chat_id, message_id)
 
 
-def _pending_request_message(pending_request: dict | None) -> str:
+def _pending_request_message(pending_request: PendingSwap | None) -> str:
     if not pending_request:
         return (
             "***您已有一个正在处理中的兑换请求。***\n"
@@ -75,16 +58,16 @@ def _pending_request_message(pending_request: dict | None) -> str:
             "***You already have a pending exchange request.***\n"
             "Please wait for it to be processed before making a new exchange."
         )
-    request_time_str = pending_request["request_time"].strftime("%Y-%m-%d %H:%M:%S")
+    request_time_str = pending_request.request_time.strftime("%Y-%m-%d %H:%M:%S")
     return (
         f"***您已有一个正在处理中的兑换请求***\n\n"
-        f"金币数量: ***{pending_request['amount']}***\n"
-        f"接收钱包: ***{pending_request['wallet_address']}***\n"
+        f"金币数量: ***{pending_request.amount}***\n"
+        f"接收钱包: ***{pending_request.wallet_address}***\n"
         f"申请时间: ***{request_time_str}***\n\n"
         f"请等待该请求处理完成后再进行新的兑换操作。处理时间可能长达72小时。\n\n"
         f"***You already have a pending exchange request***\n\n"
-        f"Amount: ***{pending_request['amount']}*** coins\n"
-        f"Receiving wallet: ***{pending_request['wallet_address']}***\n"
+        f"Amount: ***{pending_request.amount}*** coins\n"
+        f"Receiving wallet: ***{pending_request.wallet_address}***\n"
         f"Request time: ***{request_time_str}***\n\n"
         f"Please wait for it to be processed before making a new exchange. Processing may take up to 72 hours."
     )
@@ -113,17 +96,9 @@ async def submit_swap_request(
         if await balance.get_operation(op_key, connection=connection) is not None:
             return SwapOutcome(SwapStatus.REPLAYED)
 
-        row = await mysql_connection.fetch_one(
-            "SELECT amount, wallet_address, request_time FROM token_swap_requests "
-            "WHERE user_id = %s AND status = 'pending' ORDER BY request_time DESC LIMIT 1",
-            (user_id,),
-            connection=connection,
-        )
-        if row:
-            return SwapOutcome(
-                SwapStatus.PENDING_EXISTS,
-                pending={"amount": row[0], "wallet_address": row[1], "request_time": row[2]},
-            )
+        pending = await swaps_repository.get_pending_swap(user_id, connection=connection)
+        if pending:
+            return SwapOutcome(SwapStatus.PENDING_EXISTS, pending=pending)
         if balances.total < amount:
             return SwapOutcome(SwapStatus.INSUFFICIENT)
 
@@ -132,12 +107,8 @@ async def submit_swap_request(
         except balance.InsufficientBalance:
             return SwapOutcome(SwapStatus.INSUFFICIENT)
 
-        await connection.exec_driver_sql(
-            """
-            INSERT INTO token_swap_requests (user_id, username, wallet_address, amount)
-            VALUES (%s, %s, %s, %s)
-            """,
-            (user_id, username, wallet_address, amount),
+        await swaps_repository.insert_swap_request(
+            connection, user_id, username, wallet_address, amount
         )
         return SwapOutcome(SwapStatus.SUBMITTED)
 

@@ -40,12 +40,12 @@ app → core
 | `ai_providers.py` / `litellm_models.py` | AI provider 的唯一声明表，以及由它决定的名字与 LiteLLM 模型名转换，契约见 [ai-provider-architecture.md](ai-provider-architecture.md) |
 | `sql.py` | 通用 SQL 助手：`fetch_one` / `fetch_all` / `execute` 与连接别名 |
 | `chat_records.py` | AI 对话历史存储：写入、归档、裁剪、token 预算、history-state 事件 |
-| `user_records.py` | user 表的基础查询 |
+| `user_records.py` | user 表的基础读写：存在、余额（只读）、权限、用户名、按名字找 id、开户。跨功能共享的用户读取放这里，读取可传入调用方的 `connection` |
 | `migration_support.py` | Alembic 迁移的支撑代码：数据库 URL 优先级、版本表宽度、可重入 DDL 助手，见 [database-migrations.md](database-migrations.md) |
 | `mysql_connection.py` | **兼容层**：把上面三者 re-export 出去，保留全项目既有的 import 路径 |
 | `telegram_history.py` | Telegram 可见事件 → 对话历史的记录层，只写库并发信号 |
 | `balance.py` / `stake_reward_pool.py` | 金币与奖池变动的唯一入口：带 op_key 的幂等操作和账本，契约见 [balance-service.md](balance-service.md) |
-| `process_user.py` | 用户好感、印象、抽奖；旧的金币函数暂时保留并委托给余额服务（待移除） |
+| `process_user.py` | 用户好感与印象；`user_exists`、`get_user_coins`、`get_user_permission` 等历史入口只转发给 `user_records`。金币只走余额服务，旧的金币函数已移除 |
 | `admission.py` / `deadline.py` | 对话轮次的准入控制（全局并发、每用户待处理数、有界排队）与整轮截止时间，见 [runtime.md](runtime.md) |
 | `blocking.py` / `background.py` / `http_sessions.py` | 有界线程适配器（只给必须同步的代码用）、后台任务登记（关停时取消）、同步 HTTP 会话登记（关停时关闭） |
 | `metrics.py` | 进程内指标（计数器、仪表、直方图）与周期汇总日志 |
@@ -61,10 +61,10 @@ app → core
 | `conversation/` | AI 对话主路径，见下表 |
 | `ai/` | 按 provider 声明表解析与调用模型（路由、聊天入口、task runner，契约见 [ai-provider-architecture.md](ai-provider-architecture.md)）、tools、summary、定时任务与 idle followup（claim 所有权、租约与崩溃恢复见 [job-recovery.md](job-recovery.md)）、翻译 handler、出站发送 |
 | `profile/` | `/start` `/me` `/help` `/github` `/setmyinfo` 与入群欢迎 |
-| `economy/` | 金币相关：`/lottery` `/give` `/rich`、商店、签到、质押、充值 |
-| `crypto/` | 行情、图表、预测、swap，以及管理员的行情监控命令 |
+| `economy/` | 金币相关：`/lottery` `/give` `/rich`、商店、签到、质押、充值、邀请、任务、网页密码；按适配层、`operations/`、`repositories/` 分层，见「经济与游戏的分层」 |
+| `crypto/` | 行情、图表、预测、swap，以及管理员的行情监控命令；预测与 swap 的 SQL 在 `crypto/repositories/` |
 | `admin/` | 开发者命令与 `/admin_announce` |
-| `games/` `media/` `moderation/` | 玩法、媒体、群管；游戏里持有金币的状态（下注轮次、石头剪刀布对局）持久化在 MySQL，恢复策略见 [job-recovery.md](job-recovery.md) 的「游戏状态」 |
+| `games/` `media/` `moderation/` | 玩法、媒体、群管；游戏里持有金币的状态（下注轮次、石头剪刀布对局）持久化在 MySQL，恢复策略见 [job-recovery.md](job-recovery.md) 的「游戏状态」；`games/` 的 SQL 都在 `games/repositories/`，见「经济与游戏的分层」 |
 
 `features/conversation/` 内部：
 
@@ -120,6 +120,67 @@ app → core
 提前结束的状态里，`MEDIA_TOO_LARGE`、`MEDIA_FAILED` 与 `DEADLINE_EXCEEDED`（准备阶段截止时间到期）发生在扣费之后，这一轮不退款。
 模型阶段与投递阶段到期不是提前结束：回复固定的超时提示，历史与收尾照常进行，同样不退款。
 
+## 经济与游戏的分层
+
+`features/economy/` 与 `features/games/` 按「传输 / 业务操作 / 持久化」三层组织，依赖只能向下：
+
+```
+适配层（Telegram handler） → 业务操作 → repository → core.sql
+                                  └──→ core.balance / core.stake_reward_pool（金币与奖池的唯一变动入口）
+```
+
+| 层 | 位置 | 做什么 | 不做什么 |
+|---|---|---|---|
+| 适配层 | `economy/` 下的 `shop.py`、`stake_coin.py`、`charge_coin.py`、`coins.py`、`checkin.py`、`task.py`、`ref.py`、`web_password.py`、`bribe.py`；`games/` 下的 `gamble.py`、`rockpaperscissors_game.py`、`omikuji.py`、`sicbo.py`、`rpg/commands.py` 等 | 解析 `Update` 与按钮回调数据，组装业务操作的参数，把结果映射成回复、编辑、通知；handler 与 job 的注册（名字与顺序是 `tests/test_handler_registry.py` 的契约）；进程内的节流 | 不写 SQL，不开事务，不直接调用 repository，不决定扣多少钱 |
+| 展示 | `economy/shop_views.py` | 商店的菜单、按钮回调数据与解析（`parse_callback`）、购买结果的文案 | 不碰数据库 |
+| 业务操作 | `economy/operations/*.py`；`games/gamble_rounds.py`、`rps_games.py`、`rpg/settlement.py` | 规则、事务、`op_key`、余额变动。输入是类型化的请求或普通参数，结果是 dataclass 与枚举（`PurchaseStatus`、`GiveStatus`、`CheckinOutcome`、`RedeemResult` 等） | 不 import `telegram`；economy 的操作不返回用户文案，由适配层与展示层生成 |
+| repository | `economy/repositories/*.py`、`games/repositories/*.py`；跨功能共享的用户读取在 `core/user_records.py` | 单条语句级别的读写（SQLAlchemy Core 的 `exec_driver_sql` 与 `core.sql`），返回 dataclass 或基础类型，并定义持久化的状态取值与记录类型 | 不开事务、不提交，不含业务规则，不 import `telegram`、`core.balance`、`core.stake_reward_pool` |
+
+事务所有权：
+
+- **事务由业务操作持有。** 改动余额的操作用 `balance.run_in_transaction(work)`（死锁时整个事务重跑，所以 `work` 里
+  不做事务之外的副作用），签到、抽奖、任务、卡密兑换、充值请求沿用 `sql.transaction()`；余额变动与业务状态在同一个事务里提交或回滚，
+  所以失败不需要退款，规则见 [balance-service.md](balance-service.md) 的「事务所有权」。
+- **repository 只接受 `connection`。** 写入函数必须传入调用方事务的 `connection`；读取函数的 `connection` 可选，
+  传入时在调用方的事务里读（拿到 user 行锁之后的第一次一致性读才能看到上一个持锁者提交的值），不传时用一次性连接。
+  加锁读取（`for_update=True`、`lock_*`）的顺序由操作决定：user 行先于奖池行，游戏轮次/对局行先于 user 行。
+- **事务里不发消息。** 适配层在操作返回（事务已经提交）之后才回复、编辑面板或通知；商店的保底计数这类进程内状态也只在提交之后更新。
+- 内置了「进程内」保护的地方保持原样：商店的购买锁（保护保底计数）、抽奖与卡密兑换的进程内「处理中」标记；
+  数据库层的串行始终靠 user 行锁与唯一键，不依赖它们。
+
+经济功能的业务操作与 repository：
+
+| 功能 | 业务操作（`economy/operations/`） | repository（`economy/repositories/`） |
+|---|---|---|
+| 商店 | `shop.py`：`buy_memory_limit`、`upgrade_permission`、`buy_scratch_ticket`、`buy_huanle_ticket`，每种商品一个请求与结果类型（`MemoryLimitPurchase` / `MemoryLimitResult`、`PermissionUpgrade` / `PermissionUpgradeResult`、`TicketPurchase` / `TicketResult`）；权限升级规则、开奖概率与保底计数（`advance_pity`）也在这里 | `shop.py`：永久记忆上限与权限等级 |
+| 质押 | `stake.py`：`open_stake`、`collect_stake_reward`、`withdraw_stake_principal`，回报率与回报周期的计算规则 | `stake.py`：`user_stakes` 与回报率用的金币、质押总量 |
+| 赠送与富豪榜 | `coins.py`：`transfer_coins`、`richest_users`，手续费与每日次数上限 | `coins.py`：`user_give_daily`、富豪榜 |
+| 签到 | `checkin.py`：`process_checkin`，连续天数与奖励档位 | `checkin.py`：`user_checkin` |
+| 抽奖 | `lottery.py`：`lottery`、`async_lottery`，奖励档位与 24 小时冷却 | `lottery.py`：`user_lottery` |
+| 邀请 | `invitations.py`：`add_invitation_record`、邀请信息查询 | `invitations.py`：`user_invitations` |
+| 任务 | `task.py`：`claim_task_reward`、任务定义 | `tasks.py`：`user_task` |
+| 充值 | `charge.py`：`redeem_code`、`decide_topup_request`、`create_topup_request`、`generate_codes` | `charge.py`：`redemption_codes`、`topup_requests`、`/recharge` 禁用截止时间 |
+| 网页密码 | `web_password.py`：格式校验、Argon2id 哈希与校验、`process_set_web_password` | `web_passwords.py`：`web_password` |
+| 贿赂 | `bribe.py`：`pay_bribe`（命令当前禁用） | 好感度在 `core/process_user.py` |
+
+游戏沿用 D2 的持久化业务模块，SQL 收拢到 `games/repositories/`：
+
+| 玩法 | 业务操作 | repository |
+|---|---|---|
+| 多人下注 | `gamble_rounds.py`：开局、接受下注、结算、恢复、公告 | `gamble.py`：`gamble_rounds`、`gamble_bets`，`Round` / `Bet` 与状态取值 |
+| 石头剪刀布 | `rps_games.py`：建局与入场扣款、选择、超时、取消、恢复 | `rps.py`：`rps_games`，`Game` / `Seat` 与状态取值 |
+| 御神签 | `omikuji.py` 的 `draw_daily_fortune`（很短，仍与适配层同文件） | `omikuji.py`：`user_omikuji` |
+| RPG | `rpg/settlement.py`：回血、击败怪物、玩家对战的结算 | `rpg.py`：角色、装备、道具、战斗经验 |
+
+加密货币里持有金币的两个入口也一样收拢了 SQL（操作仍与 Telegram 适配层在同一个模块里，`features/crypto/repositories/`）：
+BTC 价格预测（`crypto_predict.py` 的 `create_prediction`、`check_prediction_result`）用 `predictions.py`，`$FOGMOE` 兑换
+（`swap_fogmoe_solana_token.py` 的 `submit_swap_request`）用 `swaps.py`。
+
+新增或修改一个会改余额的操作时：SQL 写进对应 repository；操作持有事务并把余额变动放进去，`op_key` 登记到
+[balance-service.md](balance-service.md)；适配层只做映射；新的操作与 repository 模块加入 `pyproject.toml` 的 mypy `files`。
+`tests/test_persistence_boundary.py` 用 AST 检查适配层与操作里没有 SQL、repository 不持有事务也不含业务，违反时会失败。
+各层的测试方式见 [testing-guidelines.md](testing-guidelines.md) 的「经济与游戏的测试」。
+
 ## core 与业务之间的回调
 
 `core.telegram_history` 只负责写库并发出信号，摘要生成、recap 失效与会话锁属于对话业务，
@@ -160,6 +221,7 @@ app → core
 仍在导入时读取配置的模块不会跟着换配置：它们已经取走了旧值。完整清单是
 `tests/test_config_injection.py` 的 `IMPORT_TIME_CONFIG_READS`，测试会拒绝新增的导入时读取。
 迁移方式是把模块顶层的 `X = config.X` 改成在使用处读 `config.X`，迁完一个就从清单里删掉。
+economy 的 `ADMIN_USER_ID`（`charge_coin.py`）与 `NEW_USER_BONUS_COINS`（邀请奖励的总额由 `invited_user_reward()` 在调用时算出）已经迁完。
 数据库引擎同样在首次使用时按当时的配置创建（`core/db.py` 的 `get_engine`），要在引擎创建之前装配置。
 
 ## 契约文档
@@ -181,6 +243,11 @@ app → core
 
 ## 已知遗留
 
+- 经济、游戏与加密货币的两个金币入口之外，仍有 SQL 留在 handler 或共享模块里：`features/crypto/chart.py`、
+  `features/profile/handlers.py`（`/me` 开户与个人信息）、`features/ai/tools/`、`features/moderation/`，以及 `core/process_user.py`
+  里的好感度与印象。其中涉及金币的（`/me` 的开户奖励、AI 善意赠币）变动已经走余额服务，但 SQL 还没有收拢到 repository。
+- `features/games/rpg/` 的 `characters.py` 与 `equipment/` 仍把操作、事务和给用户的文案混在同一批函数里（SQL 已在 `games/repositories/rpg.py`，
+  金币相关的结算已经独立在 `rpg/settlement.py`）。
 - `features/profile/handlers.py` 的 `/start` 直接 import `features.economy.ref` 处理推广邀请码，
   是目前唯一一处非 `conversation → ai` 的跨功能 import，待后续用启动参数回调解耦。
 - `features/conversation` 依赖 `features/ai` 是有意为之：对话是 AI 业务的调用方，AI 不反向依赖对话。

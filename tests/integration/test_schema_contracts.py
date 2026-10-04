@@ -1,6 +1,7 @@
 """schema 契约：应用代码依赖的约束必须由迁移真正建出来（strict 模式的 MySQL）。"""
 
 import json
+from datetime import datetime
 
 import pytest
 from legacy_data import first_message_content, seed_duplicate_rows
@@ -16,8 +17,17 @@ from mysql_support import (
 )
 from sqlalchemy.exc import IntegrityError
 
+from core import sql
+from features.economy.repositories import lottery as lottery_repository
+
 REV_0016 = "0016_add_ai_schedule_daily_limit"
 HEAD = head_revision()
+
+
+async def save_lottery_date(user_id):
+    """像抽奖那样写一次时间戳：每日抽奖靠 `user_lottery` 的唯一键做 upsert。"""
+    async with sql.transaction() as connection:
+        await lottery_repository.save_last_lottery_date(connection, user_id, datetime.now())
 
 
 class TestFreshDatabase:
@@ -57,18 +67,16 @@ class TestFreshDatabase:
             execute(app_database, (insert, (json.dumps([]),)))
 
     def test_repeated_daily_lottery_updates_keep_a_single_row(self, app_database):
-        from core import process_user
-
-        run(process_user.update_user_lottery_date(42))
-        first = run(process_user.get_user_last_lottery_date(42))
+        run(save_lottery_date(42))
+        first = run(lottery_repository.get_last_lottery_date(42))
         execute(
             app_database,
             "UPDATE user_lottery SET last_lottery_date = '2000-01-01 00:00:00' WHERE user_id = 42",
         )
-        run(process_user.update_user_lottery_date(42))
+        run(save_lottery_date(42))
 
         assert fetch_scalar(app_database, "SELECT COUNT(*) FROM user_lottery WHERE user_id = 42") == 1
-        latest = run(process_user.get_user_last_lottery_date(42))
+        latest = run(lottery_repository.get_last_lottery_date(42))
         assert latest >= first
 
     def test_lottery_user_id_is_unique(self, app_database):
@@ -144,11 +152,11 @@ class TestLegacyDatabaseWithDuplicates:
             execute(upgraded_legacy_database, "INSERT INTO user_lottery (user_id) VALUES (7)")
 
     def test_application_keeps_working_on_the_upgraded_database(self, upgraded_legacy_database):
-        from core import chat_records, process_user
+        from core import chat_records
 
         with bind_app_engine(upgraded_legacy_database):
             run(chat_records.insert_chat_record(1, "user", "after the upgrade"))
-            run(process_user.update_user_lottery_date(7))
+            run(save_lottery_date(7))
 
         assert fetch_scalar(
             upgraded_legacy_database, "SELECT COUNT(*) FROM chat_records WHERE conversation_id = 1"

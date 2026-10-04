@@ -161,13 +161,10 @@ def test_create_application_accepts_a_prebuilt_bot(settings_override):
 IMPORT_TIME_CONFIG_READS = {
     ("features/admin/announce.py", "ADMIN_USER_ID"),
     ("features/ai/prompts.py", "SYSTEM_PROMPT"),  # 来自 resources/ 的文本，不是设置
-    ("features/ai/tools/advisor_tools.py", "AI_ADVISOR_MAX_CONCURRENT_REQUESTS"),
     ("features/ai/tools/image_tools.py", "BASE_DIR"),  # 路径常量，不是设置
     ("features/ai/tools/sticker_tools.py", "BASE_DIR"),
     ("features/ai/tools/voice_tools.py", "BASE_DIR"),
     ("features/crypto/monitoring.py", "ADMIN_USER_ID"),
-    ("features/economy/charge_coin.py", "ADMIN_USER_ID"),
-    ("features/economy/ref.py", "NEW_USER_BONUS_COINS"),
     ("features/moderation/spam_control.py", "BASE_DIR"),
 }
 

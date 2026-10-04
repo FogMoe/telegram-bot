@@ -12,12 +12,13 @@ op_key 由命令消息的位置（chat id 与 message id）派生：
 """
 
 import math
-import re
 from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from core import balance
+
+from ..repositories import rpg as rpg_repository
 
 HEAL_COST = 10
 PVP_LOSS_RATE = 0.10  # 败者损失当前金币的 10%
@@ -28,8 +29,6 @@ HEAL_FULL = "full"  # 生命值已满，没有扣费
 HEAL_NO_CHARACTER = "no_character"
 HEAL_INSUFFICIENT = "insufficient"
 HEAL_REPLAY = "replay"  # 这条命令已经处理过，没有再扣费
-
-_FIELD_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 def heal_op_key(chat_id: int, message_id: int) -> str:
@@ -52,17 +51,7 @@ async def set_character_fields(
     connection: AsyncConnection, user_id: int, updates: dict
 ) -> int:
     """在调用方的事务里更新角色字段；字段名不合法或写入失败都抛异常，让事务回滚。"""
-    if not updates:
-        return 0
-    for key in updates:
-        if not _FIELD_NAME.match(key):
-            raise ValueError(f"非法字段名: {key}")
-    assignments = ", ".join(f"{key} = %s" for key in updates)
-    result = await connection.exec_driver_sql(
-        f"UPDATE rpg_characters SET {assignments} WHERE user_id = %s",
-        (*updates.values(), user_id),
-    )
-    return result.rowcount
+    return await rpg_repository.update_character_fields(connection, user_id, updates)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,15 +69,10 @@ async def heal_for_coins(user_id: int, op_key: str) -> HealResult:
             await balance.lock_user(connection, user_id)
         except balance.UserNotFound:
             return HealResult(HEAL_NO_CHARACTER)
-        row = (
-            await connection.exec_driver_sql(
-                "SELECT hp, max_hp FROM rpg_characters WHERE user_id = %s FOR UPDATE",
-                (user_id,),
-            )
-        ).first()
-        if row is None:
+        locked = await rpg_repository.lock_character_hp(connection, user_id)
+        if locked is None:
             return HealResult(HEAL_NO_CHARACTER)
-        hp, max_hp = row[0], int(row[1])
+        hp, max_hp = locked
         if hp >= max_hp:
             return HealResult(HEAL_FULL, max_hp)
         try:
@@ -134,10 +118,7 @@ async def settle_monster_battle(
                 return False
         await set_character_fields(connection, user_id, {"hp": player_hp})
         if won:
-            await connection.exec_driver_sql(
-                "UPDATE rpg_characters SET experience = experience + %s WHERE user_id = %s",
-                (exp_reward, user_id),
-            )
+            await rpg_repository.add_experience(connection, user_id, exp_reward)
         return True
 
     return await balance.run_in_transaction(work)
@@ -186,10 +167,7 @@ async def settle_player_battle(
             await balance.credit(
                 connection, winner_id, coins_to_winner, op_key=win_key, reason="rpg_pvp_win"
             )
-        await connection.exec_driver_sql(
-            "UPDATE rpg_characters SET experience = experience + %s WHERE user_id = %s",
-            (exp_gain, winner_id),
-        )
+        await rpg_repository.add_experience(connection, winner_id, exp_gain)
         for user_id in sorted(hp_after):
             await set_character_fields(connection, user_id, {"hp": hp_after[user_id]})
         return PvpSettlement(True, coins_lost, coins_to_winner)

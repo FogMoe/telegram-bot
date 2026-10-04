@@ -20,7 +20,8 @@ from mysql_support import execute, fetch, run
 
 from core import balance, sql, stake_reward_pool
 from features.economy import stake_coin
-from features.economy.stake_coin import CollectStatus, OpenStatus, WithdrawStatus
+from features.economy.operations import stake as stake_operations
+from features.economy.operations.stake import CollectStatus, OpenStatus, WithdrawStatus
 
 NOW = datetime.now().replace(microsecond=0)
 EIGHT_DAYS_AGO = NOW - timedelta(days=8)
@@ -69,7 +70,7 @@ class TestOpenStake:
     def test_stake_debits_and_records_the_stake_together(self, app_database):
         seed_user(app_database, 1, free=300)
 
-        outcome = run(stake_coin.open_stake(1, 100, op_key="stake:7:11"))
+        outcome = run(stake_operations.open_stake(1, 100, op_key="stake:7:11"))
 
         assert outcome.status is OpenStatus.STAKED
         assert coins(app_database) == 200
@@ -81,8 +82,8 @@ class TestOpenStake:
     def test_the_same_command_delivered_twice_is_charged_once(self, app_database):
         seed_user(app_database, 1, free=300)
 
-        run(stake_coin.open_stake(1, 100, op_key="stake:7:11"))
-        replay = run(stake_coin.open_stake(1, 100, op_key="stake:7:11"))
+        run(stake_operations.open_stake(1, 100, op_key="stake:7:11"))
+        replay = run(stake_operations.open_stake(1, 100, op_key="stake:7:11"))
 
         assert replay.status is OpenStatus.REPLAYED
         assert coins(app_database) == 200
@@ -91,7 +92,7 @@ class TestOpenStake:
     def test_an_insufficient_balance_leaves_no_stake_and_no_ledger_row(self, app_database):
         seed_user(app_database, 1, free=50)
 
-        outcome = run(stake_coin.open_stake(1, 100, op_key="stake:7:11"))
+        outcome = run(stake_operations.open_stake(1, 100, op_key="stake:7:11"))
 
         assert (outcome.status, outcome.balance_total) == (OpenStatus.INSUFFICIENT, 50)
         assert coins(app_database) == 50
@@ -102,14 +103,14 @@ class TestOpenStake:
         seed_user(app_database, 1, free=300)
         seed_stake(app_database, 1, 100, stake_time=NOW)
 
-        outcome = run(stake_coin.open_stake(1, 50, op_key="stake:7:12"))
+        outcome = run(stake_operations.open_stake(1, 50, op_key="stake:7:12"))
 
         assert outcome.status is OpenStatus.ALREADY_STAKED
         assert coins(app_database) == 300
         assert ledger_rows(app_database) == []
 
     def test_an_unregistered_user_is_reported(self, app_database):
-        outcome = run(stake_coin.open_stake(404, 10, op_key="stake:7:11"))
+        outcome = run(stake_operations.open_stake(404, 10, op_key="stake:7:11"))
 
         assert outcome.status is OpenStatus.NOT_REGISTERED
 
@@ -119,7 +120,7 @@ class TestOpenStake:
         async def scenario():
             return await gather_all(
                 *[
-                    stake_coin.open_stake(1, 100, op_key=f"stake:7:{index}")
+                    stake_operations.open_stake(1, 100, op_key=f"stake:7:{index}")
                     for index in range(5)
                 ]
             )
@@ -139,7 +140,7 @@ class TestOpenStake:
         async def scenario():
             return await gather_all(
                 *[
-                    stake_coin.open_stake(user_id, 100, op_key=f"stake:7:{user_id}")
+                    stake_operations.open_stake(user_id, 100, op_key=f"stake:7:{user_id}")
                     for user_id in range(1, 9)
                 ]
             )
@@ -157,7 +158,7 @@ class TestOpenStake:
         fail_after(monkeypatch, balance, "debit")
 
         with pytest.raises(RuntimeError):
-            run(stake_coin.open_stake(1, 100, op_key="stake:7:11"))
+            run(stake_operations.open_stake(1, 100, op_key="stake:7:11"))
 
         assert coins(app_database) == 300
         assert stake_row(app_database) is None
@@ -189,13 +190,13 @@ class TestCollectReward:
         seed_stake(app_database, 1, 1000)
         set_pool(app_database, 100)
 
-        outcome = run(stake_coin.collect_stake_reward(1))
+        outcome = run(stake_operations.collect_stake_reward(1))
 
         assert (outcome.status, outcome.reward) == (CollectStatus.COLLECTED, 21)
         assert coins(app_database) == 21
         assert pool_balance(app_database) == Decimal("79")
         assert stake_row(app_database)["last_reward_time"] == EIGHT_DAYS_AGO + timedelta(days=7)
-        key = stake_coin.stake_collect_op_key(1, EIGHT_DAYS_AGO, EIGHT_DAYS_AGO)
+        key = stake_operations.stake_collect_op_key(1, EIGHT_DAYS_AGO, EIGHT_DAYS_AGO)
         assert ledger_keys(app_database) == [key]
         assert [(row["op_key"], row["kind"], row["ref"]) for row in pool_rows(app_database)] == [
             (key, "debit", key)
@@ -206,9 +207,9 @@ class TestCollectReward:
         seed_user(app_database, 1, free=0)
         seed_stake(app_database, 1, 1000)
         set_pool(app_database, 100)
-        run(stake_coin.collect_stake_reward(1))
+        run(stake_operations.collect_stake_reward(1))
 
-        again = run(stake_coin.collect_stake_reward(1))
+        again = run(stake_operations.collect_stake_reward(1))
 
         assert again.status is CollectStatus.NOT_YET
         assert coins(app_database) == 21
@@ -220,8 +221,8 @@ class TestCollectReward:
         seed_user(app_database, 2)
         seed_stake(app_database, 2, 1000, stake_time=NOW - timedelta(days=3))
 
-        assert run(stake_coin.collect_stake_reward(1)).status is CollectStatus.NO_STAKE
-        assert run(stake_coin.collect_stake_reward(2)).status is CollectStatus.NOT_YET
+        assert run(stake_operations.collect_stake_reward(1)).status is CollectStatus.NO_STAKE
+        assert run(stake_operations.collect_stake_reward(2)).status is CollectStatus.NOT_YET
         assert ledger_rows(app_database) == []
 
     def test_an_empty_pool_pays_nothing_and_changes_nothing(self, app_database):
@@ -229,7 +230,7 @@ class TestCollectReward:
         seed_stake(app_database, 1, 1000)
         set_pool(app_database, 10)
 
-        outcome = run(stake_coin.collect_stake_reward(1))
+        outcome = run(stake_operations.collect_stake_reward(1))
 
         assert outcome.status is CollectStatus.POOL_EMPTY
         assert coins(app_database) == 0
@@ -242,7 +243,7 @@ class TestCollectReward:
         seed_stake(app_database, 1, 1000, stake_time=NOW - timedelta(days=15))
         set_pool(app_database, 30)
 
-        outcome = run(stake_coin.collect_stake_reward(1))
+        outcome = run(stake_operations.collect_stake_reward(1))
 
         assert (outcome.status, outcome.reward) == (CollectStatus.COLLECTED, 21)
         assert pool_balance(app_database) == Decimal("9")
@@ -256,7 +257,7 @@ class TestCollectReward:
         set_pool(app_database, 100)
 
         async def scenario():
-            return await gather_all(*[stake_coin.collect_stake_reward(1) for _ in range(6)])
+            return await gather_all(*[stake_operations.collect_stake_reward(1) for _ in range(6)])
 
         results = run(scenario())
 
@@ -274,10 +275,10 @@ class TestCollectReward:
 
         async def scenario():
             return await gather_all(
-                stake_coin.collect_stake_reward(1),
-                stake_coin.withdraw_stake_principal(1),
-                stake_coin.collect_stake_reward(1),
-                stake_coin.withdraw_stake_principal(1),
+                stake_operations.collect_stake_reward(1),
+                stake_operations.withdraw_stake_principal(1),
+                stake_operations.collect_stake_reward(1),
+                stake_operations.withdraw_stake_principal(1),
             )
 
         results = run(scenario())
@@ -297,7 +298,7 @@ class TestCollectReward:
 
         async def scenario():
             return await gather_all(
-                *[stake_coin.collect_stake_reward(user_id) for user_id in range(1, 7)]
+                *[stake_operations.collect_stake_reward(user_id) for user_id in range(1, 7)]
             )
 
         results = run(scenario())
@@ -318,7 +319,7 @@ class TestCollectReward:
         fail_after(monkeypatch, stake_reward_pool, "debit_pool")
 
         with pytest.raises(RuntimeError):
-            run(stake_coin.collect_stake_reward(1))
+            run(stake_operations.collect_stake_reward(1))
 
         assert coins(app_database) == 0
         assert pool_balance(app_database) == Decimal("100")
@@ -357,7 +358,7 @@ class TestWithdraw:
         seed_user(app_database, 1, free=0)
         seed_stake(app_database, 1, 1000, stake_time=NOW - timedelta(days=3))
 
-        outcome = run(stake_coin.withdraw_stake_principal(1))
+        outcome = run(stake_operations.withdraw_stake_principal(1))
 
         assert (outcome.status, outcome.principal, outcome.fee, outcome.reward) == (
             WithdrawStatus.WITHDRAWN,
@@ -375,7 +376,7 @@ class TestWithdraw:
         seed_stake(app_database, 1, 1000)
         set_pool(app_database, 100)
 
-        outcome = run(stake_coin.withdraw_stake_principal(1))
+        outcome = run(stake_operations.withdraw_stake_principal(1))
 
         assert outcome.reward == 21
         assert coins(app_database) == 970 + 21
@@ -389,7 +390,7 @@ class TestWithdraw:
         seed_stake(app_database, 1, 1000)
         set_pool(app_database, 5)
 
-        outcome = run(stake_coin.withdraw_stake_principal(1))
+        outcome = run(stake_operations.withdraw_stake_principal(1))
 
         assert outcome.reward == 0
         assert coins(app_database) == 970
@@ -401,7 +402,7 @@ class TestWithdraw:
         seed_stake(app_database, 1, 1000, stake_time=NOW - timedelta(days=1))
 
         async def scenario():
-            return await gather_all(*[stake_coin.withdraw_stake_principal(1) for _ in range(5)])
+            return await gather_all(*[stake_operations.withdraw_stake_principal(1) for _ in range(5)])
 
         results = run(scenario())
 
@@ -420,7 +421,7 @@ class TestWithdraw:
         fail_after(monkeypatch, balance, "credit")
 
         with pytest.raises(RuntimeError):
-            run(stake_coin.withdraw_stake_principal(1))
+            run(stake_operations.withdraw_stake_principal(1))
 
         assert coins(app_database) == 0
         assert stake_row(app_database) is not None
@@ -479,9 +480,9 @@ class TestLockOrderUnderContention:
             for user_id in users:
                 jobs.append(spend_and_contribute(user_id))
                 if user_id <= 4:
-                    jobs.append(stake_coin.collect_stake_reward(user_id))
+                    jobs.append(stake_operations.collect_stake_reward(user_id))
                 elif user_id <= 8:
-                    jobs.append(stake_coin.withdraw_stake_principal(user_id))
+                    jobs.append(stake_operations.withdraw_stake_principal(user_id))
             jobs.append(
                 stake_reward_pool.debit_pool_standalone(
                     Decimal("1.00"), op_key="manual:1", reason="manual"

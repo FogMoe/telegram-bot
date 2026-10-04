@@ -8,7 +8,9 @@ from core import balance
 from features.ai.tools import user_tools
 from features.crypto import crypto_predict
 from features.crypto import swap_fogmoe_solana_token as swap
-from features.economy import bribe, coins, ref, shop, stake_coin, task
+from features.economy import shop_views, stake_coin
+from features.economy.operations import bribe, coins, invitations as ref, stake, task
+from features.economy.operations import shop as shop_purchases
 
 
 class FakeRandom:
@@ -28,7 +30,7 @@ class TestGiveFee:
         [(1, 0), (2, 1), (4, 1), (5, 1), (9, 1), (10, 2), (99, 19), (100, 20), (1000, 200)],
     )
     def test_fee_is_a_fifth_with_a_minimum_of_one_coin(self, amount, fee):
-        assert coins._calculate_give_fee(amount) == fee
+        assert coins.calculate_give_fee(amount) == fee
 
 
 class TestShopRules:
@@ -47,21 +49,31 @@ class TestShopRules:
         ],
     )
     def test_permission_upgrades_must_follow_the_levels(self, current, target, refusal):
-        assert shop.permission_upgrade_refusal(current, target) == refusal
+        reason = shop_purchases.permission_upgrade_refusal(current, target)
+
+        if refusal is None:
+            assert reason is None
+        else:
+            result = shop_purchases.PermissionUpgradeResult(
+                shop_purchases.PurchaseStatus.NOT_ELIGIBLE, refusal=reason
+            )
+            assert shop_views.permission_message(result) == refusal
 
     def test_upgrade_prices_and_buttons_cover_the_same_levels(self):
-        assert shop.PERMISSION_UPGRADE_PRICES == {1: 50, 2: 100, 3: 10000}
-        assert set(shop.UPGRADE_CALLBACKS.values()) == set(shop.PERMISSION_UPGRADE_PRICES)
+        assert shop_purchases.PERMISSION_UPGRADE_PRICES == {1: 50, 2: 100, 3: 10000}
+        assert set(shop_views.UPGRADE_CALLBACKS.values()) == set(
+            shop_purchases.PERMISSION_UPGRADE_PRICES
+        )
 
     @pytest.mark.parametrize(
         ("roll", "reward"),
         [(0.0, 0), (0.7999, 0), (0.8, 1), (0.9899, 1), (0.99, 5), (0.9994, 5), (0.9995, 100), (0.99999, 100)],
     )
     def test_huanle_reward_follows_the_published_odds(self, roll, reward):
-        assert shop.draw_huanle_reward(FakeRandom(roll)) == reward
+        assert shop_purchases.draw_huanle_reward(FakeRandom(roll)) == reward
 
     def test_scratch_reward_is_drawn_from_zero_to_twenty(self):
-        rewards = {shop.draw_scratch_reward() for _ in range(500)}
+        rewards = {shop_purchases.draw_scratch_reward() for _ in range(500)}
 
         assert min(rewards) >= 0 and max(rewards) <= 20
 
@@ -70,7 +82,7 @@ class TestShopRules:
         record = None
         triggered = []
         for _ in range(5):
-            record, bonus = shop.advance_pity(record, today=today, miss=True, threshold=5)
+            record, bonus = shop_purchases.advance_pity(record, today=today, miss=True, threshold=5)
             triggered.append(bonus)
 
         assert triggered == [False, False, False, False, True]
@@ -78,17 +90,17 @@ class TestShopRules:
 
     def test_a_hit_resets_the_streak(self):
         today = date(2026, 10, 5)
-        record, _ = shop.advance_pity(None, today=today, miss=True, threshold=5)
-        record, _ = shop.advance_pity(record, today=today, miss=True, threshold=5)
+        record, _ = shop_purchases.advance_pity(None, today=today, miss=True, threshold=5)
+        record, _ = shop_purchases.advance_pity(record, today=today, miss=True, threshold=5)
 
-        record, bonus = shop.advance_pity(record, today=today, miss=False, threshold=5)
+        record, bonus = shop_purchases.advance_pity(record, today=today, miss=False, threshold=5)
 
         assert (record["count"], bonus) == (0, False)
 
     def test_the_streak_starts_over_on_a_new_day(self):
         yesterday = {"count": 4, "date": date(2026, 10, 4)}
 
-        record, bonus = shop.advance_pity(
+        record, bonus = shop_purchases.advance_pity(
             yesterday, today=date(2026, 10, 5), miss=True, threshold=5
         )
 
@@ -97,7 +109,7 @@ class TestShopRules:
     def test_advance_pity_does_not_modify_the_stored_record(self):
         stored = {"count": 2, "date": date(2026, 10, 5)}
 
-        shop.advance_pity(stored, today=date(2026, 10, 5), miss=True, threshold=5)
+        shop_purchases.advance_pity(stored, today=date(2026, 10, 5), miss=True, threshold=5)
 
         assert stored == {"count": 2, "date": date(2026, 10, 5)}
 
@@ -105,14 +117,14 @@ class TestShopRules:
 class TestWithdrawMessage:
     def outcome(self, **kwargs):
         defaults = dict(
-            status=stake_coin.WithdrawStatus.WITHDRAWN,
+            status=stake.WithdrawStatus.WITHDRAWN,
             fee=30,
             principal=970,
             reward=0,
             reward_due=0,
             intervals_passed=0,
         )
-        return stake_coin.WithdrawOutcome(**{**defaults, **kwargs})
+        return stake.WithdrawOutcome(**{**defaults, **kwargs})
 
     def test_a_paid_reward_is_announced(self):
         message = stake_coin.withdraw_message(self.outcome(reward=21, reward_due=21, intervals_passed=1))
@@ -144,11 +156,11 @@ class TestOpKeys:
         chat_id = -1_001_870_858_408
         message_id = 2_147_483_647
         keys = [
-            shop.shop_op_key("scratch", "9223372036854775807"),
-            stake_coin.stake_open_op_key(chat_id, message_id),
-            stake_coin.stake_collect_op_key(user_id, self.STAKE_TIME, self.LATER),
-            stake_coin.stake_withdraw_op_key(user_id, self.STAKE_TIME),
-            stake_coin.stake_withdraw_reward_op_key(user_id, self.STAKE_TIME),
+            shop_purchases.shop_op_key("scratch", "9223372036854775807"),
+            stake.stake_open_op_key(chat_id, message_id),
+            stake.stake_collect_op_key(user_id, self.STAKE_TIME, self.LATER),
+            stake.stake_withdraw_op_key(user_id, self.STAKE_TIME),
+            stake.stake_withdraw_reward_op_key(user_id, self.STAKE_TIME),
             coins.give_op_key(chat_id, message_id),
             coins.give_recipient_op_key(chat_id, message_id),
             ref.invitee_op_key(user_id),
@@ -174,24 +186,24 @@ class TestOpKeys:
         assert ref.referrer_op_key(5) == "ref_referrer:5"
 
     def test_shop_keys_are_per_click_and_per_item(self):
-        assert shop.shop_op_key("memory", "q1") == "shop:memory:q1"
-        assert shop.shop_op_key("memory", "q1") != shop.shop_op_key("memory", "q2")
-        assert shop.shop_op_key("memory", "q1") != shop.shop_op_key("perm1", "q1")
+        assert shop_purchases.shop_op_key("memory", "q1") == "shop:memory:q1"
+        assert shop_purchases.shop_op_key("memory", "q1") != shop_purchases.shop_op_key("memory", "q2")
+        assert shop_purchases.shop_op_key("memory", "q1") != shop_purchases.shop_op_key("perm1", "q1")
 
     def test_a_missing_query_id_falls_back_to_a_one_off_key(self):
-        first = shop.shop_op_key("memory", None)
-        second = shop.shop_op_key("memory", None)
+        first = shop_purchases.shop_op_key("memory", None)
+        second = shop_purchases.shop_op_key("memory", None)
 
         assert first != second
         assert first.startswith("shop:memory:")
 
     def test_collect_keys_identify_the_stake_and_the_reward_window(self):
-        first_window = stake_coin.stake_collect_op_key(5, self.STAKE_TIME, self.STAKE_TIME)
-        second_window = stake_coin.stake_collect_op_key(5, self.STAKE_TIME, self.LATER)
+        first_window = stake.stake_collect_op_key(5, self.STAKE_TIME, self.STAKE_TIME)
+        second_window = stake.stake_collect_op_key(5, self.STAKE_TIME, self.LATER)
 
         assert first_window == "stake_collect:5:20261005T083015:20261005T083015"
         assert second_window != first_window
-        assert stake_coin.stake_withdraw_op_key(5, self.STAKE_TIME) == (
+        assert stake.stake_withdraw_op_key(5, self.STAKE_TIME) == (
             "stake_withdraw:5:20261005T083015"
         )
 
