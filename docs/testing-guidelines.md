@@ -17,6 +17,19 @@
 - `modules/features/` 放业务功能。优先把可测试的纯逻辑拆到独立函数或小模块，再让 Telegram handler 调用它们。
 - 外部服务调用、数据库读写、Telegram API 交互默认用替身对象或小范围集成测试，不在普通单元测试里访问真实网络或真实数据库。
 
+## 经济与游戏的测试
+
+`features/economy/` 与 `features/games/` 按适配层、业务操作、repository 分层（见 [architecture.md](architecture.md)
+的「经济与游戏的分层」），各层的测试方式不同：
+
+- **适配层**：用简单的 fake（`SimpleNamespace` 和记录调用的异步替身）替换业务操作，只验证输入映射与回复，不连数据库，
+  例如 `tests/test_shop_handlers.py`、`tests/test_economy_handlers.py`。
+- **业务操作**：规则、事务、幂等与失败路径用真实 MySQL 验证（`tests/integration/`），断言余额、账本和业务状态一起提交或一起回滚；
+  纯规则（手续费、保底、权限升级、op_key 派生）写成不依赖数据库的单元测试。
+- **repository**：`tests/integration/test_economy_repositories.py`、`test_game_repositories.py` 验证每个函数的语句级语义
+  与「写入随调用方事务回滚」。
+- **分层边界**：`tests/test_persistence_boundary.py` 用 AST 检查适配层与操作里没有 SQL、repository 不持有事务也不含业务。
+
 ## 测试选择标准
 
 优先写这些测试：
