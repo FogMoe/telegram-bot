@@ -8,6 +8,10 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 from core import config, mysql_connection, process_user
 from core.command_cooldown import cooldown
+from core.command_privacy import private_chat_only
+from core.redaction import log_exception, mask_secret, user_error_notice
+
+logger = logging.getLogger(__name__)
 
 # 创建一个锁字典，用于防止同一卡密被并发使用
 code_locks = {}
@@ -120,8 +124,8 @@ async def verify_and_use_code(user_id: int, code: str) -> tuple:
 
         return True, amount
     except Exception as e:
-        logging.error(f"充值卡密处理错误: {str(e)}")
-        return False, "充值处理过程中出现错误，请联系管理员"
+        error_ref = log_exception(logger, "充值卡密处理错误", e, extra_secrets=(code,))
+        return False, f"充值处理过程中出现错误，请联系管理员\n{user_error_notice(error_ref)}"
     finally:
         # 无论成功与否，都释放锁
         with code_lock_mutex:
@@ -129,6 +133,7 @@ async def verify_and_use_code(user_id: int, code: str) -> tuple:
                 del code_locks[code]
 
 
+@private_chat_only("charge")
 @cooldown
 async def charge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理充值命令: /charge <卡密>"""
@@ -169,7 +174,8 @@ async def charge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     
     # 记录充值尝试
-    logging.info(f"用户 {user_name}(ID:{user_id}) 尝试使用卡密: {redemption_code}")
+    masked_code = mask_secret(redemption_code)
+    logging.info(f"用户 {user_name}(ID:{user_id}) 尝试使用卡密: {masked_code}")
     
     # 发送处理中消息
     processing_msg = await update.message.reply_text(
@@ -191,7 +197,7 @@ async def charge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # 充值成功消息
         await processing_msg.edit_text(
             f"✅ 充值成功！\n\n"
-            f"🎟️ 卡密: {redemption_code}\n"
+            f"🎟️ 卡密: {masked_code}\n"
             f"💰 充值金额: +{result} 金币\n"
             f"💳 充值前余额: {previous_coins} 金币\n"
             f"💎 当前余额: {current_coins} 金币\n\n"
@@ -384,6 +390,7 @@ async def topup_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.edit_message_text("未知操作。")
 
 
+@private_chat_only("create_code")
 @cooldown
 async def admin_create_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """管理员命令：创建充值卡密 /create_code <数量> <金币>"""
@@ -468,8 +475,10 @@ async def admin_create_code(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         logging.info(f"管理员 {update.effective_user.username or user_id} 生成了 {len(codes)} 个价值 {amount} 金币的卡密")
         
     except Exception as e:
-        logging.error(f"生成卡密出错: {str(e)}")
-        await update.message.reply_text(f"❌ 生成卡密时出错: {str(e)}")
+        error_ref = log_exception(logger, "生成卡密出错", e)
+        await update.message.reply_text(
+            f"❌ 生成卡密时出错，请查看日志。\n{user_error_notice(error_ref)}"
+        )
 
 
 def setup_charge_handlers(application):

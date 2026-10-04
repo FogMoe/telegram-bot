@@ -2,6 +2,7 @@ import logging
 from typing import Dict, Tuple
 
 from core import mysql_connection
+from core.redaction import report_error
 
 
 # --- 装备相关功能 ---
@@ -123,8 +124,8 @@ async def equip_item(user_id: int, equipment_id: int) -> Tuple[bool, str]:
         return result
                 
     except Exception as e:
-        logging.error(f"装备物品过程中出错: {e}")
-        return False, f"装备出错: {str(e)}"
+        notice = report_error(logging.getLogger(__name__), "装备物品过程中出错", e)
+        return False, f"装备出错，请稍后再试。\n{notice}"
 
 
 async def unequip_item(user_id: int, equipment_type: str) -> Tuple[bool, str]:
@@ -165,8 +166,8 @@ async def unequip_item(user_id: int, equipment_type: str) -> Tuple[bool, str]:
             
         return result
     except Exception as e:
-        logging.error(f"卸下装备过程中出错: {e}")
-        return False, f"卸下装备出错: {str(e)}"
+        notice = report_error(logging.getLogger(__name__), "卸下装备过程中出错", e)
+        return False, f"卸下装备出错，请稍后再试。\n{notice}"
 
 
 async def update_equipment_stats(user_id: int) -> bool:

@@ -5,6 +5,7 @@ import time
 from typing import Any, Optional
 
 from core import config
+from core.redaction import describe_exception
 
 from .context import get_tool_request_context
 
@@ -293,7 +294,7 @@ def linux_sandbox_tool(
         if exit_code is None:
             exit_code = getattr(exc, "code", None)
         stdout = getattr(exc, "stdout", "")
-        stderr = getattr(exc, "stderr", "") or str(exc)
+        stderr = getattr(exc, "stderr", "") or describe_exception(exc)
         return _result_from_command(
             exit_code=exit_code,
             stdout=stdout,

@@ -7,6 +7,7 @@ from telegram.ext import ContextTypes
 
 from core import mysql_connection, process_user
 from core.command_cooldown import cooldown
+from core.redaction import report_error
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,8 @@ async def rich_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = "SELECT name, (coins + coins_paid) AS coins_total FROM user ORDER BY coins_total DESC LIMIT 5"
         results = await mysql_connection.fetch_all(query)
     except Exception as e:
-        await update.message.reply_text(f"查询富豪榜时出错：{str(e)}")
+        notice = report_error(logger, "查询富豪榜时出错", e)
+        await update.message.reply_text(f"查询富豪榜时出错，请稍后再试。\n{notice}")
         return
 
     if not results:

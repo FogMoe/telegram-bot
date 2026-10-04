@@ -8,6 +8,7 @@ from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
 from telegram.constants import ParseMode
 import time
 from core.command_cooldown import cooldown
+from core.redaction import log_exception, user_error_notice
 
 
 logger = logging.getLogger(__name__)
@@ -32,9 +33,8 @@ async def get_btc_price():
         btc_price = float(client.mark_price("BTCUSDT")['markPrice'])
         return btc_price, None
     except Exception as e:
-        error_msg = f"获取比特币价格失败: {str(e)}"
-        logger.error(error_msg)
-        return None, error_msg
+        error_ref = log_exception(logger, "获取比特币价格失败", e)
+        return None, f"获取比特币价格失败。{user_error_notice(error_ref)}"
 
 @cooldown
 async def btc_predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -456,9 +456,8 @@ async def create_prediction(user_id, predict_type, amount, start_price):
 
         return True, None
     except Exception as e:
-        error_msg = f"创建预测时出错: {str(e)}"
-        logger.error(error_msg)
-        return False, error_msg
+        error_ref = log_exception(logger, "创建预测时出错", e)
+        return False, f"创建预测时出错。{user_error_notice(error_ref)}"
 
 async def check_prediction_result(user_id):
     """检查预测结果并更新用户金币"""

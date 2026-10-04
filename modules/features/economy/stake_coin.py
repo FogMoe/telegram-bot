@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -7,6 +8,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from core import mysql_connection, process_user, stake_reward_pool
 from core.command_cooldown import cooldown
+from core.redaction import report_error
 
 # 全局锁，确保同一时间只有一个质押操作执行
 lock = asyncio.Lock()
@@ -241,9 +243,11 @@ async def stake_coins(update: Update, context: ContextTypes.DEFAULT_TYPE, amount
                 f"You can collect rewards once every {REWARD_INTERVAL_DAYS} days."
             )
         except Exception as e:
+            notice = report_error(logging.getLogger(__name__), "质押过程中发生错误", e)
             await update.message.reply_text(
-                f"质押过程中发生错误: {str(e)}\n"
-                f"Error occurred during staking: {str(e)}"
+                f"质押过程中发生错误，请稍后再试。\n"
+                f"Error occurred during staking. Please try again later.\n"
+                f"{notice}"
             )
 
 
@@ -338,7 +342,8 @@ async def collect_reward(query, user_id):
 
             await query.answer(f"成功领取 {reward} 金币回报！", show_alert=True)
         except Exception as e:
-            await query.answer(f"领取回报时发生错误: {str(e)}", show_alert=True)
+            notice = report_error(logging.getLogger(__name__), "领取回报时发生错误", e)
+            await query.answer(f"领取回报时发生错误，请稍后再试。\n{notice}", show_alert=True)
 
 
 async def withdraw_stake(query, user_id):
@@ -423,7 +428,8 @@ async def withdraw_stake(query, user_id):
 
             await query.answer(msg, show_alert=True)
         except Exception as e:
-            await query.answer(f"取出本金时发生错误: {str(e)}", show_alert=True)
+            notice = report_error(logging.getLogger(__name__), "取出本金时发生错误", e)
+            await query.answer(f"取出本金时发生错误，请稍后再试。\n{notice}", show_alert=True)
 
 
 # 创建质押相关的处理器

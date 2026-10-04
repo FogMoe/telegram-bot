@@ -26,9 +26,9 @@
 /give - 赠送某人金币
 /rich - 查看富豪榜前五
 /stake - 质押经济系统
-/charge - 使用卡密充值金币
+/charge - 使用卡密充值金币（仅限私聊）
 /recharge - 联系管理员充值
-/webpassword - 设置Web登录密码
+/webpassword - 设置Web登录密码（仅限私聊）
 
 ***娱乐相关：***
 /omikuji - 抽取御神签预测运势

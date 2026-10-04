@@ -9,6 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from core import config, mysql_connection
 from core.command_cooldown import cooldown
+from core.redaction import report_error
 
 ADMIN_USER_ID = config.ADMIN_USER_ID
 
@@ -55,8 +56,8 @@ async def admin_announce(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             except SQLAlchemyError as table_err:
                 logging.warning(f"查询群组表 {table} 时出错: {table_err}")
     except SQLAlchemyError as db_err:
-        logging.error(f"数据库查询出错: {db_err}")
-        await update.message.reply_text(f"数据库查询时出错: {db_err}")
+        notice = report_error(logging.getLogger(__name__), "数据库查询出错", db_err)
+        await update.message.reply_text(f"数据库查询时出错，详情已记录在日志中。\n{notice}")
         return
 
     # --- 发送公告 ---

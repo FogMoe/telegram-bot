@@ -18,6 +18,7 @@ from telegram.ext import ContextTypes
 from core import config, mysql_connection, process_user
 from core.archive_utils import send_permanent_records_archive
 from core.prompt_utils import format_metadata_attrs, xml_escape
+from core.redaction import describe_exception
 from core.telegram_history import suppress_telegram_history
 from core.telegram_utils import partial_send
 from features.ai import ai_chat, summary
@@ -583,8 +584,7 @@ async def _get_followup_user_total_coins(user_id: int) -> int | None:
 
 
 async def _record_claim_failure(claim: IdleFollowupClaim, exc: Exception) -> None:
-    error_text = re.sub(r"\s+", " ", str(exc)).strip() or type(exc).__name__
-    error_text = error_text[:500]
+    error_text = describe_exception(exc, limit=500)
     next_retry_count = claim.retry_count + 1
     if next_retry_count >= IDLE_FOLLOWUP_MAX_RETRIES:
         await mysql_connection.execute(

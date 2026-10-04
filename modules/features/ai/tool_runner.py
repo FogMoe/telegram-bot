@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Opt
 from pydantic import ValidationError
 
 from core import config
+from core.redaction import describe_exception, log_exception, redact_text
 
 from .errors import is_retryable_completion_error
 from .tools import OPENAI_TOOLS, AI_TOOL_ARG_MODELS, AI_TOOL_HANDLERS
@@ -21,6 +22,8 @@ from .types import (
 )
 
 POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS = (1.0, 3.0)
+
+logger = logging.getLogger(__name__)
 
 
 def _json_safe(value: Any) -> Any:
@@ -722,7 +725,9 @@ def run_tool_loop(
                     "%s 工具参数校验失败: %s, args=%s, error=%s",
                     provider_name,
                     function_name,
-                    json.dumps(_json_safe(raw_function_args), ensure_ascii=False),
+                    redact_text(
+                        json.dumps(_json_safe(raw_function_args), ensure_ascii=False)
+                    ),
                     validation_error.get("details"),
                 )
                 internal_tool_result = validation_error
@@ -743,22 +748,34 @@ def run_tool_loop(
                             "%s 工具返回错误: %s, args=%s, error=%s",
                             provider_name,
                             function_name,
-                            json.dumps(function_args, ensure_ascii=False),
-                            internal_tool_result.get("error"),
+                            redact_text(json.dumps(function_args, ensure_ascii=False)),
+                            redact_text(internal_tool_result.get("error")),
                         )
                     else:
                         logging.info(
                             "%s 工具执行成功: %s, args=%s",
                             provider_name,
                             function_name,
-                            json.dumps(function_args, ensure_ascii=False),
+                            redact_text(json.dumps(function_args, ensure_ascii=False)),
                         )
                 except TypeError as exc:
-                    logging.error("%s 工具参数错误: %s, %s", provider_name, function_name, exc)
-                    internal_tool_result = {"error": f"参数错误: {str(exc)}"}
+                    error_ref = log_exception(
+                        logger,
+                        f"{provider_name} 工具参数错误: {function_name}",
+                        exc,
+                    )
+                    internal_tool_result = {
+                        "error": f"参数错误: {describe_exception(exc)} (ref: {error_ref})"
+                    }
                 except Exception as exc:
-                    logging.exception("%s 工具执行失败: %s, %s", provider_name, function_name, exc)
-                    internal_tool_result = {"error": f"执行失败: {str(exc)}"}
+                    error_ref = log_exception(
+                        logger,
+                        f"{provider_name} 工具执行失败: {function_name}",
+                        exc,
+                    )
+                    internal_tool_result = {
+                        "error": f"执行失败: {describe_exception(exc)} (ref: {error_ref})"
+                    }
             else:
                 logging.warning("%s 未知工具: %s", provider_name, function_name)
                 internal_tool_result = {"error": f"未知工具: {function_name}"}

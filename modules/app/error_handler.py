@@ -1,14 +1,48 @@
 import logging
 
 from telegram import Update
+from telegram.constants import UpdateType
 from telegram.ext import ContextTypes
 
+from core.redaction import log_exception, new_error_ref, user_error_notice
 from core.telegram_history import telegram_history_scope
+
+logger = logging.getLogger(__name__)
+
+
+def _describe_update(update: object) -> str:
+    """只取排查需要的标识字段，不记录完整 Update（含消息正文与用户资料）。"""
+    if update is None:
+        return "update=None"
+    if not isinstance(update, Update):
+        return f"update_type={type(update).__name__}"
+
+    update_kind = next(
+        (
+            kind.value
+            for kind in UpdateType
+            if getattr(update, kind.value, None) is not None
+        ),
+        "unknown",
+    )
+    chat = update.effective_chat
+    user = update.effective_user
+    return (
+        f"update_id={update.update_id} update_kind={update_kind} "
+        f"chat_id={getattr(chat, 'id', None)} chat_type={getattr(chat, 'type', None)} "
+        f"user_id={getattr(user, 'id', None)}"
+    )
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理Telegram API错误"""
-    logging.error(f"Update {update} caused error {context.error}")
+    error_ref = new_error_ref()
+    log_exception(
+        logger,
+        f"Unhandled error ({_describe_update(update)})",
+        context.error,
+        ref=error_ref,
+    )
 
     # 根据不同类型的更新选择不同的回复方式
     try:
@@ -25,8 +59,9 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     "It seems there was a small issue with the conversation."
                     "You can try using the  /clear  command to clear the chat history,"
                     "and then we can start over!\n\n"
-                    "错误信息 Error message: \n\n" + str(context.error) + "\n\n您可以发送给管理员 @ScarletKc 报告此问题。\n"
-                    "You can report this issue to the admin @ScarletKc."
+                    f"{user_error_notice(error_ref)}\n\n"
+                    "您可以把这个参考 ID 发送给管理员 @ScarletKc 报告此问题。\n"
+                    "You can report this issue to the admin @ScarletKc with this reference."
                 )
             elif update and update.callback_query:
                 # 对回调查询错误的处理
@@ -34,7 +69,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 if update.effective_chat:
                     await context.bot.send_message(
                         chat_id=update.effective_chat.id,
-                        text="操作出错，请稍后再试。\n错误信息: " + str(context.error)
+                        text=f"操作出错，请稍后再试。\n{user_error_notice(error_ref)}",
                     )
     except Exception as e:
-        logging.error(f"在处理错误时又发生了错误: {str(e)}")
+        log_exception(logger, "在处理错误时又发生了错误", e, ref=error_ref)

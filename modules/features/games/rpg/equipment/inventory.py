@@ -2,6 +2,7 @@ import logging
 from typing import Dict, List, Tuple
 
 from core import mysql_connection
+from core.redaction import report_error
 
 # 道具栏容量上限
 INVENTORY_CAPACITY = 10
@@ -85,8 +86,8 @@ async def add_item_to_inventory(user_id: int, item_id: int, quantity: int = 1) -
             )
         return True, f"成功获得 {quantity} 个 {item['name']}"
     except Exception as e:
-        logging.error(f"添加道具过程中出错: {e}")
-        return False, f"添加道具出错: {str(e)}"
+        notice = report_error(logging.getLogger(__name__), "添加道具过程中出错", e)
+        return False, f"添加道具出错，请稍后再试。\n{notice}"
 
 
 async def remove_item_from_inventory(user_id: int, item_id: int, quantity: int = 1) -> Tuple[bool, str]:
@@ -126,8 +127,8 @@ async def remove_item_from_inventory(user_id: int, item_id: int, quantity: int =
 
         return True, f"移除了 {quantity} 个 {existing_item['name']}"
     except Exception as e:
-        logging.error(f"移除道具过程中出错: {e}")
-        return False, f"移除道具出错: {str(e)}"
+        notice = report_error(logging.getLogger(__name__), "移除道具过程中出错", e)
+        return False, f"移除道具出错，请稍后再试。\n{notice}"
 
 
 async def use_item(user_id: int, item_id: int) -> Tuple[bool, str]:
@@ -162,8 +163,8 @@ async def use_item(user_id: int, item_id: int) -> Tuple[bool, str]:
             
         return True, result_message
     except Exception as e:
-        logging.error(f"使用道具过程中出错: {e}")
-        return False, f"使用道具出错: {str(e)}"
+        notice = report_error(logging.getLogger(__name__), "使用道具过程中出错", e)
+        return False, f"使用道具出错，请稍后再试。\n{notice}"
 
 
 def item_type_to_chinese(item_type: str) -> str:

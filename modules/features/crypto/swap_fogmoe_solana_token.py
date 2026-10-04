@@ -1,10 +1,12 @@
 import asyncio
+import logging
 import re
 from core import mysql_connection, process_user
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
 from telegram.constants import ParseMode
 from core.command_cooldown import cooldown
+from core.redaction import report_error
 
 # 定义最低兑换数量
 MIN_SWAP_AMOUNT = 10000
@@ -229,11 +231,12 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.MARKDOWN,
             )
         except Exception as e:
+            notice = report_error(logging.getLogger(__name__), "兑换过程中出现错误", e)
             await update.message.reply_text(
-                f"***兑换过程中出现错误:*** {str(e)}\n"
+                f"***兑换过程中出现错误。***\n"
                 f"请稍后重试。\n\n"
-                f"***Error occurred during exchange:*** {str(e)}\n"
-                f"Please try again later.",
+                f"***Error occurred during exchange.***\n"
+                f"Please try again later.\n\n{notice}",
                 parse_mode=ParseMode.MARKDOWN,
             )
 

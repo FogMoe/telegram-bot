@@ -6,6 +6,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from core import config, mysql_connection
 import tempfile
 from core.command_cooldown import cooldown # 导入冷却装饰器
+from core.redaction import report_error
 
 # 定义开发者命令处理函数
 
@@ -132,11 +133,11 @@ async def get_bot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
            await update.message.reply_text(stats_message, parse_mode='Markdown')
         
     except SQLAlchemyError as db_err:
-        logging.error(f"数据库查询出错: {str(db_err)}")
-        await update.message.reply_text(f"数据库查询出错: {str(db_err)}")
+        notice = report_error(logging.getLogger(__name__), "数据库查询出错", db_err)
+        await update.message.reply_text(f"数据库查询出错，详情已记录在日志中。\n{notice}")
     except Exception as e:
-        logging.error(f"获取统计信息出错: {str(e)}")
-        await update.message.reply_text(f"获取统计信息出错: {str(e)}")
+        notice = report_error(logging.getLogger(__name__), "获取统计信息出错", e)
+        await update.message.reply_text(f"获取统计信息出错，详情已记录在日志中。\n{notice}")
 
 @cooldown # 添加冷却装饰器
 async def view_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -186,8 +187,8 @@ async def view_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(logs_message, parse_mode='Markdown')
             
     except Exception as e:
-        logging.error(f"获取日志出错: {str(e)}")
-        await update.message.reply_text(f"获取日志出错: {str(e)}")
+        notice = report_error(logging.getLogger(__name__), "获取日志出错", e)
+        await update.message.reply_text(f"获取日志出错，详情已记录在日志中。\n{notice}")
 
 # 设置开发者命令处理器
 def setup_developer_handlers(application):

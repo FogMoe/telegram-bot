@@ -8,6 +8,7 @@ from telegram.ext import ContextTypes
 from core import mysql_connection, process_user
 from core.archive_utils import send_permanent_records_archive
 from core.prompt_utils import format_metadata_attrs, xml_escape
+from core.redaction import describe_exception
 from core.telegram_history import suppress_telegram_history, telegram_history_scope
 from core.telegram_utils import partial_send
 from features.ai import ai_chat, summary
@@ -422,9 +423,7 @@ async def _process_schedule_task_locked(
             await _reschedule_recurring_task(schedule_id, run_at, next_run_at)
     except Exception as exc:
         logger.exception("Scheduled task %s failed: %s", schedule_id, exc)
-        error_text = str(exc)
-        if len(error_text) > 500:
-            error_text = error_text[:500]
+        error_text = describe_exception(exc, limit=500)
         await _mark_schedule_status(schedule_id, "failed", error=error_text)
 
 

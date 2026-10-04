@@ -15,6 +15,7 @@ from core import (
 )
 from core.archive_utils import send_permanent_records_archive
 from core.prompt_utils import format_user_state_prompt
+from core.redaction import redact_text
 from core.telegram_history import (
     capture_telegram_history_events,
     format_user_message as _format_xml_message,
@@ -58,7 +59,7 @@ async def _archive_completed_clear_turn(
     await flush_pending_events(conversation_id)
     clear_records = list(tool_record_entries)
     if assistant_message.strip() and not runtime_error:
-        clear_records.append(("assistant", assistant_message))
+        clear_records.append(("assistant", redact_text(assistant_message)))
 
     clear_record_id, clear_archived_records = (
         await mysql_connection.archive_chat_and_start_new_session(
@@ -627,7 +628,7 @@ async def _reply_batch_unlocked(batch_items: list[batching._QueuedUpdate]) -> No
             await mysql_connection.async_insert_chat_record(
                 conversation_id,
                 "assistant",
-                assistant_message,
+                redact_text(assistant_message),
                 allow_zero_balance=True,
             )
         )

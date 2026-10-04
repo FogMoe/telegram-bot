@@ -1,17 +1,40 @@
+import asyncio
 import logging
-import hashlib
 import re
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, CommandHandler
 
 from core import mysql_connection
 from core.command_cooldown import cooldown
+from core.command_privacy import private_chat_only
+from core.redaction import log_exception
 import html
 
+logger = logging.getLogger(__name__)
+
+# Argon2id，参数取库默认值（RFC 9106 低内存配置）；盐与参数都编码在 PHC 字符串里。
+_PASSWORD_HASHER = PasswordHasher()
+
+
 def hash_password(password):
-    """对密码进行哈希处理"""
-    return hashlib.sha256(password.encode('utf-8')).hexdigest()
+    """用 Argon2id 对密码哈希，返回 PHC 字符串（约 100 字符，web_password.password 为 VARCHAR(255)）。"""
+    return _PASSWORD_HASHER.hash(password)
+
+
+def verify_password(password, password_hash):
+    """校验密码与 PHC 字符串是否匹配；格式不识别的哈希一律视为不匹配。"""
+    try:
+        return _PASSWORD_HASHER.verify(password_hash, password)
+    except (VerificationError, InvalidHashError):
+        return False
+
+
+def password_needs_rehash(password_hash):
+    """哈希参数低于当前配置时返回 True，供验证成功后的调用方重新哈希。"""
+    return _PASSWORD_HASHER.check_needs_rehash(password_hash)
 
 def validate_password(password):
     """验证密码格式"""
@@ -38,7 +61,7 @@ async def get_user_web_password(user_id):
         )
         return row  # RowMapping 或 None
     except Exception as e:
-        logging.error(f"获取用户Web密码信息失败: {str(e)}")
+        log_exception(logger, "获取用户Web密码信息失败", e)
         return None
 
 async def set_user_web_password(user_id, password_hash):
@@ -55,7 +78,7 @@ async def set_user_web_password(user_id, password_hash):
         )
         return True
     except Exception as e:
-        logging.error(f"设置用户Web密码失败: {str(e)}")
+        log_exception(logger, "设置用户Web密码失败", e)
         return False
 
 async def process_set_web_password(user_id, password):
@@ -68,8 +91,8 @@ async def process_set_web_password(user_id, password):
             "message": message
         }
     
-    # 对密码进行哈希处理
-    password_hash = hash_password(password)
+    # Argon2 占用 CPU 与内存，放到线程里避免阻塞事件循环
+    password_hash = await asyncio.to_thread(hash_password, password)
     
     # 检查是否已有密码
     existing_password = await get_user_web_password(user_id)
@@ -89,6 +112,7 @@ async def process_set_web_password(user_id, password):
             "message": "设置Web密码时发生错误，请稍后再试"
         }
 
+@private_chat_only("webpassword")
 @cooldown
 async def webpassword_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理/webpassword命令"""

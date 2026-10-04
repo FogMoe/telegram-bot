@@ -8,6 +8,9 @@ import requests
 import trafilatura
 
 from core import config
+from core.redaction import describe_exception, log_exception, redact_text
+
+logger = logging.getLogger(__name__)
 
 SERPAPI_API_KEY = getattr(config, "SERPAPI_API_KEY", "")
 FETCH_URL_MAX_CHARS = 12000
@@ -122,8 +125,15 @@ def google_search_tool(
         response.raise_for_status()
         data = response.json()
     except requests.RequestException as exc:
-        logging.exception("SerpApi request failed: %s", exc)
-        return {"error": f"SerpApi request failed: {exc}"}
+        known_secrets = (SERPAPI_API_KEY,)
+        error_ref = log_exception(
+            logger,
+            "SerpApi request failed",
+            exc,
+            extra_secrets=known_secrets,
+        )
+        description = describe_exception(exc, extra_secrets=known_secrets)
+        return {"error": f"SerpApi request failed: {description} (ref: {error_ref})"}
 
     if show_full_json:
         return _full_search_response(data)
@@ -173,14 +183,16 @@ def fetch_url_tool(
                 timeout=10,
             )
     except requests.RequestException as exc:
-        logging.exception("Failed to fetch URL : %s", exc)
-        return {"error": f"Failed to fetch URL: {exc}"}
+        error_ref = log_exception(logger, "Failed to fetch URL", exc)
+        return {
+            "error": f"Failed to fetch URL: {describe_exception(exc)} (ref: {error_ref})"
+        }
 
     if response.status_code >= 400:
         return {
             "error": "Upstream fetch failed",
             "status_code": response.status_code,
-            "details": response.text[:500],
+            "details": redact_text(response.text[:500]),
         }
 
     content, title = _extract_page_text(response.text, normalized_url)

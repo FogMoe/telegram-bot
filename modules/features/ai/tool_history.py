@@ -2,6 +2,8 @@ import json
 import time
 from typing import Any
 
+from core.redaction import redact_text
+
 
 def _telegram_command_name(arguments: object) -> str | None:
     if not isinstance(arguments, dict):
@@ -47,7 +49,7 @@ def _fallback_assistant_tool_call_message(
 ) -> dict[str, Any]:
     arguments = tool_log.get("arguments") or {}
     try:
-        arguments_json = json.dumps(arguments, ensure_ascii=False)
+        arguments_json = redact_text(json.dumps(arguments, ensure_ascii=False))
     except TypeError:
         arguments_json = json.dumps({}, ensure_ascii=False)
 
@@ -65,6 +67,29 @@ def _fallback_assistant_tool_call_message(
             }
         ],
     }
+
+
+def _redacted_assistant_message(message: dict[str, Any]) -> dict[str, Any]:
+    """脱敏要写入历史的 assistant 消息，只改文本与工具参数，保留 provider 专有字段。"""
+    redacted = dict(message)
+    if isinstance(redacted.get("content"), str):
+        redacted["content"] = redact_text(redacted["content"])
+    tool_calls = redacted.get("tool_calls")
+    if isinstance(tool_calls, list):
+        redacted_calls = []
+        for tool_call in tool_calls:
+            function = tool_call.get("function") if isinstance(tool_call, dict) else None
+            if isinstance(function, dict) and isinstance(function.get("arguments"), str):
+                tool_call = {
+                    **tool_call,
+                    "function": {
+                        **function,
+                        "arguments": redact_text(function["arguments"]),
+                    },
+                }
+            redacted_calls.append(tool_call)
+        redacted["tool_calls"] = redacted_calls
+    return redacted
 
 
 def _pop_pending_id(pending_tool_call_ids: list[str], tool_call_id: str) -> None:
@@ -123,7 +148,7 @@ def tool_logs_to_record_entries(
                 index,
                 visible_content,
             ):
-                record_entries.append(("assistant", visible_content))
+                record_entries.append(("assistant", redact_text(visible_content)))
             continue
 
         if entry_type == "telegram_event":
@@ -149,7 +174,9 @@ def tool_logs_to_record_entries(
                     pending_tool_call_ids.extend(call_ids)
                 else:
                     pending_tool_call_ids.append(tool_call_id)
-                record_entries.append(("assistant", assistant_message))
+                record_entries.append(
+                    ("assistant", _redacted_assistant_message(assistant_message))
+                )
                 continue
 
             if tool_call_id in pending_tool_call_ids:
@@ -178,7 +205,7 @@ def tool_logs_to_record_entries(
                     "role": "tool",
                     "tool_call_id": tool_call_id,
                     "name": tool_log.get("tool_name"),
-                    "content": tool_result_str,
+                    "content": redact_text(tool_result_str),
                 },
             )
         )

@@ -6,11 +6,11 @@ import asyncio
 import base64
 import logging
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy.exc import OperationalError
 
-from . import mysql_connection
+from . import mysql_connection, redaction
 from .prompt_utils import remove_xml_tags
 
 _bot_user_id: Optional[int] = None
@@ -25,8 +25,18 @@ def set_bot_identity(user_id: int, display_name: Optional[str] = None) -> None:
         _bot_display_name = display_name
 
 
-async def log_group_message(message, group_id: int) -> None:
-    """Persist a group chat message asynchronously."""
+async def log_group_message(
+    message,
+    group_id: int,
+    *,
+    sanitize: Callable[[str], str] | None = None,
+) -> None:
+    """Persist a group chat message asynchronously.
+
+    Message text is passed through the shared redaction policy before it is
+    stored. Callers that know more about the message (for example a reply to a
+    sensitive command) supply their own ``sanitize`` function.
+    """
     if not group_id or not message:
         return
 
@@ -35,7 +45,10 @@ async def log_group_message(message, group_id: int) -> None:
     if message_id is None:
         return
 
-    message_type, content = _extract_message_payload(message)
+    message_type, content = _extract_message_payload(
+        message,
+        sanitize or redaction.message_sanitizer(),
+    )
     created_at = message.date or datetime.utcnow().replace(tzinfo=timezone.utc)
 
     record = (group_id, message_id, user_id, message_type, content, created_at)
@@ -53,18 +66,22 @@ def _decode_non_text(value: str) -> str:
         return value
 
 
-def _extract_message_payload(message) -> Tuple[str, str]:
+def _extract_message_payload(
+    message,
+    sanitize: Callable[[str], str] = lambda text: text,
+) -> Tuple[str, str]:
     if getattr(message, "text", None):
-        return "text", remove_xml_tags(message.text)
+        return "text", sanitize(remove_xml_tags(message.text))
 
     if getattr(message, "caption", None):
+        caption = sanitize(remove_xml_tags(message.caption))
         if message.photo:
-            return "photo", _encode_non_text(remove_xml_tags(message.caption))
+            return "photo", _encode_non_text(caption)
         if message.video or message.animation:
-            return "video", _encode_non_text(remove_xml_tags(message.caption))
+            return "video", _encode_non_text(caption)
         if message.document:
-            return "document", _encode_non_text(remove_xml_tags(message.caption))
-        return "other", _encode_non_text(remove_xml_tags(message.caption))
+            return "document", _encode_non_text(caption)
+        return "other", _encode_non_text(caption)
 
     if getattr(message, "photo", None):
         return "photo", _encode_non_text("[photo]")
@@ -78,7 +95,7 @@ def _extract_message_payload(message) -> Tuple[str, str]:
         return "video", _encode_non_text("[video message]")
     if getattr(message, "document", None):
         file_name = getattr(message.document, "file_name", None)
-        label = file_name or "[document]"
+        label = sanitize(file_name) if file_name else "[document]"
         return "document", _encode_non_text(label)
 
     return "other", _encode_non_text("[unsupported message]")
