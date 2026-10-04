@@ -14,6 +14,7 @@ from features.ai.tools.context import (
 from features.ai.tools.models import ExecuteTelegramCommandArgs, parameters_schema
 from features.ai.tools.schemas import OPENAI_TOOLS
 from features.ai.types import TOOL_CONTEXT_MESSAGES_KEY
+from features.economy.operations.coins import give_op_key
 
 
 @pytest.fixture(autouse=True)
@@ -270,3 +271,53 @@ def test_delegated_command_fails_cleanly_without_a_configured_application(monkey
 
     assert outcome.success is False
     assert outcome.error_code == "execution_failed"
+
+
+def _op_keys_seen_by_handlers(commands, request_context):
+    """依次代执行 `commands`，返回每个 handler 算出来的 /give 扣款 op_key。"""
+    seen = []
+
+    class FakeApplication:
+        async def process_update(self, update):
+            seen.append(give_op_key(update.effective_chat.id, update.message.message_id))
+
+    application = FakeApplication()
+    application.bot = SimpleNamespace(username="FogMoeBot")
+
+    async def run():
+        for command_text in commands:
+            await _execute_on_telegram_loop(
+                application=application,
+                command="give",
+                command_text=command_text,
+                request_context=request_context,
+            )
+
+    asyncio.run(run())
+    return seen
+
+
+def test_each_delegated_command_in_a_turn_gets_its_own_operation_identity():
+    first, second, again = _op_keys_seen_by_handlers(
+        ["/give alice 10", "/give bob 20", "/give  alice 10"],
+        _request_context(),
+    )
+
+    # 合成命令复用触发对话的消息 ID，但不同的命令不会共用一个 op_key。
+    assert first.startswith("give:123:88:ai:") and second.startswith("give:123:88:ai:")
+    assert first != second
+    # 同一轮里同样的命令（空白不同也算同一条）重放时身份不变，副作用只发生一次。
+    assert again == first
+
+
+def test_an_edited_message_starts_new_delegated_operations():
+    original = _op_keys_seen_by_handlers(["/give alice 10"], _request_context())
+    edited = _op_keys_seen_by_handlers(
+        ["/give alice 10"], {**_request_context(), "message_edit_stamp": 1_780_000_000}
+    )
+
+    assert original != edited
+
+
+def test_commands_typed_by_the_user_keep_the_plain_message_identity():
+    assert give_op_key(123, 88) == "give:123:88"

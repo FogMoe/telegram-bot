@@ -19,6 +19,8 @@ from .tools.dispatch import is_inline_tool
 from .prompts import compose_system_prompt
 from .litellm_client import create_chat_completion
 from .types import (
+    MEDIA_DELIVERY_KEY,
+    MEDIA_DELIVERY_UNKNOWN,
     AIResponse,
     PartialAIResponseError,
     TOOL_CONTEXT_MESSAGES_KEY,
@@ -636,11 +638,16 @@ def _close_interrupted_round(
     interrupted_index: int,
     skip_set: set[str],
     reason: str,
+    round_context_messages: List[Dict[str, str]],
+    *,
+    running: bool = True,
 ) -> None:
-    """截止时间在工具阶段到期：给这一轮里每个还没有结果的工具调用补一条结果。
+    """截止时间在这一轮工具中途到期：给每个还没有结果的工具调用补一条结果。
 
-    正在运行的那个标记为「结果未知」，后面没来得及运行的标记为「未执行」，
-    这样历史里 assistant 的 tool_calls 与 tool 结果仍然一一配对。
+    正在运行的那个（`running`）标记为「结果未知」，后面没来得及运行的标记为「未执行」，
+    这样历史里 assistant 的 tool_calls 与 tool 结果仍然一一配对。`running=False` 表示
+    `interrupted_index` 那个调用还没开始（前一个工具已经有结果，是在投递它的媒体时到期的）。
+    这一轮已经完成的工具带回来的 Telegram 事件（例如代执行命令的回复）照常记进日志。
     """
     for index, tool_call in enumerate(tool_calls):
         if index < interrupted_index:
@@ -649,7 +656,7 @@ def _close_interrupted_round(
         function_name = function_payload.get("name")
         if not function_name or function_name in skip_set:
             continue
-        if index == interrupted_index:
+        if index == interrupted_index and running:
             result = {**_INTERRUPTED_TOOL_RESULT, "reason": reason}
         else:
             result = dict(_NOT_EXECUTED_TOOL_RESULT)
@@ -660,6 +667,60 @@ def _close_interrupted_round(
             "result": result,
             "tool_call_id": tool_call.get("id"),
         })
+    _log_round_context(tool_logs, round_context_messages)
+
+
+def _log_round_context(
+    tool_logs: List[ToolLog],
+    round_context_messages: List[Dict[str, str]],
+) -> None:
+    for context_message in round_context_messages:
+        tool_logs.append({
+            "type": "telegram_event",
+            "role": "user",
+            "content": context_message["content"],
+        })
+
+
+def _tool_result_log(
+    function_name: str,
+    function_args: Dict[str, Any],
+    tool_call_id: Any,
+    tool_result: Dict[str, Any],
+    internal_tool_result: Dict[str, Any],
+    *,
+    sent_media_messages: List[Any],
+    media_delivery_unknown: bool = False,
+) -> ToolLog:
+    tool_log_entry: ToolLog = {
+        "type": "tool_result",
+        "tool_name": function_name,
+        "arguments": function_args,
+        "result": tool_result,
+        "tool_call_id": tool_call_id,
+    }
+    if function_name in {"generate_image", "generate_voice"}:
+        tool_log_entry["internal_result"] = internal_tool_result
+        if sent_media_messages:
+            tool_log_entry["media_sent"] = True
+            tool_log_entry["sent_message_count"] = len(sent_media_messages)
+        if media_delivery_unknown:
+            tool_log_entry[MEDIA_DELIVERY_KEY] = MEDIA_DELIVERY_UNKNOWN
+    return tool_log_entry
+
+
+_MEDIA_DELIVERY_UNKNOWN_MESSAGES = {
+    "generate_image": (
+        "The image was generated, but the turn was stopped while it was being sent to "
+        "Telegram; it may or may not have arrived. Do not generate it again unless the "
+        "user asks."
+    ),
+    "generate_voice": (
+        "The audio was generated, but the turn was stopped while it was being sent to "
+        "Telegram; it may or may not have arrived. Do not generate it again unless the "
+        "user asks."
+    ),
+}
 
 
 async def run_tool_loop(
@@ -898,7 +959,12 @@ async def run_tool_loop(
                     except DeadlineExceeded as exc:
                         _record_tool_metrics(tool_label, tool_started, {"error": "interrupted"})
                         _close_interrupted_round(
-                            tool_logs, tool_calls, call_index, skip_set, exc.reason
+                            tool_logs,
+                            tool_calls,
+                            call_index,
+                            skip_set,
+                            exc.reason,
+                            round_context_messages,
                         )
                         raise
                     except TypeError as exc:
@@ -930,19 +996,50 @@ async def run_tool_loop(
                     _log_generate_voice_result(provider_name, internal_tool_result)
 
                 phase = "delivery"
-                sent_media_messages = await _send_media_result_immediately(
-                    visible_content_handler=visible_content_handler,
-                    tool_name=function_name,
-                    tool_result=internal_tool_result,
-                    provider_name=provider_name,
-                    deadline=deadline,
-                )
-                media_sent = bool(sent_media_messages)
+                try:
+                    sent_media_messages = await _send_media_result_immediately(
+                        visible_content_handler=visible_content_handler,
+                        tool_name=function_name,
+                        tool_result=internal_tool_result,
+                        provider_name=provider_name,
+                        deadline=deadline,
+                    )
+                except DeadlineExceeded as exc:
+                    # 工具已经执行完，是投递它生成的媒体时到期：先记下这次的结果（是否送达未知，
+                    # 投递阶段也不会再发），再给后面没来得及运行的调用补「未执行」。下一轮因此知道
+                    # 媒体已经生成，历史也仍然配对。
+                    tool_logs.append(
+                        _tool_result_log(
+                            function_name,
+                            function_args,
+                            tool_call_id,
+                            {
+                                **_public_tool_result(function_name, internal_tool_result),
+                                "message": _MEDIA_DELIVERY_UNKNOWN_MESSAGES[function_name],
+                            },
+                            internal_tool_result,
+                            sent_media_messages=[],
+                            media_delivery_unknown=True,
+                        )
+                    )
+                    round_context_messages.extend(
+                        _context_messages_from_tool_result(internal_tool_result)
+                    )
+                    _close_interrupted_round(
+                        tool_logs,
+                        tool_calls,
+                        call_index + 1,
+                        skip_set,
+                        exc.reason,
+                        round_context_messages,
+                        running=False,
+                    )
+                    raise
 
                 tool_result = _public_tool_result(
                     function_name,
                     internal_tool_result,
-                    media_sent=media_sent,
+                    media_sent=bool(sent_media_messages),
                 )
 
                 filtered_messages.append({
@@ -951,30 +1048,22 @@ async def run_tool_loop(
                     "name": function_name,
                     "content": json.dumps(tool_result, ensure_ascii=False),
                 })
-                tool_log_entry = {
-                    "type": "tool_result",
-                    "tool_name": function_name,
-                    "arguments": function_args,
-                    "result": tool_result,
-                    "tool_call_id": tool_call_id,
-                }
-                if function_name in {"generate_image", "generate_voice"}:
-                    tool_log_entry["internal_result"] = internal_tool_result
-                    if media_sent:
-                        tool_log_entry["media_sent"] = True
-                        tool_log_entry["sent_message_count"] = len(sent_media_messages)
-                tool_logs.append(tool_log_entry)
+                tool_logs.append(
+                    _tool_result_log(
+                        function_name,
+                        function_args,
+                        tool_call_id,
+                        tool_result,
+                        internal_tool_result,
+                        sent_media_messages=sent_media_messages,
+                    )
+                )
                 round_context_messages.extend(
                     _context_messages_from_tool_result(internal_tool_result)
                 )
 
-            for context_message in round_context_messages:
-                filtered_messages.append(context_message)
-                tool_logs.append({
-                    "type": "telegram_event",
-                    "role": "user",
-                    "content": context_message["content"],
-                })
+            filtered_messages.extend(round_context_messages)
+            _log_round_context(tool_logs, round_context_messages)
 
         logging.warning("%s 工具调用次数超限（%s轮）", provider_name, max_iterations)
         phase = "model"

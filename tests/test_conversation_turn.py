@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import telegram_history
-from core.deadline import Deadline
+from core import metrics, telegram_history
+from core.deadline import REASON_SHUTDOWN, Deadline
 from features.ai import router
 from features.conversation import billing, turn
 from features.conversation.turn_services import TurnServices
@@ -751,6 +751,12 @@ def test_the_model_stage_is_one_replaceable_call_returning_typed_data():
 
 
 class TestDeadline:
+    @pytest.fixture(autouse=True)
+    def _fresh_metrics(self):
+        metrics.REGISTRY.reset()
+        yield
+        metrics.REGISTRY.reset()
+
     @pytest.fixture
     def hung_provider(self, monkeypatch, settings_override):
         """真实的 router 与工具循环，模型调用永远不返回。"""
@@ -820,6 +826,104 @@ class TestDeadline:
         assert world.calls("reply_text")[0][2] == router.TURN_DEADLINE_ERROR_MESSAGE
         assert "run_model" not in world.names()
         assert "insert_records" not in world.names()
+
+    def test_a_hung_flush_before_the_charge_ends_the_turn_without_charging(self):
+        world = World()
+
+        async def stuck_flush(conversation_id):
+            world.events.append(("flush", conversation_id))
+            await asyncio.sleep(30)
+
+        started = time.monotonic()
+        result = run_turn(
+            make_request(text_message(), deadline=Deadline(0.1)),
+            make_services(world, flush_events=stuck_flush),
+        )
+
+        assert time.monotonic() - started < 2.0
+        assert result.status is TurnStatus.DEADLINE_EXCEEDED
+        assert result.charge is None
+        assert "charge" not in world.names()
+        assert world.calls("reply_text")[0][2] == router.TURN_DEADLINE_ERROR_MESSAGE
+        assert (
+            metrics.snapshot().counter("turn.deadline_hits", reason="deadline", phase="charge")
+            == 1
+        )
+
+    def test_the_charge_is_skipped_when_the_flush_used_up_the_remaining_time(self):
+        world = World()
+        clock = [0.0]
+        deadline = Deadline(5, clock=lambda: clock[0])
+
+        async def slow_flush(conversation_id):
+            clock[0] = 10.0  # 等待结束时截止时间已经过了
+
+        result = run_turn(
+            make_request(text_message(), deadline=deadline),
+            make_services(world, flush_events=slow_flush),
+        )
+
+        assert result.status is TurnStatus.DEADLINE_EXCEEDED
+        assert "charge" not in world.names()
+
+    @pytest.mark.parametrize("stage", ["load_user_state", "get_history"])
+    def test_hung_database_reads_before_the_model_end_the_turn_at_the_deadline(self, stage):
+        world = World()
+
+        async def stuck(*args, **kwargs):
+            await asyncio.sleep(30)
+
+        started = time.monotonic()
+        result = run_turn(
+            make_request(text_message(), deadline=Deadline(0.1)),
+            make_services(world, **{stage: stuck}),
+        )
+
+        assert time.monotonic() - started < 2.0
+        assert result.status is TurnStatus.DEADLINE_EXCEEDED
+        assert result.charge is not None  # 扣费已经提交，不退
+        assert "run_model" not in world.names()
+        assert world.calls("reply_text")[0][2] == router.TURN_DEADLINE_ERROR_MESSAGE
+
+    def test_a_shutdown_while_waiting_before_the_model_says_the_bot_is_restarting(self):
+        world = World()
+        deadline = Deadline(60)
+
+        async def stuck_flush(conversation_id):
+            deadline.expire(REASON_SHUTDOWN)
+            await asyncio.sleep(30)
+
+        result = run_turn(
+            make_request(text_message(), deadline=deadline),
+            make_services(world, flush_events=stuck_flush),
+        )
+
+        assert result.status is TurnStatus.DEADLINE_EXCEEDED
+        assert world.calls("reply_text")[0][2] == router.TURN_SHUTDOWN_ERROR_MESSAGE
+
+    def test_writing_the_reply_to_history_is_bounded_and_delivery_still_runs(self, monkeypatch):
+        world = World()
+        monkeypatch.setattr(turn, "DELIVERY_GRACE_SECONDS", 0.2)
+        deadline = Deadline(60)
+
+        async def stuck_insert_record(*args, **kwargs):
+            deadline.expire("deadline")
+            await asyncio.sleep(30)
+
+        started = time.monotonic()
+        result = run_turn(
+            make_request(text_message(), deadline=deadline),
+            make_services(world, insert_record=stuck_insert_record),
+        )
+
+        assert time.monotonic() - started < 2.0
+        assert result.status is TurnStatus.COMPLETED
+        assert "send_reply" in world.names()  # 写历史被放弃，投递照常
+        assert world.names()[-1] == "insert_records"  # finalize 仍然执行
+        assert (
+            metrics.snapshot().counter("turn.deadline_hits", reason="deadline", phase="history_out")
+            == 1
+        )
 
     def test_delivery_that_hangs_past_the_deadline_is_cut_off_and_the_turn_still_finishes(
         self, monkeypatch

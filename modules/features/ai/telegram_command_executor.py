@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import hashlib
 import itertools
 import logging
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from typing import Any
 from telegram import Update
 from telegram.ext import CommandHandler
 
+from core.command_identity import delegated_operation
 from core.telegram_history import (
     capture_telegram_history_events,
     delegated_telegram_command,
@@ -121,6 +123,17 @@ def _build_synthetic_update(
     )
 
 
+def delegated_operation_id(command_text: str, request_context: dict[str, object]) -> str:
+    """这次代执行的身份：触发这一轮的那条消息（含编辑版本）加上命令文本。
+
+    同一轮里不同的命令得到不同的身份，后一次不会被当成前一次的重放；同一轮、同样的命令重放
+    （provider 回退、同一条消息被重复投递）得到相同的身份，副作用仍然只发生一次。
+    """
+    edit_stamp = request_context.get("message_edit_stamp") or ""
+    normalized = " ".join(command_text.split())
+    return hashlib.sha256(f"{edit_stamp}|{normalized}".encode("utf-8")).hexdigest()[:16]
+
+
 def _execution_error(command: str, *, already_visible: bool = False) -> str:
     if already_visible:
         return (
@@ -149,8 +162,10 @@ async def _execute_on_telegram_loop(
         request_context=request_context,
     )
 
+    operation_id = delegated_operation_id(command_text, request_context)
+
     with capture_telegram_history_events(user_id) as events:
-        with delegated_telegram_command():
+        with delegated_telegram_command(), delegated_operation(operation_id):
             try:
                 await asyncio.wait_for(
                     application.process_update(update),

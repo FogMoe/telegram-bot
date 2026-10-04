@@ -12,11 +12,13 @@ from __future__ import annotations
 import base64
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import datetime
+from typing import Any, TypeVar
 
 from core import balance, metrics
-from core.deadline import DeadlineExceeded
+from core.deadline import REASON_SHUTDOWN, Deadline, DeadlineExceeded
 from core.prompt_utils import format_user_state_prompt
 from core.redaction import redact_text
 from core.telegram_history import (
@@ -54,6 +56,8 @@ from .turn_types import (
 
 logger = logging.getLogger(__name__)
 
+_T = TypeVar("_T")
+
 MESSAGE_TOO_LONG_TEXT = (
     "消息过长，无法处理。请缩短消息长度！\n"
     "The message is too long to process. Please shorten the message."
@@ -79,7 +83,7 @@ OVERFLOW_WARNING_TEXT = (
 
 OVERFLOW = "overflow"
 
-# 整轮截止时间到期之后，最终回复（超时提示）仍然可以用的投递宽限。
+# 整轮截止时间到期之后仍然可以用的宽限：写回复历史、投递最终回复（超时提示）各自最多再等这么久。
 DELIVERY_GRACE_SECONDS = 30.0
 
 
@@ -130,6 +134,11 @@ def history_warning_text(level: str | None) -> str | None:
     return None
 
 
+def _edit_stamp(message: Any) -> int | None:
+    edit_date = getattr(message, "edit_date", None)
+    return int(edit_date.timestamp()) if isinstance(edit_date, datetime) else None
+
+
 def build_tool_context(request: TurnRequest, user_state_prompt: str) -> dict[str, object]:
     chat = request.chat
     sender = request.sender
@@ -140,6 +149,8 @@ def build_tool_context(request: TurnRequest, user_state_prompt: str) -> dict[str
         "chat_type": chat.chat_type,
         "chat_title": chat.title,
         "message_id": getattr(request.reply_target, "message_id", None),
+        # 编辑过的消息会开始新的一轮；代执行命令的身份因此与编辑前的那一轮不同。
+        "message_edit_stamp": _edit_stamp(request.reply_target),
         "user_id": sender.user_id,
         "username": sender.username,
         "first_name": sender.first_name,
@@ -184,17 +195,23 @@ class ConversationTurn:
             with self.timer.stage(Stage.PLAN):
                 planned = await self._plan()
             with self.timer.stage(Stage.CHARGE):
-                charge = await self._charge(planned)
+                charge = await self._before_model(Stage.CHARGE, lambda: self._charge(planned))
             with self.timer.stage(Stage.CONTEXT):
-                user_state_prompt = await self._load_context(charge)
+                user_state_prompt = await self._before_model(
+                    Stage.CONTEXT, lambda: self._load_context(charge)
+                )
             with self.timer.stage(Stage.PREPARE):
-                prepared = await self._prepare(planned)
+                prepared = await self._before_model(
+                    Stage.PREPARE, lambda: self._prepare_inputs(planned)
+                )
             with self.timer.stage(Stage.HISTORY_IN):
-                chat_history = await self._record_input(prepared, user_state_prompt)
+                chat_history = await self._before_model(
+                    Stage.HISTORY_IN, lambda: self._record_input(prepared, user_state_prompt)
+                )
             with self.timer.stage(Stage.MODEL):
                 reply = await self._run_model(prepared, chat_history, user_state_prompt)
             with self.timer.stage(Stage.HISTORY_OUT):
-                await self._record_output(reply)
+                await self._after_model(Stage.HISTORY_OUT, lambda: self._record_output(reply))
             with self.timer.stage(Stage.DELIVERY):
                 await self._deliver(reply)
             with self.timer.stage(Stage.FINALIZE):
@@ -212,6 +229,59 @@ class ConversationTurn:
             runtime_error=reply.runtime_error,
             sent_message_count=len(self._sent_messages),
         )
+
+    # -- 整轮截止时间 ---------------------------------------------------------
+
+    async def _before_model(self, stage: Stage, step: Callable[[], Awaitable[_T]]) -> _T:
+        """模型之前的阶段（扣费、上下文、媒体、写入输入）受整轮截止时间约束。
+
+        到期时取消正在等待的那一步（数据库、Telegram 下载都会被取消），回复超时提示并结束这一轮；
+        扣费已经提交时不退（与模型阶段超时一致）。
+        """
+        deadline = self.request.deadline
+        if deadline is None:
+            return await step()
+        try:
+            async with deadline.guard():
+                return await step()
+        except DeadlineExceeded as exc:
+            metrics.counter("turn.deadline_hits", reason=exc.reason, phase=stage.value).inc()
+            await self._reply_deadline_notice(deadline, exc.reason)
+            raise _Stop(TurnStatus.DEADLINE_EXCEEDED) from exc
+
+    async def _after_model(self, stage: Stage, step: Callable[[], Awaitable[None]]) -> None:
+        """模型之后写历史：与投递一样受截止时间加宽限约束，到期时放弃这一步，后面的阶段照常进行。"""
+        deadline = self.request.deadline
+        if deadline is None:
+            await step()
+            return
+        try:
+            async with deadline.guard(extra=DELIVERY_GRACE_SECONDS):
+                await step()
+        except DeadlineExceeded as exc:
+            metrics.counter("turn.deadline_hits", reason=exc.reason, phase=stage.value).inc()
+            logger.warning(
+                "%s was cut short by the turn deadline (%s): user_id=%s chat_id=%s",
+                stage.value,
+                exc.reason,
+                self.request.sender.user_id,
+                self.request.chat.chat_id,
+            )
+
+    async def _reply_deadline_notice(self, deadline: Deadline, reason: str) -> None:
+        """超时提示本身也只等宽限那么久，Telegram 卡住时不会让这一轮一直占着槽位。"""
+        text = (
+            TURN_SHUTDOWN_ERROR_MESSAGE if reason == REASON_SHUTDOWN else TURN_DEADLINE_ERROR_MESSAGE
+        )
+        try:
+            async with deadline.guard(extra=DELIVERY_GRACE_SECONDS):
+                await self.services.reply_text(self.request.reply_target, text)
+        except DeadlineExceeded:
+            logger.warning(
+                "deadline notice could not be delivered in time: user_id=%s chat_id=%s",
+                self.request.sender.user_id,
+                self.request.chat.chat_id,
+            )
 
     # -- plan ---------------------------------------------------------------
 
@@ -252,6 +322,9 @@ class ConversationTurn:
         request = self.request
         # 在扣费前写完上一项操作，避免余额恰好归零时把旧事件误判为收尾记录。
         await self.services.flush_events(request.conversation_id)
+        # 上面的等待可能刚好用完了时间：到期就不再扣费。
+        if request.deadline is not None:
+            request.deadline.raise_if_expired()
 
         # 每条消息按持久身份各记一笔账，整轮同一个事务；余额不足整轮不扣、不进入本轮、不贡献奖池。
         charge = await self.services.charge(
@@ -294,25 +367,8 @@ class ConversationTurn:
 
     # -- prepare ------------------------------------------------------------
 
-    async def _prepare(self, planned: list[PlannedMessage]) -> _PreparedInput:
-        """下载并识别媒体：受整轮截止时间约束，到期时回复提示并结束这一轮（已扣的费不退）。"""
-        deadline = self.request.deadline
-        if deadline is None:
-            return await self._prepare_inputs(planned)
-        try:
-            async with deadline.guard():
-                return await self._prepare_inputs(planned)
-        except DeadlineExceeded as exc:
-            metrics.counter("turn.deadline_hits", reason=exc.reason, phase="prepare").inc()
-            await self.services.reply_text(
-                self.request.reply_target,
-                TURN_SHUTDOWN_ERROR_MESSAGE
-                if exc.reason == "shutdown"
-                else TURN_DEADLINE_ERROR_MESSAGE,
-            )
-            raise _Stop(TurnStatus.DEADLINE_EXCEEDED) from exc
-
     async def _prepare_inputs(self, planned: list[PlannedMessage]) -> _PreparedInput:
+        """下载并识别媒体，整理写入历史的用户消息与只给模型看的多模态替换。"""
         prepared = _PreparedInput()
         for item in planned:
             message: Any = item.message

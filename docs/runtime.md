@@ -112,12 +112,16 @@ PTB handler（concurrent_updates 有界）
 | 到期时所处的位置 | 行为 |
 |---|---|
 | 排队（等会话锁、等全局槽位） | 拒绝，`BUSY_TEXT`，**没有扣费** |
-| `prepare`（下载并识别媒体） | 回复超时提示，状态 `TurnStatus.DEADLINE_EXCEEDED`，这一轮已扣费，不退 |
+| `charge`（写完上一项事件、扣费） | 取消正在等待的数据库操作，回复超时提示，状态 `TurnStatus.DEADLINE_EXCEEDED`；扣费前再检查一次，已经到期就不扣 |
+| `context`、`prepare`（读用户状态、下载并识别媒体）、`history_in`（写入用户消息、读历史） | 回复超时提示，状态 `TurnStatus.DEADLINE_EXCEEDED`，这一轮已扣费，不退 |
 | `model`：等待模型响应 | 取消请求，不再换下一个 provider，回复 `TURN_DEADLINE_ERROR_MESSAGE`；这个 provider 计一次熔断失败 |
 | `model`：provider 回退链走到下一个 provider 时时间已用完 | 不再调用任何 provider，回复 `TURN_DEADLINE_ERROR_MESSAGE`，不给没被调用过的 provider 记失败（`phase=fallback`） |
 | `model`：运行工具 | 取消工具（线程里的同步工具只是不再等它）；回复 `TURN_DEADLINE_ERROR_MESSAGE` |
 | `model`：即时发送可见内容或媒体 | 取消发送，同上 |
+| `model`：即时发送工具生成的媒体 | 取消发送；这个工具的结果照常记进历史并标记「是否送达未知」（`media_delivery: unknown`），投递阶段不会再发一次，后面没运行的工具补 `not_executed` |
+| `history_out`（写入回复与工具记录） | 受截止时间加 30 秒宽限约束；到期后放弃写入（记日志和 `turn.deadline_hits`），投递照常 |
 | `delivery`（最终回复与媒体） | 受截止时间加 30 秒宽限约束，宽限让超时提示本身还能发出去；到期后放弃剩余投递，`finalize` 照常执行 |
+| `finalize`（零余额边界、完成的 `/clear` 归档） | 不受截止时间约束：投递过的轮次必须把收尾写完 |
 
 要点：
 
@@ -126,7 +130,8 @@ PTB handler（concurrent_updates 有界）
 - **历史保持配对。** 工具阶段到期时，`tool_runner` 给这一轮里每个还没有结果的 `tool_call` 补一条结果：
   正在运行的那个是 `{"error": "interrupted", "outcome": "unknown", ...}`（可能已经完成，不要假定失败、不要重复执行），
   后面没来得及运行的是 `{"error": "not_executed", ...}`。这样 assistant 的 `tool_calls` 与 `tool` 结果一一配对，
-  下一轮不会因为不配对被 provider 拒绝。超时提示是固定的运行时错误文案（`router.runtime_error_cause` 识别为
+  下一轮不会因为不配对被 provider 拒绝。这一轮里已经完成的工具照常留下结果，它们带回的 Telegram 事件
+  （例如代执行命令的回复）也照常记进历史。超时提示是固定的运行时错误文案（`router.runtime_error_cause` 识别为
   `turn_deadline_exceeded`），不当作 AI 回复写进历史，按错误通知的作用域投递。
 - **不重复执行工具副作用。** 到期之后不会换 provider 重跑，也不会重试已经开始的工具；已经在线程里运行的同步工具无法被中断，
   线程自己跑完、结果被丢弃（线程适配器保证：还在排队、没开始的调用被取消后不会再执行）。
@@ -222,7 +227,7 @@ runtime metrics (last 300s): admission.admitted=118 admission.rejected{reason=qu
 | 排队深度 | 仪表 `admission.queued`（当前）、`admission.running`；直方图 `admission.queue_depth`（每个请求到达时看到的深度，单位是个数）；同步工具线程池的 `blocking.queued{pool}` |
 | 排队延迟 | `admission.queue_seconds`（等全局槽位）、`turn.queue_seconds`（等会话锁 + 等槽位，也是 `TurnTimings.queue_seconds`）、`blocking.wait_seconds{pool}` |
 | 整轮耗时 | `turn.run_seconds`（不含排队）、`turn.total_seconds`（含排队）、`provider.call_seconds{provider}`、`tool.seconds{tool}`、`blocking.run_seconds{pool}` |
-| 超时次数 | `turn.deadline_hits{reason=deadline\|shutdown, phase=prepare\|model\|fallback\|tool\|delivery}`、`provider.timeouts{provider}`（单次调用超时） |
+| 超时次数 | `turn.deadline_hits{reason=deadline\|shutdown, phase=charge\|context\|prepare\|history_in\|model\|fallback\|tool\|delivery\|history_out}`、`provider.timeouts{provider}`（单次调用超时） |
 | 过载 | `admission.rejected{reason=...}`、`admission.admitted` |
 | provider 失败 | `provider.failures{provider}`、`provider.calls{provider}` |
 | 工具失败 | `tool.failures{tool}`（执行异常，或返回了 `error`）、`tool.calls{tool}` |

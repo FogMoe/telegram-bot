@@ -111,6 +111,11 @@ await balance.credit(connection, user_id, 50, op_key=balance.make_op_key("topup"
 - `refund:` 前缀保留给 `refund`，服务会拒绝以它开头的 op_key；奖池贡献的 op_key 是 `pool:` 加消费的
   op_key，业务 op_key 同样不要以 `pool:` 开头。
 - 没有持久身份时用 `new_op_key(prefix)`：每次调用都不同，因此没有重放保护，只作退路。
+- 以命令消息为身份的 op_key 用 `core/command_identity.message_identity(chat_id, message_id)` 拼接。
+  AI 代用户执行的命令复用触发对话的那条消息 ID，同一轮里可能有好几条；代执行时这一段变成
+  `<chat_id>:<message_id>:ai:<代执行身份>`（由那一轮的消息、编辑版本与命令文本派生），所以下表里
+  `<chat_id>:<message_id>` 形式的 op_key 在代执行时都会多出 `:ai:<…>`。同一身份被参数不同的操作再次使用时
+  不是重放：`/give` 返回 `CONFLICT`，其余走 `balance` 的 `OperationConflict`。
 
 已使用的 op_key：
 

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from core import balance
+from core.command_identity import message_identity
 
 from ..repositories import rpg as rpg_repository
 
@@ -32,19 +33,19 @@ HEAL_REPLAY = "replay"  # 这条命令已经处理过，没有再扣费
 
 
 def heal_op_key(chat_id: int, message_id: int) -> str:
-    return balance.make_op_key("rpg", "heal", chat_id, message_id)
+    return balance.make_op_key("rpg", "heal", *message_identity(chat_id, message_id))
 
 
 def monster_reward_op_key(chat_id: int, message_id: int) -> str:
-    return balance.make_op_key("rpg", "monster", chat_id, message_id, "reward")
+    return balance.make_op_key("rpg", "monster", *message_identity(chat_id, message_id), "reward")
 
 
 def pvp_loss_op_key(chat_id: int, message_id: int) -> str:
-    return balance.make_op_key("rpg", "pvp", chat_id, message_id, "loss")
+    return balance.make_op_key("rpg", "pvp", *message_identity(chat_id, message_id), "loss")
 
 
 def pvp_win_op_key(chat_id: int, message_id: int) -> str:
-    return balance.make_op_key("rpg", "pvp", chat_id, message_id, "win")
+    return balance.make_op_key("rpg", "pvp", *message_identity(chat_id, message_id), "win")
 
 
 async def set_character_fields(

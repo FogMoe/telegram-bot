@@ -5,6 +5,7 @@ from typing import Any
 from core.telegram_utils import retry_telegram_send, telegram_error_summary
 
 from .tools.voice_tools import pop_generated_audio_file
+from .types import media_delivery_attempted
 
 MAX_GENERATED_AUDIO_PER_REPLY = 3
 
@@ -172,7 +173,7 @@ def _collect_generated_audio_from_result(
 def _collect_generated_audio(tool_logs: list[dict]) -> list[dict[str, Any]]:
     audios: list[dict[str, Any]] = []
     for tool_log in tool_logs:
-        if tool_log.get("media_sent"):
+        if media_delivery_attempted(tool_log):
             continue
         if tool_log.get("type") != "tool_result":
             continue
@@ -287,7 +288,7 @@ async def send_generated_audio_from_tool_logs(
         [
             tool_log
             for tool_log in tool_logs
-            if not tool_log.get("media_sent")
+            if not media_delivery_attempted(tool_log)
         ]
     )
     audios = _collect_generated_audio(tool_logs)

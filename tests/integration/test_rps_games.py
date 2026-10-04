@@ -627,6 +627,37 @@ class TestHandlers:
         assert game_row(players, game["id"])["announced_at"] is not None
         assert total_coins(players, 1) == 6 and total_coins(players, 2) == 4
 
+    def test_a_late_progress_update_never_overwrites_the_announced_result(self, players):
+        """第一位玩家还在等 answer 时，第二位玩家完成结算并公告；第一位恢复后不能把面板改回「进行中」。"""
+        game = self.play_to_choices(players)
+        context = make_game_context()
+        first_update, _, _ = self.choice_click(game, 1, "rock")
+        second_update, _, _ = self.choice_click(game, 2, "scissors")
+
+        async def scenario():
+            answering = asyncio.Event()
+            release = asyncio.Event()
+
+            async def slow_answer(*args, **kwargs):
+                answering.set()
+                await release.wait()
+
+            first_update.callback_query.answer = slow_answer
+            first = asyncio.create_task(rps.rps_callback_handler(first_update, context))
+            await answering.wait()  # 第一位的选择已经写入，正卡在 answer 上
+            await rps.rps_callback_handler(second_update, context)
+            release.set()
+            await first
+
+        run(scenario())
+
+        last_text = {}
+        for _, kwargs in context.bot.edit_message_text.calls:
+            last_text[(kwargs["chat_id"], kwargs["message_id"])] = kwargs["text"]
+        assert last_text  # 面板确实被编辑过
+        assert all("@user1 获胜" in text for text in last_text.values())
+        assert game_row(players, game["id"])["announced_at"] is not None
+
     def test_buttons_of_an_older_format_or_another_player_do_nothing(self, players):
         game = self.play_to_choices(players)
         context = make_game_context()

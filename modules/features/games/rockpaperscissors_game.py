@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import weakref
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
@@ -129,8 +130,29 @@ def final_text(game: Game) -> str:
     )
 
 
+def _panel_lock(game_id: int) -> asyncio.Lock:
+    """同一局的面板编辑串行：进度刷新与结果公告不会交错，旧的进度不会盖掉最终结果。
+
+    锁只被正在使用它的协程引用，对局结束后自动回收。
+    """
+    lock = _panel_locks.get(game_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _panel_locks[game_id] = lock
+    return lock
+
+
+_panel_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = weakref.WeakValueDictionary()
+
+
 async def announce_game(bot, game_id: int) -> None:
     """把终结的结果写到面板上；全部编辑成功（或被 Telegram 明确拒绝）后记为已公告。"""
+    lock = _panel_lock(game_id)
+    async with lock:
+        await _announce_locked(bot, game_id)
+
+
+async def _announce_locked(bot, game_id: int) -> None:
     game = await rps_games.load_game(game_id)
     if game is None or game.is_choosing or game.announced:
         return
@@ -451,7 +473,6 @@ async def handle_choice_callback(
     user_id = query.from_user.id
 
     result = await rps_games.record_choice(game_id, user_id, choice)
-    game = result.game
 
     if result.code in (rps_games.CHOICE_NOT_FOUND, rps_games.CHOICE_NOT_PLAYER):
         await query.answer("您不在任何活跃的游戏中", show_alert=True)
@@ -474,23 +495,31 @@ async def handle_choice_callback(
         return
 
     # 只有一方做出了选择：更新面板上的选择状态。被点击的消息就是这名玩家自己的选择面板。
-    opponent = game.opponent_of(user_id)
-    waiting_text = waiting_for_opponent_text(opponent.name, choice)
-    if game.same_chat:
+    # 上面等待 answer 的时候对方可能已经出招并公告了结果：在锁里读最新状态，已经结束就只补公告。
+    lock = _panel_lock(game_id)
+    async with lock:
+        latest = await rps_games.load_game(game_id)
+        if latest is None:
+            return
+        if not latest.is_choosing:
+            await _announce_locked(context.bot, game_id)
+            return
+        opponent = latest.opponent_of(user_id)
+        if latest.same_chat:
+            await edit_panel(
+                context.bot,
+                chat_id=latest.p1.chat_id,
+                message_id=latest.p1.message_id,
+                text=progress_group_text(latest),
+                reply_markup=None,
+            )
         await edit_panel(
             context.bot,
-            chat_id=game.p1.chat_id,
-            message_id=game.p1.message_id,
-            text=progress_group_text(game),
+            chat_id=query.message.chat.id,
+            message_id=query.message.message_id,
+            text=waiting_for_opponent_text(opponent.name, choice),
             reply_markup=None,
         )
-    await edit_panel(
-        context.bot,
-        chat_id=query.message.chat.id,
-        message_id=query.message.message_id,
-        text=waiting_text,
-        reply_markup=None,
-    )
 
 
 async def cancel_waiting_job(context: ContextTypes.DEFAULT_TYPE):

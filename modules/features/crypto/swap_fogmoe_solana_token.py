@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from core import balance, process_user
+from core.command_identity import message_identity
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
 from telegram.constants import ParseMode
@@ -47,7 +48,7 @@ class SwapOutcome:
 
 def swap_op_key(chat_id: int, message_id: int) -> str:
     """兑换扣款：以 /swap 命令消息为身份，同一条命令被重复投递不会再扣一次。"""
-    return balance.make_op_key("swap", chat_id, message_id)
+    return balance.make_op_key("swap", *message_identity(chat_id, message_id))
 
 
 def _pending_request_message(pending_request: PendingSwap | None) -> str:

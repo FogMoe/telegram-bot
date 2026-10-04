@@ -16,6 +16,7 @@ from enum import StrEnum
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from core import balance, stake_reward_pool
+from core.command_identity import message_identity
 
 from ..repositories import stake as stake_repository
 from ..repositories.stake import StakeRecord
@@ -122,7 +123,7 @@ _STAMP_FORMAT = "%Y%m%dT%H%M%S"
 
 def stake_open_op_key(chat_id: int, message_id: int) -> str:
     """质押扣款：以 /stake 命令消息为身份，同一条命令被重复投递不会再扣一次。"""
-    return balance.make_op_key("stake", chat_id, message_id)
+    return balance.make_op_key("stake", *message_identity(chat_id, message_id))
 
 
 def stake_collect_op_key(user_id: int, stake_time: datetime, window_start: datetime) -> str:

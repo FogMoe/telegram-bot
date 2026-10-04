@@ -13,9 +13,15 @@ import pytest
 from core import blocking, metrics
 from core.deadline import REASON_SHUTDOWN, Deadline
 from features.ai import job_claims, router, tool_runner
+from features.ai.generated_image_sender import _collect_generated_images
 from features.ai.tool_history import tool_logs_to_record_entries
 from features.ai.tools.dispatch import inline_tool
-from features.ai.types import ABORT_EVENT_KEY, TurnDeadlineError
+from features.ai.types import (
+    ABORT_EVENT_KEY,
+    TOOL_CONTEXT_MESSAGES_KEY,
+    TurnDeadlineError,
+    media_delivery_attempted,
+)
 
 
 class Message:
@@ -465,6 +471,95 @@ def test_the_deadline_also_covers_visible_content_delivery(monkeypatch):
         return exc_info.value
 
     assert run_loop(scenario()).phase == "delivery"
+
+
+def test_media_whose_delivery_is_cut_off_keeps_its_result_and_is_not_sent_again(monkeypatch):
+    fake, _ = script(
+        Response(
+            Message(
+                "",
+                [call("c1", "generate_image", '{"prompt": "cat"}'), call("c2")],
+            )
+        ),
+    )
+    executed = []
+
+    class StuckMediaHandler:
+        sent_contents: list[str] = []
+
+        async def __call__(self, content):
+            return content
+
+        async def send_tool_media(self, tool_name, result):
+            await asyncio.sleep(30)
+
+    def make_image(**kwargs):
+        executed.append("generate_image")
+        return {"status": "generated", "images": [{"image_id": "i"}]}
+
+    async def search(**kwargs):
+        executed.append("google_search")
+        return {}
+
+    async def scenario():
+        with pytest.raises(TurnDeadlineError) as exc_info:
+            await loop_with(
+                monkeypatch,
+                fake,
+                {"generate_image": make_image, "google_search": search},
+                visible_content_handler=StuckMediaHandler(),
+                deadline=Deadline(0.1),
+            )
+        return exc_info.value
+
+    error = run_loop(scenario())
+
+    assert error.phase == "delivery"
+    assert executed == ["generate_image"]
+    results = {log["tool_call_id"]: log for log in error.tool_logs if log["type"] == "tool_result"}
+    assert set(results) == {"c1", "c2"}
+    # 生成成功的结果留在历史里，下一轮知道媒体已经生成；投递阶段也不会再发一次。
+    assert results["c1"]["result"]["status"] == "generated"
+    assert "may or may not have arrived" in results["c1"]["result"]["message"]
+    assert results["c1"]["internal_result"]["status"] == "generated"
+    assert media_delivery_attempted(results["c1"])
+    assert _collect_generated_images(error.tool_logs) == []
+    assert results["c2"]["result"]["error"] == "not_executed"
+    assert [role for role, _ in tool_logs_to_record_entries(error.tool_logs)] == [
+        "assistant",
+        "tool",
+        "tool",
+    ]
+
+
+def test_telegram_events_of_tools_that_finished_survive_a_deadline_later_in_the_round(monkeypatch):
+    fake, _ = script(
+        Response(Message("", [call("c1", "fetch_url", '{"url": "https://e.test"}'), call("c2")])),
+    )
+
+    async def command_like(**kwargs):
+        return {"success": True, TOOL_CONTEXT_MESSAGES_KEY: ['<event type="bot_event">ok</event>']}
+
+    async def hanging_search(**kwargs):
+        await asyncio.sleep(30)
+
+    async def scenario():
+        with pytest.raises(TurnDeadlineError) as exc_info:
+            await loop_with(
+                monkeypatch,
+                fake,
+                {"fetch_url": command_like, "google_search": hanging_search},
+                deadline=Deadline(0.1),
+            )
+        return exc_info.value
+
+    error = run_loop(scenario())
+
+    events = [log["content"] for log in error.tool_logs if log["type"] == "telegram_event"]
+    assert events == ['<event type="bot_event">ok</event>']
+    results = {log["tool_call_id"]: log["result"] for log in error.tool_logs if log["type"] == "tool_result"}
+    assert results["c1"] == {"success": True}
+    assert results["c2"]["error"] == "interrupted"
 
 
 # -- router：回退、截止时间与关停提示 -------------------------------------------------------------

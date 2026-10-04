@@ -15,6 +15,17 @@ TOOL_CONTEXT_MESSAGES_KEY = "_context_messages"
 # （模型调用前、工具执行前、发送前）阻止后续动作。线程里已经开始的同步工具不检查它，无法撤回。
 ABORT_EVENT_KEY = "abort_event"
 
+# 工具结果日志上的标记：生成的媒体即时发送到一半被截止时间打断，是否送达未知。
+MEDIA_DELIVERY_KEY = "media_delivery"
+MEDIA_DELIVERY_UNKNOWN = "unknown"
+
+
+def media_delivery_attempted(tool_log: Dict[str, Any]) -> bool:
+    """这条工具结果的媒体已经即时发送过，或发送时被打断（是否送达未知）：投递阶段都不能再发一次。"""
+    return bool(tool_log.get("media_sent")) or (
+        tool_log.get(MEDIA_DELIVERY_KEY) == MEDIA_DELIVERY_UNKNOWN
+    )
+
 
 class JobAbortedError(BaseException):
     """后台任务已被撤销，工具循环（以及线程里的同步工具）应当立刻退出。

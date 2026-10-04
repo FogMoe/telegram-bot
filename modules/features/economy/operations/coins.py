@@ -11,6 +11,7 @@ from enum import StrEnum
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from core import balance, user_records
+from core.command_identity import message_identity
 
 from ..repositories import coins as coins_repository
 from ..repositories.coins import RichEntry
@@ -28,6 +29,7 @@ def calculate_give_fee(amount: int) -> int:
 class GiveStatus(StrEnum):
     GIVEN = "given"
     REPLAYED = "replayed"  # 同一条命令被重复投递，上一次已经完整执行
+    CONFLICT = "conflict"  # 这个身份已经用于另一笔赠送（收款人或金额不同），本次什么都没做
     NOT_REGISTERED = "not_registered"
     INSUFFICIENT = "insufficient"
     DAILY_LIMIT = "daily_limit"
@@ -42,12 +44,15 @@ class GiveOutcome:
 
 
 def give_op_key(chat_id: int, message_id: int) -> str:
-    """赠送的身份：命令消息。发送者的扣款（含手续费）用它，收款人的入账再加 `:recv`。"""
-    return balance.make_op_key("give", chat_id, message_id)
+    """赠送的身份：命令消息（AI 代执行时再带上这次代执行的身份，见 core/command_identity.py）。
+
+    发送者的扣款（含手续费）用它，收款人的入账再加 `:recv`。
+    """
+    return balance.make_op_key("give", *message_identity(chat_id, message_id))
 
 
 def give_recipient_op_key(chat_id: int, message_id: int) -> str:
-    return balance.make_op_key("give", chat_id, message_id, "recv")
+    return balance.make_op_key("give", *message_identity(chat_id, message_id), "recv")
 
 
 async def find_recipient_id(target_name: str) -> int | None:
@@ -84,9 +89,13 @@ async def transfer_coins(
                 return GiveOutcome(GiveStatus.NOT_REGISTERED)
             return GiveOutcome(GiveStatus.RECIPIENT_NOT_FOUND)
 
-        # 重放要最先判断：它已经计入了当天的次数，也已经花掉了余额。
-        if await balance.get_operation(sender_op_key, connection=connection) is not None:
-            return GiveOutcome(GiveStatus.REPLAYED)
+        # 重放要最先判断：它已经计入了当天的次数，也已经花掉了余额。参数不同的不是重放，
+        # 而是身份被另一笔赠送占用了，不能当作成功。
+        existing = await balance.get_operation(sender_op_key, connection=connection)
+        if existing is not None:
+            if _is_same_give(existing, sender_id, recipient_id, total_cost):
+                return GiveOutcome(GiveStatus.REPLAYED)
+            return GiveOutcome(GiveStatus.CONFLICT)
 
         sender_total = locked[sender_id].total
         if sender_total < total_cost:
@@ -125,6 +134,20 @@ async def transfer_coins(
         return GiveOutcome(GiveStatus.GIVEN)
 
     return await balance.run_in_transaction(work)
+
+
+def _is_same_give(
+    existing: balance.BalanceResult,
+    sender_id: int,
+    recipient_id: int | None,
+    total_cost: int,
+) -> bool:
+    return (
+        existing.kind is balance.LedgerKind.DEBIT
+        and existing.user_id == sender_id
+        and -(existing.delta_free + existing.delta_paid) == total_cost
+        and existing.ref == f"to:{recipient_id}"
+    )
 
 
 async def richest_users(limit: int = 5) -> list[RichEntry]:

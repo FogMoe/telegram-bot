@@ -8,6 +8,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CommandHandler, ContextTypes, CallbackQueryHandler
 from core import balance, process_user, stake_reward_pool
 from core.command_cooldown import cooldown
+from core.command_identity import message_identity
 from core.redaction import log_exception
 
 # 创建一个日志记录器
@@ -172,7 +173,7 @@ def _pic_op_key(update: Update) -> str:
     message_id = getattr(update.message, "message_id", None)
     if chat_id is None or message_id is None:
         return balance.new_op_key("pic:adhoc")
-    return balance.make_op_key("pic", chat_id, message_id)
+    return balance.make_op_key("pic", *message_identity(chat_id, message_id))
 
 
 def _hd_op_key(update: Update) -> str:
@@ -256,20 +257,33 @@ async def pic_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    # 发送处理中消息
-    processing_msg = await update.message.reply_text(
-        "⏳ 正在获取图片，请稍候...\n"
-        "Fetching image, please wait..."
-    )
+    # 已经扣费：从这里到图片送达之间的任何失败（包括「处理中」提示本身发不出去）都要退款。
+    processing_msg = None
+
+    async def report_failure(text: str) -> None:
+        """把失败告诉用户：有处理中消息就改写它，否则直接回复；通知失败只记日志。"""
+        try:
+            if processing_msg is not None:
+                await processing_msg.edit_text(text)
+            else:
+                await update.message.reply_text(text)
+        except Exception as notify_error:
+            logger.warning("通知图片获取失败时出错: %s", notify_error)
 
     try:
+        # 发送处理中消息
+        processing_msg = await update.message.reply_text(
+            "⏳ 正在获取图片，请稍候...\n"
+            "Fetching image, please wait..."
+        )
+
         # 获取随机图片，并避免用户最近看过的图片
         image_data = await get_random_image(is_nsfw, user_id)
         
         if not image_data:
             # 如果获取图片失败，退还金币
             refunded = await _refund_coins(debit_key, reason="pic_failed")
-            await processing_msg.edit_text(
+            await report_failure(
                 f"{user_mention} 获取图片失败，请稍后再试。" + ("金币已退还。" if refunded else "") + "\n"
                 "Failed to fetch image. Please try again later."
                 + (" Your coins have been refunded." if refunded else "")
@@ -292,7 +306,7 @@ async def pic_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         # 如果都没有有效URL，退还金币并返回错误
         if not sample_url and not file_url:
             refunded = await _refund_coins(debit_key, reason="pic_failed")
-            await processing_msg.edit_text(
+            await report_failure(
                 f"{user_mention} 获取图片URL失败，请稍后再试。" + ("金币已退还。" if refunded else "") + "\n"
                 "Failed to get image URL. Please try again later."
                 + (" Your coins have been refunded." if refunded else "")
@@ -371,28 +385,32 @@ async def pic_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             has_spoiler=is_nsfw,  # 如果是NSFW内容，启用spoiler效果
             reply_to_message_id=update.message.message_id  # 回复用户的原始命令
         )
-        
-        # 保存消息ID到缓存，以便高清回调使用
-        if image_id and reply_markup:
-            HD_IMAGE_CACHE[image_id]['message_id'] = sent_message.message_id
-        
-        # 删除处理中消息
-        await processing_msg.delete()
-        
-        # 记录日志
-        logger.info(f"用户 {user_name}(ID:{user_id}) 消耗 {COIN_COST} 金币获取了一张{'NSFW' if is_nsfw else '普通'}图片")
-        # 交付成功后才贡献奖池
-        await _contribute_to_pool(COIN_COST, debit_key)
-
     except Exception as e:
-        # 处理异常，退还金币
+        # 图片没有送达：退还金币
         logger.error(f"发送图片时出错: {str(e)}")
         refunded = await _refund_coins(debit_key, reason="pic_failed")
-        await processing_msg.edit_text(
+        await report_failure(
             f"{user_mention} 发送图片时出错，请稍后再试。" + ("金币已退还。" if refunded else "") + "\n"
             "Error sending image. Please try again later."
             + (" Your coins have been refunded." if refunded else "")
         )
+        return
+
+    # 图片已经送达：之后的收尾出错不能再退款。
+    # 保存消息ID到缓存，以便高清回调使用
+    if image_id and reply_markup:
+        HD_IMAGE_CACHE[image_id]['message_id'] = sent_message.message_id
+
+    # 删除处理中消息
+    try:
+        await processing_msg.delete()
+    except Exception as delete_error:
+        logger.warning("删除图片处理中消息失败: %s", delete_error)
+
+    # 记录日志
+    logger.info(f"用户 {user_name}(ID:{user_id}) 消耗 {COIN_COST} 金币获取了一张{'NSFW' if is_nsfw else '普通'}图片")
+    # 交付成功后才贡献奖池
+    await _contribute_to_pool(COIN_COST, debit_key)
 
 async def hd_pic_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理高清图片按钮回调"""

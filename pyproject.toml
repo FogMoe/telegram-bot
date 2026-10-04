@@ -78,6 +78,7 @@ files = [
     "modules/features/games/rpg/settlement.py",
     "modules/core/metrics.py",
     "modules/core/deadline.py",
+    "modules/core/command_identity.py",
     "modules/core/admission.py",
     "modules/core/blocking.py",
     "modules/core/background.py",

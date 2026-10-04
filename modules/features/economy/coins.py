@@ -133,6 +133,8 @@ async def give_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         elif outcome.status is GiveStatus.SELF:
             await update.message.reply_text("不能给自己赠送硬币哦~")
+        elif outcome.status is GiveStatus.CONFLICT:
+            await update.message.reply_text("这条赠送命令已经处理过另一笔转账，本次没有执行，请重新发送 /give。")
         elif fee > 0:
             await update.message.reply_text(
                 f"成功赠送 {amount} 枚硬币给用户 {target_name}，手续费 {fee} 枚硬币。"

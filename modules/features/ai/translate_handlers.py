@@ -8,6 +8,7 @@ from telegram.ext import CommandHandler, ContextTypes
 
 from core import balance, mysql_connection, stake_reward_pool
 from core.command_cooldown import cooldown
+from core.command_identity import message_identity
 from core.redaction import log_exception
 from features.ai import ai_chat
 
@@ -206,7 +207,7 @@ def _translation_op_key(update: Update) -> str:
     message_id = getattr(message, "message_id", None)
     if chat_id is None or message_id is None:
         return balance.new_op_key("tl:adhoc")
-    return balance.make_op_key("tl", chat_id, message_id)
+    return balance.make_op_key("tl", *message_identity(chat_id, message_id))
 
 
 async def _refund_translation(debit_key: str | None) -> bool:

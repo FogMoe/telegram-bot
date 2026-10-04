@@ -11,6 +11,7 @@ from enum import StrEnum
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from core import balance, process_user
+from core.command_identity import message_identity
 
 
 class BribeStatus(StrEnum):
@@ -30,7 +31,7 @@ class BribeOutcome:
 
 def bribe_op_key(chat_id: int, message_id: int) -> str:
     """贿赂扣款：以命令消息为身份，同一条 /bribe 被重复投递不会再扣一次。"""
-    return balance.make_op_key("bribe", chat_id, message_id)
+    return balance.make_op_key("bribe", *message_identity(chat_id, message_id))
 
 
 async def pay_bribe(

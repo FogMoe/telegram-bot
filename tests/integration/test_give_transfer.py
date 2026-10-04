@@ -15,6 +15,7 @@ from economy_support import (
 from mysql_support import fetch, fetch_scalar, run
 
 from core import balance, mysql_connection, sql
+from core.command_identity import delegated_operation
 from features.economy import coins as coin_handlers
 from features.economy.operations import coins as coin_operations
 from features.economy.operations.coins import GiveStatus
@@ -122,6 +123,19 @@ class TestTransfer:
         assert (first.status, replay.status) == (GiveStatus.GIVEN, GiveStatus.REPLAYED)
         assert total(app_database, 1) == 88
         assert total(app_database, 2) == 10
+        assert daily_count(app_database) == 1
+        assert len(ledger_rows(app_database)) == 2
+
+    def test_an_identity_reused_for_a_different_gift_is_a_conflict_not_a_replay(self, app_database):
+        seed_pair(app_database)
+        seed_user(app_database, 3, free=0, name="carol")
+
+        first = run(transfer(1, 2, 10, 11))
+        other = run(transfer(1, 3, 20, 11))
+
+        assert (first.status, other.status) == (GiveStatus.GIVEN, GiveStatus.CONFLICT)
+        assert total(app_database, 1) == 88
+        assert total(app_database, 3) == 0
         assert daily_count(app_database) == 1
         assert len(ledger_rows(app_database)) == 2
 
@@ -296,6 +310,39 @@ class TestGiveCommand:
         assert total(app_database, 1) == 88
         assert total(app_database, 2) == 10
         assert len(ledger_rows(app_database)) == 2
+
+    def test_two_delegated_gifts_from_one_ai_turn_both_transfer(self, app_database):
+        """AI 代执行的命令共用触发对话的消息 ID；每次代执行有自己的身份，第二笔不会被当成第一笔的重放。"""
+        seed_pair(app_database)
+        seed_user(app_database, 3, free=0, name="carol")
+
+        with delegated_operation("first"):
+            first = self.give(app_database, ["bob", "10"], message_id=11)
+        with delegated_operation("second"):
+            second = self.give(app_database, ["carol", "20"], message_id=11)
+
+        assert first == ["成功赠送 10 枚硬币给用户 bob，手续费 2 枚硬币。"]
+        assert second == ["成功赠送 20 枚硬币给用户 carol，手续费 4 枚硬币。"]
+        assert total(app_database, 1) == 64
+        assert total(app_database, 2) == 10 and total(app_database, 3) == 20
+        assert ledger_keys(app_database) == [
+            "give:9:11:ai:first",
+            "give:9:11:ai:first:recv",
+            "give:9:11:ai:second",
+            "give:9:11:ai:second:recv",
+        ]
+
+    def test_a_conflicting_reuse_of_a_command_identity_is_not_reported_as_success(
+        self, app_database
+    ):
+        seed_pair(app_database)
+        seed_user(app_database, 3, free=0, name="carol")
+
+        self.give(app_database, ["bob", "10"], message_id=11)
+        texts = self.give(app_database, ["carol", "20"], message_id=11)
+
+        assert texts == ["这条赠送命令已经处理过另一笔转账，本次没有执行，请重新发送 /give。"]
+        assert total(app_database, 3) == 0
 
     def test_a_non_positive_amount_is_rejected_before_touching_the_database(self, app_database):
         seed_pair(app_database)

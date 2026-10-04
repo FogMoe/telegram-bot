@@ -140,7 +140,8 @@ class TurnStatus(StrEnum):
     INSUFFICIENT_BALANCE = "insufficient_balance"  # 已回复提示：整轮回滚，不扣费
     MEDIA_TOO_LARGE = "media_too_large"  # 已回复提示：这一轮已扣费，不退
     MEDIA_FAILED = "media_failed"  # 已回复提示：这一轮已扣费，不退
-    DEADLINE_EXCEEDED = "deadline_exceeded"  # 准备阶段截止时间到期：已回复提示，这一轮已扣费，不退
+    # 模型之前的阶段截止时间到期：已回复提示；到期发生在扣费之后则这一轮已扣费，不退
+    DEADLINE_EXCEEDED = "deadline_exceeded"
 
 
 class Stage(StrEnum):
