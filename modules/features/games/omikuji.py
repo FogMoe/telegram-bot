@@ -2,11 +2,11 @@ import random
 import hashlib
 import time
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 import telegram
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
-from core import mysql_connection, process_user
+from core import balance, mysql_connection
 from core.command_cooldown import cooldown
 
 # 防止用户快速多次点击的锁
@@ -259,12 +259,12 @@ FORTUNE_WEIGHTS = {
 }
 
 
-def get_daily_fortune(user_id: int) -> str:
+def get_daily_fortune(user_id: int, today: date | None = None) -> str:
     """
     基于用户ID和当前日期确定用户的每日运势
     """
     # 获取当前日期（年月日）
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = (today or datetime.now().date()).strftime("%Y-%m-%d")
     
     # 组合用户ID和日期作为随机种子
     seed = f"{user_id}_{today}"
@@ -286,37 +286,59 @@ def get_daily_fortune(user_id: int) -> str:
     return fortune
 
 
-async def check_and_deduct_coins(user_id: int) -> bool:
-    """检查用户是否有足够的金币并扣除"""
-    try:
-        async with mysql_connection.transaction() as connection:
-            user = await mysql_connection.fetch_one(
-                "SELECT id, coins, coins_paid FROM user WHERE id = %s",
-                (user_id,),
-                connection=connection,
-            )
+# 抽签结果
+DRAW_NEW = "drawn"  # 本次扣了供奉并登记了今天的签
+DRAW_ALREADY = "already"  # 今天已经有记录，没有扣费
+DRAW_INSUFFICIENT = "insufficient"  # 金币不足，什么都没有改动
 
-            if not user:
-                logger.warning(f"用户 {user_id} 不存在")
-                return False
+OMIKUJI_COST = 1
 
-            current_coins = (user[1] or 0) + (user[2] or 0)
-            if current_coins < 1:
-                logger.info(f"用户 {user_id} 金币不足，当前金币: {current_coins}")
-                return False
-            spent = await process_user.spend_user_coins(
+
+def omikuji_op_key(user_id: int, day: date) -> str:
+    """每个用户每天只有一次供奉，扣费以它为幂等键。"""
+    return balance.make_op_key("omikuji", user_id, day.isoformat())
+
+
+async def draw_daily_fortune(user_id: int, *, today: date | None = None) -> tuple[str, str | None]:
+    """今天的抽签：资格判断、扣供奉、登记签文在同一个事务里。
+
+    返回 (状态, 签文)。先锁用户行，同一用户的并发抽签在这里串行，后到的一方会看到已登记的签。
+    扣费之后登记失败整个事务回滚，不会出现「扣了钱却没有记录」。
+    """
+    today = today or datetime.now().date()
+    fortune = get_daily_fortune(user_id, today)
+
+    async def work(connection) -> tuple[str, str | None]:
+        # 锁住用户行之后，这个事务的第一次一致性读能看到上一个持锁者提交的签。
+        await balance.lock_user(connection, user_id)
+        existing = await mysql_connection.fetch_one(
+            "SELECT fortune FROM user_omikuji WHERE user_id = %s AND fortune_date = %s",
+            (user_id, today),
+            connection=connection,
+        )
+        if existing:
+            return DRAW_ALREADY, existing[0]
+        try:
+            await balance.debit(
+                connection,
                 user_id,
-                1,
-                connection=connection,
+                OMIKUJI_COST,
+                op_key=omikuji_op_key(user_id, today),
+                reason="omikuji",
             )
-            if not spent:
-                logger.info(f"用户 {user_id} 金币不足，当前金币: {current_coins}")
-                return False
-            logger.info(f"用户 {user_id} 扣除1金币成功，剩余金币: {current_coins - 1}")
-            return True
-    except Exception as e:
-        logger.error(f"扣除金币时出错: {str(e)}")
-        return False
+        except balance.InsufficientBalance:
+            return DRAW_INSUFFICIENT, None
+        await connection.exec_driver_sql(
+            "INSERT INTO user_omikuji (user_id, fortune_date, fortune) VALUES (%s, %s, %s) "
+            "ON DUPLICATE KEY UPDATE fortune = VALUES(fortune)",
+            (user_id, today, fortune),
+        )
+        return DRAW_NEW, fortune
+
+    try:
+        return await balance.run_in_transaction(work)
+    except balance.UserNotFound:
+        return DRAW_INSUFFICIENT, None
 
 
 async def get_user_daily_fortune(user_id: int):
@@ -340,22 +362,6 @@ async def get_user_daily_fortune(user_id: int):
     except Exception as e:
         logger.error(f"获取用户抽签记录时出错: {str(e)}")
         return False, None
-
-
-async def save_user_fortune(user_id: int, fortune: str) -> bool:
-    """保存用户的抽签记录到数据库"""
-    try:
-        today = datetime.now().strftime("%Y-%m-%d")
-        await mysql_connection.execute(
-            "INSERT INTO user_omikuji (user_id, fortune_date, fortune) VALUES (%s, %s, %s) "
-            "ON DUPLICATE KEY UPDATE fortune = VALUES(fortune)",
-            (user_id, today, fortune),
-        )
-        logger.info(f"用户 {user_id} 抽签结果 {fortune} 已保存")
-        return True
-    except Exception as e:
-        logger.error(f"保存用户抽签记录时出错: {str(e)}")
-        return False
 
 
 async def check_user_registered(user_id: int) -> bool:
@@ -411,7 +417,21 @@ async def omikuji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         # 检查用户今天是否已经抽过签
         has_drawn, existing_fortune = await get_user_daily_fortune(user_id)
-        
+
+        # 还没抽过：扣供奉与登记签文在同一个事务里完成。并发的另一次抽签先到时，这里会拿到它的签。
+        if not has_drawn:
+            draw_status, drawn_fortune = await draw_daily_fortune(user_id)
+            if draw_status == DRAW_INSUFFICIENT:
+                await update.message.reply_text(
+                    "您没有足够的金币进行祈愿抽签。每次抽签需要1枚金币作为供奉。\n"
+                    "试试使用 /lottery 命令获取免费金币吧！\n\n"
+                    "You don't have enough coins to draw an omikuji. Each draw requires 1 coin as an offering.\n"
+                    "Try using /lottery command to get free coins!"
+                )
+                return
+            if draw_status == DRAW_ALREADY:
+                has_drawn, existing_fortune = True, drawn_fortune
+
         if has_drawn:
             # 用户今天已经抽过签，直接获取已有结果
             fortune = existing_fortune
@@ -453,22 +473,10 @@ async def omikuji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await update.message.reply_text(message)
             return
         
-        # 检查并扣除金币
-        coins_deducted = await check_and_deduct_coins(user_id)
-        
-        if not coins_deducted:
-            await update.message.reply_text(
-                "您没有足够的金币进行祈愿抽签。每次抽签需要1枚金币作为供奉。\n"
-                "试试使用 /lottery 命令获取免费金币吧！\n\n"
-                "You don't have enough coins to draw an omikuji. Each draw requires 1 coin as an offering.\n"
-                "Try using /lottery command to get free coins!"
-            )
-            return
-        
-        # 获取用户的每日运势
-        fortune = get_daily_fortune(user_id)
+        # 今天的运势（已经随扣费一起登记）
+        fortune = drawn_fortune
         fortune_info = OMIKUJI_FORTUNES[fortune]
-        
+
         # 创建基于用户ID和日期的随机数生成器以确保相同的描述文本
         seed_value = int(hashlib.md5(f"{user_id}_{datetime.now().strftime('%Y-%m-%d')}".encode()).hexdigest(), 16)
         random_gen = random.Random(seed_value)
@@ -483,12 +491,6 @@ async def omikuji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"事业/学业: {random_gen.choice(fortune_info['career'])}\n\n"
             f"建议: {random_gen.choice(fortune_info['advice'])}"
         )
-        
-        # 保存用户抽签记录
-        save_result = await save_user_fortune(user_id, fortune)
-        
-        if not save_result:
-            logger.warning(f"用户 {user_id} 的抽签结果保存失败，但会继续显示结果")
         
         # 准备按钮
         # 好运势和坏运势的按钮文字不同

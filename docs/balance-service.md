@@ -124,9 +124,18 @@ await balance.credit(connection, user_id, 50, op_key=balance.make_op_key("topup"
 | 图片 `/pic` | `pic:<chat_id>:<message_id>` | `pic`，退款 `pic_failed` |
 | 高清图 | `pic_hd:<callback query id>` | `pic_hd`，退款 `pic_hd_failed` |
 | 奖池贡献 | `pool:<消费的 op_key>` | `spend_share` |
+| 多人下注，每人每轮一笔 | `gamble:<gamble_rounds.id>:bet:<uid>`，同时记在 `gamble_bets.op_key` | `gamble_bet`，中奖者账户不存在而改为全额退款时 `gamble_refund` |
+| 多人下注的奖金 | `gamble:<round_id>:payout` | `gamble_win` |
+| 石头剪刀布入场费 | `rps:<rps_games.id>:entry:<uid>` | `rps_entry`，退款 `rps_draw`（平局）、`rps_timeout`（超时）、`rps_failed`（创建失败） |
+| 石头剪刀布奖金 | `rps:<game_id>:win` | `rps_win` |
+| 骰宝，每个面板消息一局 | `sicbo:<chat_id>:<message_id>:bet` 与 `sicbo:<chat_id>:<message_id>:win` | `sicbo_bet`、`sicbo_win` |
+| 御神签，每人每天一次 | `omikuji:<uid>:<日期>` | `omikuji` |
+| RPG 回血 | `rpg:heal:<chat_id>:<message_id>`（命令消息） | `rpg_heal` |
+| RPG 击败怪物 | `rpg:monster:<chat_id>:<message_id>:reward` | `rpg_monster` |
+| RPG 玩家对战 | `rpg:pvp:<chat_id>:<message_id>:loss`（败者）与 `rpg:pvp:<chat_id>:<message_id>:win`（胜者） | `rpg_pvp_loss`、`rpg_pvp_win` |
 
-后续路径沿用同样的做法：游戏用持久化的轮次或对局 id（如 `rps:<game_id>:entry:<uid>`、
-`gamble:<round_id>:bet:<uid>`），商店、质押、邀请等用各自的记录 id。
+后续路径沿用同样的做法：商店、质押、邀请等用各自的记录 id。游戏状态的持久化与重启恢复见
+[job-recovery.md](job-recovery.md) 的「游戏状态」。
 
 ## 事务所有权
 

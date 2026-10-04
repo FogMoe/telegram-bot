@@ -77,6 +77,10 @@ SELECT version_num FROM alembic_version;
   新版本的所有余额操作都依赖这三张表，所以先迁移、再启动新版本。账本从升级后开始记录，
   升级前的余额由每个用户的第一行隐含，对账方法见 [balance-service.md](balance-service.md)。
   升级前发出的管理员充值按钮会失效：点击只提示让用户重新发起，不会入账。
+- **0021 `game_state`。** 新建 `gamble_rounds`、`gamble_bets`、`rps_games`，不改动已有表。
+  新版本的下注与石头剪刀布依赖这三张表，所以先迁移、再启动新版本。旧版本放在内存里的进行中的下注轮次与对局
+  不会迁移：它们随旧进程消失，已扣的金币不会自动退还，升级尽量选在没有进行中的游戏时，
+  详见 [job-recovery.md](job-recovery.md) 的「升级时正在进行的游戏」。旧版本发出的下注与选择按钮升级后失效。
 
 0018 删除的是旧哈希。先部署会写入 Argon2id 的代码，再执行 0018；否则迁移之后用旧代码设置的 SHA-256 哈希会再次留在库里。
 
@@ -156,6 +160,7 @@ MySQL 的 DDL 会隐式提交。迁移中途失败时，已执行的 DDL 保留�
 | `0018_privacy_retention` | 无新对象 | 删除旧密码哈希、脱敏群聊历史（SQL 在迁移文件里） |
 | `0019_coin_ledger` | `coin_ledger`、`stake_pool_ledger`、`topup_requests` | — |
 | `0020_job_claims` | `ai_schedules` / `ai_idle_followups` 的 `claim_token` / `claim_attempts` / `stage`（`ai_schedules` 另有 `claim_until`）、索引 `idx_ai_schedules_claim`、表 `ai_job_attempts` | 旧版本留下的 `executing` 行：`stage` 设为 `generating`，`ai_schedules.claim_until` 设为当前时间（语义见 [job-recovery.md](job-recovery.md)） |
+| `0021_game_state` | `gamble_rounds`、`gamble_bets`、`rps_games` | — |
 
 ## 离线 SQL
 

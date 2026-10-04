@@ -2,11 +2,9 @@ import time
 
 from telegram.constants import ParseMode
 
-# 导入自定义模块
-from core import process_user
-
+from . import settlement
 from .utils import calculate_damage
-from .characters import check_and_process_level_up, get_character, update_character_stats
+from .characters import check_and_process_level_up, get_character
 
 # 怪物数据字典，包含各种怪物的属性
 MONSTERS = {
@@ -163,29 +161,33 @@ async def initiate_monster_battle(update, context, monster_id: str):
     # 更新冷却时间
     monster_battle_cooldowns[user_id] = current_time
     
-    # 处理战斗后果
-    # 1. 更新玩家HP
-    await update_character_stats(user_id, {'hp': player_hp})
-    
-    # 2. 如果玩家胜利，给予奖励
-    if result == "win":
-        # 经验奖励
-        exp_reward = monster_instance['exp_reward']
-        new_exp = character['experience'] + exp_reward
-        await update_character_stats(user_id, {'experience': new_exp})
-        
-        # 金币奖励
-        coin_reward = monster_instance['coin_reward']
-        await process_user.async_update_user_coins(user_id, coin_reward)
-        
+    # 处理战斗后果：生命值、经验、金币奖励在同一个事务里提交，
+    # 同一条命令被重复投递时奖励只会生效一次。
+    won = result == "win"
+    exp_reward = monster_instance['exp_reward']
+    coin_reward = monster_instance['coin_reward']
+    settled = await settlement.settle_monster_battle(
+        user_id,
+        chat_id=update.message.chat.id,
+        message_id=update.message.message_id,
+        player_hp=player_hp,
+        won=won,
+        exp_reward=exp_reward,
+        coin_reward=coin_reward,
+    )
+    if not settled:
+        await update.message.reply_text("这场战斗的奖励已经结算过了。")
+        return result
+
+    if won:
         # 奖励消息
         reward_message = f"🎁 战斗奖励:\n获得 {exp_reward} 点经验值\n获得 {coin_reward} 枚金币"
         await update.message.reply_text(reward_message)
-        
+
         # 检查升级
         await check_and_process_level_up(user_id, context)
     elif result == "lose":
         # 失败消息
         await update.message.reply_text("😢 战斗失败。使用 `/rpg heal` 恢复生命值，然后再尝试挑战吧！")
-        
-    return result 
+
+    return result

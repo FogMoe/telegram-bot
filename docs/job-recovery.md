@@ -2,7 +2,7 @@
 
 本页是 AI 定时任务（`features/ai/scheduler.py`）和空闲跟进（`features/ai/idle_followup.py`）在进程崩溃、卡死、重启之后如何恢复的契约，也是运维排查卡住任务的手册。共用部分在 `features/ai/job_claims.py`；表结构在 `alembic/versions/0020_job_claims.py`。
 
-范围只有这两个后台任务。游戏状态的持久化不在这里。
+范围是这两个后台任务。持有金币的游戏（多人下注、石头剪刀布）的状态持久化与重启恢复在文末「游戏状态」。
 
 ## 所有权
 
@@ -160,3 +160,115 @@ WHERE outcome IN ('unknown', 'abandoned') ORDER BY id DESC LIMIT 50;
 - 新增任务状态写入：必须带 `claim_token` 条件，影响行数为 0 时抛 `ClaimLostError`，并且和对应的尝试记录在同一个事务里。
 - 新增会改变「哪些阶段可以安全重跑」的行为，同步更新「按阶段的恢复策略」。
 - 测试：`tests/integration/test_schedule_recovery.py`、`tests/integration/test_idle_followup_recovery.py` 覆盖崩溃、回收、旧 worker 迟到、租约；用法见 [database-migrations.md](database-migrations.md) 的「运行集成测试」。
+
+## 游戏状态
+
+范围是持有金币的两个游戏：多人下注（`features/games/gamble.py`，业务在 `gamble_rounds.py`）和
+石头剪刀布（`rockpaperscissors_game.py`，业务在 `rps_games.py`）。表由迁移 `0021_game_state` 创建：
+`gamble_rounds`、`gamble_bets`、`rps_games`。骰宝、御神签与 RPG 不跨请求持有金币：每次点击或命令在
+一个事务里扣款、结算、更新状态，没有需要恢复的中间状态，见 [balance-service.md](balance-service.md)。
+
+### 原则
+
+- 状态在 MySQL 里，进程重启不丢。内存里只剩两样不含金币的东西：石头剪刀布的等待房间（有人加入、
+  对局创建的那一刻才扣入场费）和下注面板的编辑锁。
+- 余额变动与状态转换在同一个事务里提交；转换只发生一次：先 `SELECT ... FOR UPDATE` 锁轮次/对局行，
+  状态必须仍是进行中。余额操作的 op_key 由轮次/对局 id 派生，见 [balance-service.md](balance-service.md)。
+- 事务里不发消息。面板编辑在提交之后进行，是尽力而为：表里的 `announced_at` 记录结果是否已经写到面板上，
+  没写成功的由恢复任务补发（编辑是幂等的，Telegram 回「内容没变」「消息不存在」这类明确拒绝视为完成，
+  网络错误和限流留待下次），补发窗口 1 天。
+- 到期靠两层保证：每局创建时用 `job_queue.run_once` 安排一次精确的定时器，另有周期的恢复任务
+  （`recover_gamble_rounds`、`recover_rps_games`，启动后 5 秒第一次运行，之后每 30 秒）。定时器随进程
+  丢失也没关系，恢复任务处理所有已到期的局。截止时间一律用数据库时钟比较。
+
+### 多人下注
+
+| 状态 | 含义 |
+|---|---|
+| `open` | 接受下注。`active_slot = 1`，唯一键保证同一时间只有一个开放轮次 |
+| `settled` | 已结算：有人下注就同事务把整个奖池入账给抽中的人，没人下注就只是关闭 |
+| `refunded` | 抽中的人账户已不存在，全额退回各人的下注 |
+| `cancelled` | 面板没能发出去，没有人下过注 |
+
+- 按钮的 `callback_data` 是 `gamble_<round_id>_<amount>`。回调校验轮次存在、仍然 `open` 且没过截止时间、
+  点击的消息与轮次记录的 chat/message 一致；旧格式（只有金额）、旧轮次、其他面板一律拒绝，不扣款。
+  轮次创建时还没有 message_id，面板发出去之后才登记，在那之前所有下注都被拒绝。
+- 接受下注：一个事务里锁轮次行、确认 `open`、插入下注（`(round_id, user_id)` 唯一）、`balance.debit`。
+  任何一步失败整体回滚，扣款期间轮次被结算抢先拿到锁时，下注被拒绝，不扣款。
+- 结算：同样先锁轮次行，所以与下注串行；按下注金额为权重抽中奖者，`balance.credit` 奖金，
+  状态从 `open` 转换一次。
+- 恢复策略：**已过截止时间的轮次照常结算**，没过的继续开放。理由：下注是在「5 分钟后开奖」的规则下接受的，
+  抽取不依赖任何进程内状态，重启只是让开奖晚了一点；全额退款会让已经下注的人失去这一局，
+  而且退款本身并不比结算更安全。
+  - 结算提交之后、进程在编辑面板之前退出：轮次是 `settled` 而 `announced_at` 为空，恢复任务补发结果。
+  - 轮次有记录而面板没有登记（进程在发面板前后退出）：没人能下注，到期后按「无人参与」关闭。
+  - 结算事务失败（数据库异常）：整体回滚，轮次仍是 `open`，恢复任务下一轮重试；
+    日志里有「结算轮次 N 失败」。
+- 新的 `/gamble` 命令在开局前会先结算已到期的旧轮次，所以重启后不用等恢复任务就能开新局。
+
+### 石头剪刀布
+
+| 状态 | 结果 | 含义 |
+|---|---|---|
+| `choosing` | | 进行中 |
+| `settled` | `p1` / `p2` | 胜负已分，奖金 `rps:<id>:win` 已入账 |
+| `settled` | `draw` | 平局，入场费已退回 |
+| `refunded` | `timeout` | 过期仍未分出胜负，入场费已退回 |
+| `refunded` | `failed` | 创建后面板发不出去（或胜者账户已不存在），入场费已退回 |
+
+- 两名玩家的入场扣款与对局创建在**同一个事务**：先按 id 升序锁两个 user 行，确认两人都不在进行中的对局里，
+  插入对局，再扣款。任何一方余额不足或用户不存在，整个事务回滚，没有对局，另一方也没有被扣款。
+- 退款一律 `balance.refund(rps:<id>:entry:<uid>)`，所以平局、超时、创建失败都只会退一次；
+  每次转换先锁对局行，状态必须仍是 `choosing`。
+- 选择按钮是 `rps_choice_<game_id>_<choice>_<uid>`，绑定对局和玩家。选择与结算在同一个事务里：
+  第二个人选择时，同一个事务里算出胜负、入账奖金（平局退款）并终结对局。
+  选择时已过 `expires_at` 的，直接按超时退款。
+- 恢复策略：**已过期的对局退款，没过期的继续**。选择记在表里，按钮仍然有效，重启不会打断一局进行中的游戏。
+  - 对局提交之后、面板发出之前进程退出：没人能选择，2 分钟后恢复任务退款。
+  - 创建对局之后发面板失败（比如玩家从没私聊过机器人）：当场 `cancel_game` 退款，并告诉发起加入的人创建失败。
+  - 终结之后、进程在编辑面板之前退出：`announced_at` 为空，恢复任务补发；玩家点旧按钮时也会触发补发。
+- 等待房间不放金币，只在内存里：重启丢失的只是一张邀请，旧邀请上的「加入」按钮提示「已开始或已被取消」。
+  加入按钮必须出现在等待房间自己的那条消息上，已取消、已过期邀请的按钮不会加入当前房间。
+
+### 升级时正在进行的游戏
+
+旧版本把轮次和对局放在内存里，扣款用旧的金币接口（账本里 `reason` 以 `legacy:` 开头）。升级重启时：
+
+- 进行中的下注轮次和对局随旧进程消失，**已扣的金币不会自动退还**。升级尽量选在没有进行中的 `/gamble`
+  和 `/rps_game` 时；否则事后用 `coin_ledger` 里升级前后的 `legacy:spend_user_coins` 记录人工补偿。
+- 旧版本发出的下注按钮（只有金额）和选择按钮（没有对局 id）一律被拒绝，不扣款。
+
+已终结的轮次与对局留在表里，是账本记录的业务依据；每局一行，数据量很小，暂不清理。
+
+### 排查
+
+```sql
+-- 开放的轮次、参与人数与奖池
+SELECT r.id, r.status, r.closes_at, COUNT(b.id) AS bets, COALESCE(SUM(b.amount), 0) AS pool
+FROM gamble_rounds r LEFT JOIN gamble_bets b ON b.round_id = r.id
+WHERE r.status = 'open' GROUP BY r.id;
+
+-- 已终结但结果还没写到面板上的
+SELECT id, status, settled_at FROM gamble_rounds WHERE status <> 'open' AND announced_at IS NULL;
+SELECT id, status, outcome, finished_at FROM rps_games WHERE status <> 'choosing' AND announced_at IS NULL;
+
+-- 进行中的对局
+SELECT id, p1_id, p2_id, expires_at, p1_choice IS NOT NULL AS p1_chose, p2_choice IS NOT NULL AS p2_chose
+FROM rps_games WHERE status = 'choosing';
+
+-- 某一局的全部账本记录（入场/下注、奖金、退款）
+SELECT op_key, user_id, kind, delta_free, delta_paid, reason FROM coin_ledger
+WHERE op_key LIKE 'gamble:12:%' OR op_key LIKE 'refund:gamble:12:%'
+   OR op_key LIKE 'rps:12:%' OR op_key LIKE 'refund:rps:12:%' ORDER BY id;
+```
+
+一般不需要手工处理：恢复任务每 30 秒处理一次所有到期的局。某一局反复失败时日志里有
+「结算轮次 N 失败」或「退款超时对局 N 失败」，先看数据库错误；不要直接改 `status`，
+那会绕过余额变动，让账本与状态对不上。
+
+### 变更检查
+
+- 新增跨请求持有金币的游戏：状态进表，余额操作的 op_key 由表里的 id 派生，转换先锁行再判断状态，
+  事务里不发消息，并在这里补充它的恢复策略。
+- 测试：`tests/integration/test_gamble_rounds.py`、`tests/integration/test_rps_games.py`、
+  `tests/integration/test_game_balances.py`（骰宝、御神签、RPG）、`tests/integration/test_game_state_schema.py`。

@@ -4,8 +4,9 @@ from typing import Optional, Dict, Any
 
 from sqlalchemy.exc import IntegrityError
 
-from core import mysql_connection, process_user
+from core import mysql_connection
 
+from . import settlement
 from .utils import get_level_from_exp
 
 # --- 数据库交互函数 (RPG 角色) ---
@@ -169,28 +170,24 @@ async def check_and_process_level_up(user_id: int, context):
 async def heal_character(update, context):
     """处理 /rpg heal 命令，恢复角色HP"""
     user_id = update.effective_user.id
-    
-    # 获取角色信息
-    character = await get_character(user_id)
-    if not character:
-        await update.message.reply_text("你还没有创建角色，请先使用 `/rpg` 命令创建角色。")
-        return
-    
-    # 检查是否已满血
-    if character['hp'] >= character['max_hp']:
-        await update.message.reply_text("你的生命值已经是满的了！")
-        return
-        
-    # 获取用户金币
-    user_coins = await process_user.async_get_user_coins(user_id)
-    heal_cost = 10  # 恢复费用
-    
-    if user_coins < heal_cost:
-        await update.message.reply_text(f"恢复生命值需要 {heal_cost} 金币，但你只有 {user_coins} 金币。")
-        return
-    
-    # 扣除金币并恢复HP
-    await process_user.async_update_user_coins(user_id, -heal_cost)
-    await update_character_stats(user_id, {'hp': character['max_hp']})
-    
-    await update.message.reply_text(f"花费 {heal_cost} 金币恢复了生命值！\n当前HP: {character['max_hp']}/{character['max_hp']}") 
+    message = update.message
+
+    # 扣费与恢复生命值在同一个事务里，余额不足或已满血时什么都不会改动
+    result = await settlement.heal_for_coins(
+        user_id, settlement.heal_op_key(message.chat.id, message.message_id)
+    )
+
+    if result.status == settlement.HEAL_NO_CHARACTER:
+        await message.reply_text("你还没有创建角色，请先使用 `/rpg` 命令创建角色。")
+    elif result.status == settlement.HEAL_FULL:
+        await message.reply_text("你的生命值已经是满的了！")
+    elif result.status == settlement.HEAL_INSUFFICIENT:
+        await message.reply_text(
+            f"恢复生命值需要 {settlement.HEAL_COST} 金币，但你只有 {result.balance_total} 金币。"
+        )
+    elif result.status == settlement.HEAL_REPLAY:
+        await message.reply_text("这次恢复已经处理过了，请使用 `/rpg` 查看当前状态。")
+    else:
+        await message.reply_text(
+            f"花费 {settlement.HEAL_COST} 金币恢复了生命值！\n当前HP: {result.max_hp}/{result.max_hp}"
+        )
