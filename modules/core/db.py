@@ -1,10 +1,15 @@
 import asyncio
+from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Iterable, Optional
+from typing import Any, AsyncIterator, Coroutine, Optional
 
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from . import config
+
+# exec_driver_sql 接受的位置参数（序列）或命名参数（映射）。
+SqlParams = Sequence[Any] | Mapping[str, Any] | None
 
 _ENGINE: Optional[AsyncEngine] = None
 _MAIN_LOOP: Optional[asyncio.AbstractEventLoop] = None
@@ -43,7 +48,7 @@ async def transaction() -> AsyncIterator[AsyncConnection]:
         yield connection
 
 
-def run_sync(coro):
+def run_sync[T](coro: Coroutine[Any, Any, T]) -> T:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -57,10 +62,10 @@ def run_sync(coro):
 
 async def exec_sql(
     sql: str,
-    params: Optional[Iterable[Any]] = None,
+    params: SqlParams = None,
     *,
     connection: Optional[AsyncConnection] = None,
-):
+) -> CursorResult[Any]:
     if connection is None:
         async with connect() as connection:
             return await connection.exec_driver_sql(sql, params)

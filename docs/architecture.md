@@ -26,6 +26,7 @@ app → core
 | `handler_registry.py` | 注册顺序的唯一来源（`REGISTRATION_STEPS`） |
 | `handler_groups.py` | 按功能分组调用各 feature 的 `setup_*`，不实现业务 |
 | `error_handler.py` | 全局错误回复，属于运行时而非某个功能 |
+| `smoke_check.py` | `main.py --check` 的启动冒烟检查：组装 Application 并注册 handler，不连接 Telegram 和数据库 |
 
 `register_core_command_handlers` 仍在组装层直接 `add_handler`：那一组命令的注册顺序在历史上跨功能交错，
 而 `tests/test_handler_registry.py` 把最终顺序当作契约。要改成自注册必须先改这个契约。

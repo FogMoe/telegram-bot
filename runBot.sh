@@ -4,10 +4,18 @@
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 BOT_DIR="$SCRIPT_DIR"
 MODULES_DIR="$BOT_DIR/modules"
+ENTRY_SCRIPT="$MODULES_DIR/main.py"
 LOG_DIR="$BOT_DIR/logs"
+# 应用自己的轮转日志（保留 5 份历史）。脚本不再重定向到这个文件，避免与轮转冲突
 LOG_FILE="$LOG_DIR/tgbot.log"
+# 进程的 stdout/stderr：只会有日志系统初始化前的启动错误和未捕获的异常
+OUT_FILE="$LOG_DIR/tgbot.out"
+# 记录由本脚本启动的进程；是否是 bot 以进程命令行为准，不信任 PID 文件本身
+PID_FILE="$LOG_DIR/tgbot.pid"
 VENV_DIR="$BOT_DIR/venv"
 REQUIREMENTS_FILE="$BOT_DIR/requirements.txt"
+# 停止时等待进程优雅退出的秒数，超时后强制终止
+STOP_TIMEOUT="${BOT_STOP_TIMEOUT:-15}"
 
 # 颜色输出
 RED='\033[0;31m'
@@ -15,9 +23,67 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# 获取bot进程ID
+# 读取进程命令行（参数以空格分隔）。/proc 不存在时（macOS）退回 ps
+process_cmdline() {
+    local pid="$1"
+    if [ -r "/proc/$pid/cmdline" ]; then
+        tr '\0' ' ' < "/proc/$pid/cmdline"
+    else
+        ps -p "$pid" -o args= 2>/dev/null
+    fi
+}
+
+# 进程仍在运行（僵尸进程视为已退出）
+pid_alive() {
+    local pid="$1" state
+    kill -0 "$pid" 2>/dev/null || return 1
+    state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ')
+    [[ "$state" != Z* ]]
+}
+
+# 该 PID 是本目录下的 bot：Python 进程，命令行带有入口脚本的绝对路径
+is_bot_process() {
+    local pid="$1" cmdline
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    pid_alive "$pid" || return 1
+    cmdline=$(process_cmdline "$pid")
+    [[ "$cmdline" == *python* && "$cmdline" == *"$ENTRY_SCRIPT"* ]]
+}
+
+# 没有 PID 文件时的兜底（仅 Linux）：旧版脚本和手动运行用相对路径启动，
+# 命令行里没有绝对路径，改用工作目录判断
+find_unmanaged_bot_pid() {
+    [ -d /proc/self ] || return 0
+    local proc pid cmdline cwd
+    for proc in /proc/[0-9]*; do
+        pid="${proc#/proc/}"
+        cmdline=$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null) || continue
+        [[ "$cmdline" == *python* ]] || continue
+        cwd=$(readlink "$proc/cwd" 2>/dev/null) || continue
+        if [[ "$cmdline" == *" main.py "* && "$cwd" == "$MODULES_DIR" ]] ||
+           [[ "$cmdline" == *" modules/main.py "* && "$cwd" == "$BOT_DIR" ]]; then
+            if pid_alive "$pid"; then
+                echo "$pid"
+                return 0
+            fi
+        fi
+    done
+    return 0
+}
+
+# 获取 bot 进程 ID（没有运行时输出为空）
 get_bot_pid() {
-    ps -ef | grep "[p]ython3.*modules/main.py" | awk '{print $2}'
+    local pid
+    if [ -f "$PID_FILE" ]; then
+        pid=$(tr -d '[:space:]' < "$PID_FILE")
+        if is_bot_process "$pid"; then
+            echo "$pid"
+            return 0
+        fi
+        # PID 文件已过期（进程已退出，或 PID 被其他程序复用）
+        rm -f "$PID_FILE"
+    fi
+    find_unmanaged_bot_pid
 }
 
 # 检查并创建虚拟环境
@@ -131,8 +197,8 @@ start_bot() {
     fi
 
     # 确保 main.py 存在
-    if [ ! -f "$MODULES_DIR/main.py" ]; then
-        echo -e "${RED}错误: main.py 不存在: $MODULES_DIR/main.py${NC}"
+    if [ ! -f "$ENTRY_SCRIPT" ]; then
+        echo -e "${RED}错误: main.py 不存在: $ENTRY_SCRIPT${NC}"
         exit 1
     fi
 
@@ -163,30 +229,45 @@ start_bot() {
         exit 1
     fi
 
-    # 切换到 modules 目录
-    cd $MODULES_DIR
+    # 从仓库根目录用入口脚本的绝对路径启动（与 README 的运行方式一致），
+    # 命令行里的绝对路径是 status/stop 识别进程的依据
+    cd "$BOT_DIR"
 
     # 启动bot并记录日志
     echo "正在启动bot..."
     mkdir -p "$LOG_DIR"
     echo "日志文件: $LOG_FILE"
-    nohup python3 -u main.py > "$LOG_FILE" 2>&1 &
+
+    # 启动输出文件只保留一份历史，避免无限增长
+    if [ -f "$OUT_FILE" ] && [ "$(wc -c < "$OUT_FILE")" -gt 1048576 ]; then
+        mv -f "$OUT_FILE" "$OUT_FILE.1"
+    fi
+
+    # 日志由应用写入 $LOG_FILE；stdout 已重定向到 $OUT_FILE，所以默认不再重复输出到 stdout
+    LOG_TO_STDOUT="${LOG_TO_STDOUT:-false}" nohup python3 -u "$ENTRY_SCRIPT" >> "$OUT_FILE" 2>&1 &
 
     # 获取新进程PID
     NEW_PID=$!
+    echo "$NEW_PID" > "$PID_FILE"
     echo "Bot已启动 (PID: $NEW_PID)"
 
     # 检查进程是否成功启动
     sleep 2
-    if ps -p $NEW_PID > /dev/null; then
+    if pid_alive "$NEW_PID"; then
         echo -e "${GREEN}✓ Bot运行正常${NC}"
         echo ""
         echo "查看日志: tail -f $LOG_FILE"
         echo "停止bot: $0 stop"
         echo "查看状态: $0 status"
     else
+        rm -f "$PID_FILE"
         echo -e "${RED}✗ 错误: Bot启动失败${NC}"
         echo "请查看日志文件: $LOG_FILE"
+        if [ -s "$OUT_FILE" ]; then
+            echo ""
+            echo "=== 启动输出最后10行 ($OUT_FILE) ==="
+            tail -n 10 "$OUT_FILE"
+        fi
         exit 1
     fi
 }
@@ -199,30 +280,34 @@ stop_bot() {
 
     if [ -z "$BOT_PID" ]; then
         echo "未发现运行中的bot进程"
-        exit 0
+        rm -f "$PID_FILE"
+        return 0
     fi
 
     echo "发现bot进程 (PID: $BOT_PID)"
     echo "正在停止..."
 
-    # 尝试优雅地停止
-    kill $BOT_PID
-
-    # 等待进程结束
-    sleep 3
+    # 尝试优雅地停止，等待进程结束
+    kill "$BOT_PID"
+    waited=0
+    while pid_alive "$BOT_PID" && [ "$waited" -lt "$STOP_TIMEOUT" ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
 
     # 检查是否还在运行
-    if ps -p $BOT_PID > /dev/null 2>&1; then
+    if pid_alive "$BOT_PID"; then
         echo "进程未响应，强制终止..."
-        kill -9 $BOT_PID
+        kill -9 "$BOT_PID"
         sleep 1
     fi
 
     # 最终检查
-    if ps -p $BOT_PID > /dev/null 2>&1; then
+    if pid_alive "$BOT_PID"; then
         echo -e "${RED}✗ 错误: 无法停止进程 $BOT_PID${NC}"
-        exit 1
+        return 1
     else
+        rm -f "$PID_FILE"
         echo -e "${GREEN}✓ Bot已成功停止${NC}"
 
         # 显示最后几行日志
@@ -232,12 +317,13 @@ stop_bot() {
             tail -n 10 "$LOG_FILE"
         fi
     fi
+    return 0
 }
 
 # 重启bot
 restart_bot() {
     echo "=== 重启 Bot ==="
-    stop_bot
+    stop_bot || exit 1
     echo ""
     sleep 2
     start_bot
@@ -259,7 +345,7 @@ status_bot() {
         # 显示进程信息
         echo ""
         echo "进程详情:"
-        ps -fp $BOT_PID
+        ps -fp "$BOT_PID"
 
         # 检查虚拟环境
         if [ -d "$VENV_DIR" ]; then
