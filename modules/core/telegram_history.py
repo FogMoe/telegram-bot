@@ -16,7 +16,7 @@ from typing import Any, Awaitable, Callable, Iterator
 from telegram import Update
 from telegram.ext import ExtBot
 
-from . import config, group_chat_history, mysql_connection
+from . import config, group_chat_history, mysql_connection, redaction
 from .prompt_utils import format_metadata_attrs, remove_xml_tags, xml_escape
 from .telegram_utils import describe_message_for_context
 
@@ -93,8 +93,6 @@ _DELEGATED_COMMAND: ContextVar[bool] = ContextVar(
     default=False,
 )
 
-_SENSITIVE_COMMAND_ARGUMENTS = {"charge", "webpassword"}
-_SENSITIVE_COMMAND_OUTPUTS = {"create_code"}
 _VOLATILE_EVENT_ATTR_PATTERN = re.compile(
     r'\s(?:timestamp|message_id|reply_to_message_id|edited_at)="[^"]*"'
 )
@@ -313,21 +311,6 @@ def normalize_command_name(text: str | None) -> str | None:
     return command or None
 
 
-def _command_text_for_history(text: str, command: str) -> str:
-    if command not in _SENSITIVE_COMMAND_ARGUMENTS:
-        return text
-    return f"/{command} [redacted]" if text.split(maxsplit=1)[1:] else f"/{command}"
-
-
-def _command_redactions(text: str | None, command: str | None) -> tuple[str, ...]:
-    if command not in _SENSITIVE_COMMAND_ARGUMENTS or not text:
-        return ()
-    arguments = text.split(maxsplit=1)
-    if len(arguments) != 2 or not arguments[1]:
-        return ()
-    return (arguments[1],)
-
-
 @contextmanager
 def telegram_history_scope(**changes: Any) -> Iterator[None]:
     current = _HISTORY_CONTEXT.get() or TelegramHistoryContext()
@@ -373,6 +356,11 @@ def delegated_telegram_command() -> Iterator[None]:
         yield
     finally:
         _DELEGATED_COMMAND.reset(token)
+
+
+def is_delegated_command() -> bool:
+    """当前命令是否由 AI 工具代用户投递（而非用户亲自发送）。"""
+    return _DELEGATED_COMMAND.get()
 
 
 def _coalesce_key(content: str) -> str:
@@ -483,7 +471,7 @@ async def record_command_update(update: Update, bot: Any) -> None:
         return
 
     delegated = _DELEGATED_COMMAND.get()
-    command_text = _command_text_for_history(message.text or "", command)
+    command_text = redaction.redact_command_text(message.text or "")
     content = format_user_message(
         chat_type=chat.type or "private",
         chat_title=(chat.title or "").strip() or None,
@@ -499,10 +487,7 @@ async def record_command_update(update: Update, bot: Any) -> None:
         command=command,
         origin="ai_tool" if delegated else None,
         delegated=delegated,
-        redacted=(
-            command in _SENSITIVE_COMMAND_ARGUMENTS
-            and bool((message.text or "").split(maxsplit=1)[1:])
-        ),
+        redacted=redaction.has_sensitive_arguments(message.text),
     )
     await _persist_event(user.id, content, bot)
     if chat.type in ("group", "supergroup") and not delegated:
@@ -574,7 +559,7 @@ async def prepare_update_history(update: Update, context: Any) -> None:
             origin=origin,
             event=event,
             command=command,
-            redactions=_command_redactions(getattr(message, "text", None), command),
+            redactions=redaction.command_secret_values(getattr(message, "text", None)),
         )
     )
 
@@ -584,6 +569,23 @@ async def prepare_update_history(update: Update, context: Any) -> None:
         content = format_callback_event(update)
         if content:
             await _persist_event(user.id, content, context.bot)
+
+
+def _redact_displayed_message(
+    displayed_message: str,
+    context: TelegramHistoryContext,
+) -> tuple[str, bool]:
+    """按统一脱敏策略处理 bot 可见输出，返回处理后的文本和是否有改动。"""
+    redacted_message = redaction.redact_output(
+        displayed_message,
+        command=context.command,
+        secrets_to_hide=context.redactions,
+    )
+    changed = (
+        redacted_message != displayed_message
+        or context.command in redaction.SENSITIVE_OUTPUT_COMMANDS
+    )
+    return redacted_message, changed
 
 
 async def _record_bot_message(bot: Any, message: Any) -> None:
@@ -606,14 +608,10 @@ async def _record_bot_message(bot: Any, message: Any) -> None:
         or description.get("summary")
         or ""
     )
-    output_redacted = context.command in _SENSITIVE_COMMAND_OUTPUTS
-    if output_redacted:
-        displayed_message = "[sensitive command output redacted]"
-    else:
-        for secret in context.redactions:
-            if secret and secret in displayed_message:
-                displayed_message = displayed_message.replace(secret, "[redacted]")
-                output_redacted = True
+    displayed_message, output_redacted = _redact_displayed_message(
+        displayed_message,
+        context,
+    )
 
     reply_to_message = getattr(message, "reply_to_message", None)
     content = format_bot_event(
@@ -642,7 +640,14 @@ async def _record_bot_message(bot: Any, message: Any) -> None:
         await _persist_event(int(conversation_id), content, bot)
     if chat_type in ("group", "supergroup"):
         try:
-            await group_chat_history.log_group_message(message, chat.id)
+            await group_chat_history.log_group_message(
+                message,
+                chat.id,
+                sanitize=redaction.message_sanitizer(
+                    command=context.command,
+                    secrets_to_hide=context.redactions,
+                ),
+            )
         except Exception:
             logger.exception(
                 "记录群聊 Bot 消息失败: group_id=%s message_id=%s",
@@ -665,11 +670,10 @@ async def _record_callback_answer(
     if not displayed_message or context.user_id is None:
         return
 
-    output_redacted = False
-    for secret in context.redactions:
-        if secret and secret in displayed_message:
-            displayed_message = displayed_message.replace(secret, "[redacted]")
-            output_redacted = True
+    displayed_message, output_redacted = _redact_displayed_message(
+        displayed_message,
+        context,
+    )
 
     content = format_bot_event(
         chat_type=context.chat_type or "private",

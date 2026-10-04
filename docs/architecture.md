@@ -25,7 +25,7 @@ app → core
 | `bot_app.py` | 构建 Application，挂 `post_init` / `post_stop` |
 | `handler_registry.py` | 注册顺序的唯一来源（`REGISTRATION_STEPS`） |
 | `handler_groups.py` | 按功能分组调用各 feature 的 `setup_*`，不实现业务 |
-| `error_handler.py` | 全局错误回复，属于运行时而非某个功能 |
+| `error_handler.py` | 全局错误回复，属于运行时而非某个功能；日志与回复的脱敏规则见 [sensitive-data.md](sensitive-data.md) |
 
 `register_core_command_handlers` 仍在组装层直接 `add_handler`：那一组命令的注册顺序在历史上跨功能交错，
 而 `tests/test_handler_registry.py` 把最终顺序当作契约。要改成自注册必须先改这个契约。
@@ -41,6 +41,7 @@ app → core
 | `mysql_connection.py` | **兼容层**：把上面三者 re-export 出去，保留全项目既有的 import 路径 |
 | `telegram_history.py` | Telegram 可见事件 → 对话历史的记录层，只写库并发信号 |
 | `process_user.py` | 用户金币、好感、印象、抽奖 |
+| `redaction.py` / `command_privacy.py` | 敏感数据脱敏策略的单一来源、凭据类命令的私聊限制，契约见 [sensitive-data.md](sensitive-data.md) |
 | `telegram_utils.py` / `prompt_utils.py` / `token_estimator.py` / `archive_utils.py` / `command_cooldown.py` | 通用工具 |
 
 `mysql_connection` 是 core → core 的转发，没有分层危害，长期保留即可；新代码可以直接 import 对应领域模块。

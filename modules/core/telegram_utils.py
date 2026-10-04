@@ -10,6 +10,8 @@ from typing import Any, Awaitable, Callable, Optional
 import telegram.error
 from telegram.constants import ParseMode
 
+from .redaction import redact_text
+
 try:  # pragma: no cover - optional dependency
     import telegramify_markdown
 except ImportError:  # pragma: no cover
@@ -73,7 +75,7 @@ def telegram_error_summary(exc: object) -> str:
     if isinstance(exc, telegram.error.RetryAfter):
         retry_after = _retry_after_delay_seconds(exc) - TELEGRAM_RETRY_AFTER_PADDING_SECONDS
         return f"{exc.__class__.__name__}: retry after {retry_after:.1f}s"
-    return f"{exc.__class__.__name__}: {exc}"
+    return f"{exc.__class__.__name__}: {redact_text(exc)}"
 
 
 async def retry_telegram_send(

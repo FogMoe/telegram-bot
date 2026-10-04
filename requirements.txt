@@ -11,3 +11,4 @@ telegramify-markdown
 python-dotenv
 e2b
 trafilatura>=2.2.0
+argon2-cffi

@@ -7,6 +7,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 from datetime import date
 import time
 from core.command_cooldown import cooldown
+from core.redaction import report_error
 
 
 logger = logging.getLogger(__name__)
@@ -406,7 +407,8 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         'text': new_text
                     }
             except Exception as e:
-                await query.answer(f"购买刮刮乐时出错：{str(e)}", show_alert=True)
+                notice = report_error(logger, "购买刮刮乐时出错", e)
+                await query.answer(f"购买刮刮乐时出错，请稍后再试。\n{notice}", show_alert=True)
 
     elif query.data == "shop_huanle":
         # 购买欢乐彩：扣除1金币，根据概率获得奖励

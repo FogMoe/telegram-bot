@@ -6,6 +6,7 @@ from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 from core import process_user
 from core.command_cooldown import cooldown
+from core.redaction import report_error
 
 # 创建一个日志记录器
 logger = logging.getLogger(__name__)
@@ -112,10 +113,10 @@ async def sf_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         logger.info(f"用户 {user_name}(ID:{user_id}) 检测了链接: {share_url}")
         
     except Exception as e:
-        logger.error(f"检测链接时出错: {str(e)}")
+        notice = report_error(logger, "检测链接时出错", e)
         await processing_msg.edit_text(
             f"{user_mention} 检测链接时出错，请稍后再试。\n"
-            f"Error: {str(e)}"
+            f"{notice}"
         )
 
 async def check_share_link(share_url):

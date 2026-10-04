@@ -10,6 +10,7 @@ import time
 import threading
 from collections import defaultdict
 from core.command_cooldown import cooldown
+from core.redaction import report_error
 from core.config import BASE_DIR
 
 SPAM_FILE_PATH = BASE_DIR / "resources" / "spam_words.txt"
@@ -540,8 +541,8 @@ async def toggle_spam_control(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             await update.message.reply_text("垃圾信息过滤功能已 ***关闭***。", parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
-        logging.error(f"更新垃圾信息过滤状态时出错: {e}")
-        await update.message.reply_text(f"操作失败: {str(e)}")
+        notice = report_error(logging.getLogger(__name__), "更新垃圾信息过滤状态时出错", e)
+        await update.message.reply_text(f"操作失败，请稍后再试。\n{notice}")
 
 async def toggle_link_blocking(update: Update, chat_id: int, user_id: int, enable: bool):
     """开启或关闭群组链接过滤功能"""
@@ -582,8 +583,8 @@ async def toggle_link_blocking(update: Update, chat_id: int, user_id: int, enabl
             f"{'所有链接消息将被视为垃圾信息处理。' if enable else ''}"
         )
     except Exception as e:
-        logging.error(f"更新链接过滤状态时出错: {e}")
-        await update.message.reply_text(f"操作失败: {str(e)}")
+        notice = report_error(logging.getLogger(__name__), "更新链接过滤状态时出错", e)
+        await update.message.reply_text(f"操作失败，请稍后再试。\n{notice}")
 
 async def toggle_mention_blocking(update: Update, chat_id: int, user_id: int, enable: bool):
     """开启或关闭群组@mention过滤功能"""
@@ -624,8 +625,8 @@ async def toggle_mention_blocking(update: Update, chat_id: int, user_id: int, en
             f"{'所有包含@mention的消息将被自动删除。' if enable else ''}"
         )
     except Exception as e:
-        logging.error(f"更新@mention过滤状态时出错: {e}")
-        await update.message.reply_text(f"操作失败: {str(e)}")
+        notice = report_error(logging.getLogger(__name__), "更新@mention过滤状态时出错", e)
+        await update.message.reply_text(f"操作失败，请稍后再试。\n{notice}")
 
 async def add_custom_spam_keyword(update: Update, chat_id: int, user_id: int, keyword: str):
     """添加自定义垃圾词"""
@@ -682,8 +683,8 @@ async def add_custom_spam_keyword(update: Update, chat_id: int, user_id: int, ke
         else:
             await update.message.reply_text(f"已添加自定义垃圾词: '{keyword}'")
     except Exception as e:
-        logging.error(f"添加自定义垃圾词时出错: {e}")
-        await update.message.reply_text(f"添加自定义垃圾词时出错: {str(e)}")
+        notice = report_error(logging.getLogger(__name__), "添加自定义垃圾词时出错", e)
+        await update.message.reply_text(f"添加自定义垃圾词时出错，请稍后再试。\n{notice}")
 
 async def del_custom_spam_keyword(update: Update, chat_id: int, keyword: str):
     """删除自定义垃圾词"""
@@ -704,8 +705,8 @@ async def del_custom_spam_keyword(update: Update, chat_id: int, keyword: str):
         else:
             await update.message.reply_text(f"未找到自定义垃圾词: '{keyword}'")
     except Exception as e:
-        logging.error(f"删除自定义垃圾词时出错: {e}")
-        await update.message.reply_text(f"删除自定义垃圾词时出错: {str(e)}")
+        notice = report_error(logging.getLogger(__name__), "删除自定义垃圾词时出错", e)
+        await update.message.reply_text(f"删除自定义垃圾词时出错，请稍后再试。\n{notice}")
 
 async def list_custom_spam_keywords(update: Update, chat_id: int):
     """列出群组的自定义垃圾词"""
@@ -731,8 +732,8 @@ async def list_custom_spam_keywords(update: Update, chat_id: int):
         
         await update.message.reply_text(message)
     except Exception as e:
-        logging.error(f"获取自定义垃圾词列表时出错: {e}")
-        await update.message.reply_text(f"获取自定义垃圾词列表时出错: {str(e)}")
+        notice = report_error(logging.getLogger(__name__), "获取自定义垃圾词列表时出错", e)
+        await update.message.reply_text(f"获取自定义垃圾词列表时出错，请稍后再试。\n{notice}")
 
 async def show_spam_control_help(update: Update):
     """显示垃圾信息过滤功能的帮助信息"""

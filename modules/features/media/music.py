@@ -7,6 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CommandHandler, ContextTypes, CallbackQueryHandler
 from core import process_user
 from core.command_cooldown import cooldown
+from core.redaction import report_error
 from collections import defaultdict
 
 # 创建一个日志记录器
@@ -302,10 +303,10 @@ async def music_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.info(f"用户 {user_name}(ID:{user_id}) 搜索了歌曲: {song_name}")
         
     except Exception as e:
-        logger.error(f"搜索歌曲信息时出错: {str(e)}")
+        notice = report_error(logger, "搜索歌曲信息时出错", e)
         await processing_msg.edit_text(
             f"{user_mention} 搜索歌曲信息时出错，请稍后再试。\n"
-            f"Error: {str(e)}"
+            f"{notice}"
         )
 
 async def display_songs_page(update, context, message, songs, song_name, platform, page, total_pages, user_mention=None):
@@ -512,10 +513,10 @@ async def music_platform_callback(update: Update, context: ContextTypes.DEFAULT_
         logger.info(f"用户 {user_name}(ID:{user_id}) 在 {platform} 平台搜索了歌曲: {song_name}")
         
     except Exception as e:
-        logger.error(f"搜索歌曲信息时出错: {str(e)}")
+        notice = report_error(logger, "搜索歌曲信息时出错", e)
         await query.edit_message_text(
             f"搜索歌曲信息时出错，请稍后再试。\n"
-            f"Error: {str(e)}"
+            f"{notice}"
         )
     finally:
         # 无论成功与否，都清理请求记录
