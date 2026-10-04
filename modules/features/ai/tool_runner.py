@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Opt
 
 from pydantic import ValidationError
 
-from core import config
+from core import ai_providers, config
 from core.redaction import describe_exception, log_exception, redact_text
 
 from .errors import is_retryable_completion_error
@@ -292,7 +292,8 @@ def _resolve_assistant_message(
     choices = response.choices
     assistant_message = choices[0].message
     raw_tool_calls = getattr(assistant_message, "tool_calls", None)
-    if raw_tool_calls or provider.strip().casefold() != "fogmoe":
+    provider_spec = ai_providers.lookup(provider)
+    if raw_tool_calls or provider_spec is None or not provider_spec.merges_split_tool_call_choices:
         return assistant_message, raw_tool_calls
 
     # Temporary compatibility for BerriAI/litellm#35444. Remove after the

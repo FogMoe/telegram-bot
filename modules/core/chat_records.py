@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from . import config
+from . import ai_providers, config
 from .litellm_models import litellm_model_name
 from .prompt_utils import format_metadata_attrs, xml_escape
 from .sql import (
@@ -48,23 +48,8 @@ COIN_SERVICE_STATE_SUSPENDED = "suspended"
 COIN_SERVICE_STATE_RESUMED = "resumed"
 
 
-def _configured_chat_models_for_provider(provider: str) -> list[str]:
-    provider_name = (provider or "").strip().lower()
-    if provider_name == "openai":
-        return [config.OPENAI_CHAT_MODEL]
-    if provider_name == "openrouter":
-        return [config.OPENROUTER_CHAT_MODEL]
-    if provider_name == "fogmoe":
-        return [config.FOGMOE_CHAT_MODEL]
-    if provider_name == "azure":
-        return [config.AZURE_OPENAI_CHAT_MODEL]
-    if provider_name == "gemini":
-        return [config.GEMINI_CHAT_MODEL, config.GEMINI_CHAT_FALLBACK_MODEL]
-    if provider_name == "siliconflow":
-        return [config.SILICONFLOW_CHAT_MODEL]
-    if provider_name in {"zhipu", "zai"}:
-        return [config.ZHIPU_CHAT_MODEL]
-    return []
+def _configured_chat_models_for_provider(provider: str) -> list[str | None]:
+    return ai_providers.configured_models(provider, "chat")
 
 
 def _chat_token_count_model() -> str | None:

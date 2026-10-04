@@ -2,9 +2,10 @@ import asyncio
 
 import pytest
 
-from features.ai import router
+from core import config
+from features.ai import chat_provider, router
 from features.ai.context_budget import ContextBudgetExceededError
-from features.ai.providers import gemini
+from features.ai.errors import SafetyBlockError
 from features.ai.types import PartialAIResponseError
 
 
@@ -15,6 +16,16 @@ def clear_provider_circuit_state():
     yield
     router._provider_failure_streaks.clear()
     router._provider_circuit_open_until.clear()
+
+
+def use_chat_services(monkeypatch, services):
+    """`services` 的键顺序就是 AI_CHAT_ORDER；各 provider 的入口换成对应的替身。"""
+    monkeypatch.setattr(config, "AI_SERVICE_ORDER", list(services))
+    monkeypatch.setattr(
+        router,
+        "run_chat_provider",
+        lambda name, *args, **kwargs: services[name](*args, **kwargs),
+    )
 
 
 def test_get_ai_response_retries_image_messages_as_text(monkeypatch):
@@ -98,10 +109,8 @@ def test_text_only_chat_provider_uses_vision_text_fallback_messages(monkeypatch)
         calls.append(messages)
         return "ok", []
 
-    monkeypatch.setattr(router, "AI_SERVICE_ORDER", ["siliconflow"])
-    monkeypatch.setattr(
-        router,
-        "AI_SERVICE_MAP",
+    use_chat_services(
+        monkeypatch,
         {"siliconflow": fake_service},
     )
     monkeypatch.setattr(
@@ -151,8 +160,7 @@ def test_vision_capable_chat_provider_keeps_multimodal_messages(monkeypatch):
         calls.append(messages)
         return "ok", []
 
-    monkeypatch.setattr(router, "AI_SERVICE_ORDER", ["openai"])
-    monkeypatch.setattr(router, "AI_SERVICE_MAP", {"openai": fake_service})
+    use_chat_services(monkeypatch, {"openai": fake_service})
     monkeypatch.setattr(router, "chat_service_supports_vision", lambda service_name: True)
 
     response = asyncio.run(router.get_ai_response(image_messages, user_id=123))
@@ -228,10 +236,8 @@ def test_open_provider_circuit_skips_to_next_service(monkeypatch):
         calls.append("siliconflow")
         return "ok", []
 
-    monkeypatch.setattr(router, "AI_SERVICE_ORDER", ["gemini", "siliconflow"])
-    monkeypatch.setattr(
-        router,
-        "AI_SERVICE_MAP",
+    use_chat_services(
+        monkeypatch,
         {
             "gemini": failing_service,
             "siliconflow": fallback_service,
@@ -260,8 +266,7 @@ def test_partial_timeout_logs_warning_without_traceback(monkeypatch, caplog):
                 [{"type": "tool_result", "tool_name": "advisor"}],
             ) from exc
 
-    monkeypatch.setattr(router, "AI_SERVICE_ORDER", ["gemini"])
-    monkeypatch.setattr(router, "AI_SERVICE_MAP", {"gemini": timed_out_service})
+    use_chat_services(monkeypatch, {"gemini": timed_out_service})
 
     with caplog.at_level("WARNING"):
         response = asyncio.run(router.get_ai_response([], user_id=123))
@@ -297,10 +302,8 @@ def test_context_budget_error_stops_provider_fallback(monkeypatch):
         calls.append("gemini")
         return "unexpected", []
 
-    monkeypatch.setattr(router, "AI_SERVICE_ORDER", ["openai", "gemini"])
-    monkeypatch.setattr(
-        router,
-        "AI_SERVICE_MAP",
+    use_chat_services(
+        monkeypatch,
         {"openai": oversized_service, "gemini": fallback_service},
     )
 
@@ -331,8 +334,7 @@ def test_context_budget_error_after_tool_result_preserves_tool_logs(monkeypatch)
         except ContextBudgetExceededError as exc:
             raise PartialAIResponseError(str(exc), tool_logs) from exc
 
-    monkeypatch.setattr(router, "AI_SERVICE_ORDER", ["openai"])
-    monkeypatch.setattr(router, "AI_SERVICE_MAP", {"openai": oversized_service})
+    use_chat_services(monkeypatch, {"openai": oversized_service})
 
     response = asyncio.run(router.get_ai_response([], user_id=123))
 
@@ -340,25 +342,61 @@ def test_context_budget_error_after_tool_result_preserves_tool_logs(monkeypatch)
     assert response[1] == tool_logs
 
 
-def test_gemini_context_budget_error_skips_model_fallback(monkeypatch):
+def test_safety_block_falls_through_to_next_service_for_gemini(monkeypatch):
     calls = []
-    monkeypatch.setattr(gemini.config, "GEMINI_CHAT_MODEL", "primary-model")
-    monkeypatch.setattr(
-        gemini.config,
-        "GEMINI_CHAT_FALLBACK_MODEL",
-        "fallback-model",
-    )
 
-    def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
-        calls.append(model)
-        raise ContextBudgetExceededError(150_001, 150_000)
+    def blocked_service(messages, user_id, tool_context=None, visible_content_handler=None):
+        calls.append("gemini")
+        raise SafetyBlockError("blocked by safety")
 
-    monkeypatch.setattr(gemini, "run_tool_loop", fake_run_tool_loop)
+    def next_service(messages, user_id, tool_context=None, visible_content_handler=None):
+        calls.append("openai")
+        return "ok", []
 
-    with pytest.raises(ContextBudgetExceededError):
-        gemini.get_ai_response([], user_id=123)
+    use_chat_services(monkeypatch, {"gemini": blocked_service, "openai": next_service})
 
-    assert calls == ["primary-model"]
+    assert asyncio.run(router.get_ai_response([], user_id=123)) == ("ok", [])
+    assert calls == ["gemini", "openai"]
+
+
+def test_safety_block_from_other_providers_is_not_swallowed(monkeypatch):
+    def blocked_service(messages, user_id, tool_context=None, visible_content_handler=None):
+        raise SafetyBlockError("blocked by safety")
+
+    use_chat_services(monkeypatch, {"openai": blocked_service})
+
+    with pytest.raises(SafetyBlockError):
+        asyncio.run(router.get_ai_response([], user_id=123))
+
+
+def test_unknown_provider_in_chat_order_counts_as_a_failure_and_falls_back(monkeypatch):
+    monkeypatch.setattr(config, "AI_SERVICE_ORDER", ["typo-provider", "openai"])
+    monkeypatch.setattr(config, "OPENAI_CHAT_MODEL", "openai-chat")
+
+    def fake_tool_loop(provider, model, messages, tool_context, **kwargs):
+        return f"{provider}:{model}", []
+
+    monkeypatch.setattr(chat_provider, "run_tool_loop", fake_tool_loop)
+
+    assert asyncio.run(router.get_ai_response([], user_id=123)) == ("openai:openai-chat", [])
+    assert router._provider_failure_streaks["typo-provider"]
+
+
+def test_chat_order_comes_from_the_active_settings(monkeypatch):
+    seen = []
+
+    def failing_then_ok(name, *args, **kwargs):
+        seen.append(name)
+        if name == "azure":
+            raise RuntimeError("azure down")
+        return "ok", []
+
+    monkeypatch.setattr(router, "run_chat_provider", failing_then_ok)
+
+    with config.override_settings(AI_CHAT_ORDER="azure, openai"):
+        assert asyncio.run(router.get_ai_response([], user_id=123)) == ("ok", [])
+
+    assert seen == ["azure", "openai"]
 
 
 def test_runtime_error_cause_only_classifies_fixed_runtime_messages():

@@ -4,53 +4,11 @@ from typing import Any, Dict, List
 import litellm
 from litellm.llms.custom_httpx.http_handler import HTTPHandler
 
-from core import config
+from core import ai_providers, config
 from core.litellm_models import litellm_model_name, normalize_provider
 from .context_budget import enforce_messages_context_budget
-from .litellm_message_sanitizer import (
-    sanitize_message_for_provider,
-    sanitize_messages_for_provider,
-    sanitize_tool_call_for_provider,
-)
-from .litellm_provider_config import (
-    azure_api_base,
-    gemini_native_api_base,
-    openai_compatible_api_base,
-    provider_params,
-)
-
-
-def _sanitize_tool_call_for_provider(
-    tool_call: Dict[str, Any],
-    provider: str,
-) -> Dict[str, Any]:
-    return sanitize_tool_call_for_provider(tool_call, provider)
-
-
-def _sanitize_message_for_provider(
-    message: Dict[str, Any],
-    provider: str,
-) -> Dict[str, Any]:
-    return sanitize_message_for_provider(message, provider)
-
-
-def _sanitize_messages_for_provider(
-    messages: List[Dict[str, Any]],
-    provider: str,
-) -> List[Dict[str, Any]]:
-    return sanitize_messages_for_provider(messages, provider)
-
-
-def _azure_api_base() -> str:
-    return azure_api_base()
-
-
-def _openai_compatible_api_base(value: str) -> str:
-    return openai_compatible_api_base(value)
-
-
-def _gemini_native_api_base(value: str) -> str:
-    return gemini_native_api_base(value)
+from .litellm_message_sanitizer import sanitize_messages_for_provider
+from .litellm_provider_config import provider_params
 
 
 def _provider_params(provider: str) -> Dict[str, Any]:
@@ -68,14 +26,16 @@ class _GeminiNativeHTTPHandler(HTTPHandler):
         return super().post(*args, json=json, **kwargs)
 
 
-def _needs_gemini_native_http_compat(
-    provider: str,
+def _needs_native_http_compat(
+    spec: ai_providers.ProviderSpec,
+    wire: ai_providers.WireProtocol,
     messages: List[Dict[str, Any]],
 ) -> bool:
+    """自定义的原生端点只认 `systemInstruction`，请求里带 system 消息时需要改名的 HTTP 客户端。"""
+    api_base_key = spec.credentials.api_base
     return (
-        provider == "gemini"
-        and bool(config.GEMINI_API_BASE)
-        and not config.GEMINI_OPENAI_COMPATIBLE
+        wire.camel_case_system_instruction
+        and bool(api_base_key and ai_providers.read_setting(None, api_base_key))
         and any(message.get("role") == "system" for message in messages)
     )
 
@@ -113,14 +73,12 @@ def create_chat_completion(
         model=model,
         tools=request_kwargs.get("tools"),
     )
-    history_provider = (
-        "openai"
-        if litellm_provider == "gemini" and config.GEMINI_OPENAI_COMPATIBLE
-        else litellm_provider
-    )
-    provider_messages = _sanitize_messages_for_provider(
+    spec = ai_providers.require(litellm_provider)
+    wire = spec.wire_protocol_for()
+    provider_messages = sanitize_messages_for_provider(
         budget_result.messages,
-        history_provider,
+        litellm_provider,
+        protocol=wire,
     )
     request_kwargs.setdefault("drop_params", True)
 
@@ -128,9 +86,8 @@ def create_chat_completion(
     logging.debug("Calling LiteLLM provider=%s model=%s", litellm_provider, litellm_model)
 
     compat_client = None
-    if (
-        "client" not in request_kwargs
-        and _needs_gemini_native_http_compat(litellm_provider, provider_messages)
+    if "client" not in request_kwargs and _needs_native_http_compat(
+        spec, wire, provider_messages
     ):
         compat_client = _GeminiNativeHTTPHandler(
             timeout=request_kwargs.get("timeout"),

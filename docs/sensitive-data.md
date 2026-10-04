@@ -28,7 +28,7 @@
 | 个人历史：bot 回复与回调提示 | `_record_bot_message`、`_record_callback_answer` | `redact_output`：替换该命令的参数原值和自由文本凭据；`create_code` 的回复整体替换为占位文本 |
 | 群聊历史：用户命令与 bot 回复 | `core/group_chat_history.py` 的 `log_group_message` | 所有调用方默认经过 `message_sanitizer`；bot 回复路径带上命令上下文再清洗 |
 | 对话历史：工具结果与工具调用参数 | `features/ai/tool_history.py` 的 `tool_logs_to_record_entries` | 写入前 `redact_text`；工具调用参数里的 `/charge` 等命令文本同样处理 |
-| 对话历史：AI 最终回复 | `features/conversation/handlers.py` | 写入前 `redact_text` |
+| 对话历史：AI 最终回复 | `features/conversation/turn.py` 的 `ConversationTurn._record_output` | 写入前 `redact_text` |
 | 诊断日志 | `core/bot_logging.py` 的 `configure_logging` | `RedactingFilter` 挂在根 logger 的所有 handler 上，处理格式化后的消息和异常 traceback，对第三方库的日志同样生效 |
 | 代码主动记录的异常 | 各模块 | 用 `log_exception` 或 `report_error`，细节在写入日志前已脱敏，不依赖 handler 上是否有 filter |
 | 用户与工具可见的错误 | `app/error_handler.py`、各 handler 的 `except` 分支、`features/ai/tools/` | 只返回异常类型加脱敏、截断的概要，或通用文案加错误参考 ID，不回显原始异常文本 |

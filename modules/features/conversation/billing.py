@@ -11,6 +11,10 @@ op_key 规则（`message_op_key`）：
 - 拿不到 message_id（理论上不会出现）：`chat:<chat_id>:update:<update_id>`
 - 连 update_id 也没有：一次性随机 key，没有重放保护
 
+价格（`text_message_cost`、`MEDIA_COST`）：图片和贴纸固定 5 个币；文字按长度分档，
+不超过 100 字符 1 个币，101-500 为 2，501-1000 为 3，1001-2000 为 4，2001-4096 为 5；
+超过 `MAX_TEXT_LENGTH`（4096）的消息不处理、不扣费。
+
 同一个 Telegram update 被重复投递时身份相同，`debit` 返回 `applied=False`：这条消息已经收过
 钱，不再扣费、不再贡献奖池，这一轮仍然继续往下走（重复投递几乎只发生在进程中途被杀之后，
 这时用户付了钱却没有得到回复，继续处理才是对的）。不同的消息、不同轮次的 op_key 各不相同，
@@ -29,6 +33,19 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from core import balance, mysql_connection, stake_reward_pool
 
 CHAT_REASON = "ai_chat"
+
+MEDIA_COST = 5
+MAX_TEXT_LENGTH = 4096
+# (长度下限（不含）, 价格)，从高到低；不超过最低一档的文字消息 1 个币。
+_TEXT_COST_TIERS = ((2000, 5), (1000, 4), (500, 3), (100, 2))
+
+
+def text_message_cost(length: int) -> int:
+    """文字消息按长度阶梯计费。调用方应先用 `MAX_TEXT_LENGTH` 拒绝超长消息。"""
+    for threshold, cost in _TEXT_COST_TIERS:
+        if length > threshold:
+            return cost
+    return 1
 
 
 @dataclass(frozen=True, slots=True)

@@ -3,37 +3,17 @@ import logging
 import time
 from typing import Dict, Optional
 
-from core import config
+from core import ai_providers
 
 from .chat_capabilities import chat_model_for_service, chat_service_supports_vision
+from .chat_provider import run_chat_provider
 from .context_budget import ContextBudgetExceededError
 from .message_content import messages_have_images, strip_image_content
+from .provider_resolver import get_provider_order_for_task
 from .tools import clear_tool_request_context, cleanup_linux_sandbox, set_tool_request_context
 from .errors import SafetyBlockError, is_timeout_error
-from .providers import (
-    azure,
-    fogmoe,
-    gemini,
-    openai,
-    openrouter,
-    siliconflow,
-    zhipu,
-)
 from .runtime import EXECUTOR
 from .types import AIResponse, PartialAIResponseError, VisibleContentHandler
-
-AI_SERVICE_MAP = {
-    "openai": openai.get_ai_response,
-    "openrouter": openrouter.get_ai_response,
-    "fogmoe": fogmoe.get_ai_response,
-    "gemini": gemini.get_ai_response,
-    "azure": azure.get_ai_response,
-    "siliconflow": siliconflow.get_ai_response,
-    "zhipu": zhipu.get_ai_response,
-    "zai": zhipu.get_ai_response,
-}
-
-AI_SERVICE_ORDER = config.AI_SERVICE_ORDER
 
 AI_PROVIDER_CIRCUIT_FAILURE_THRESHOLD = 3
 AI_PROVIDER_CIRCUIT_WINDOW_SECONDS = 5 * 60
@@ -147,7 +127,8 @@ def _call_service_with_context(
     request_context.setdefault("user_id", user_id)
     set_tool_request_context(request_context)
     try:
-        return AI_SERVICE_MAP[service_name](
+        return run_chat_provider(
+            service_name,
             messages,
             user_id,
             tool_context,
@@ -251,7 +232,7 @@ async def _try_ai_services(
     last_error = None
     loop = asyncio.get_running_loop()
 
-    for service_name in AI_SERVICE_ORDER:
+    for service_name in get_provider_order_for_task("chat"):
         if _provider_circuit_is_open(service_name):
             logging.warning("%s 当前处于熔断冷却中，跳过调用", service_name)
             continue
@@ -281,8 +262,12 @@ async def _try_ai_services(
                     service_name,
                 )
                 return ("", _visible_content_events(visible_content_handler)), None
-            if service_name == "gemini":
-                logging.warning("Gemini triggered safety block, trying next service")
+            provider_spec = ai_providers.lookup(service_name)
+            if provider_spec is not None and provider_spec.safety_blocks_fall_through:
+                logging.warning(
+                    "%s triggered safety block, trying next service",
+                    provider_spec.display_name,
+                )
                 last_error = SafetyBlockError("SafetyBlockError")
                 continue
             raise
