@@ -138,6 +138,15 @@ await balance.credit(connection, user_id, 50, op_key=balance.make_op_key("topup"
 | BTC 预测：下注 / 中奖 / 过期退款 | `btc:<uid>:<开始时间>:bet` / `:win` / `:expired`（见下） | `btc_bet` / `btc_win` / `btc_expired`，退款 op_key 为 `refund:btc:<uid>:<开始时间>:bet` |
 | `/swap` 兑换 | `swap:<chat_id>:<message_id>` | `swap` |
 | AI 善意赠币 | `kindness:<收款人 uid>:<上一次赠币时间，从未赠过为 never>` | `kindness` |
+| 多人下注，每人每轮一笔 | `gamble:<gamble_rounds.id>:bet:<uid>`，同时记在 `gamble_bets.op_key` | `gamble_bet`，中奖者账户不存在而改为全额退款时 `gamble_refund` |
+| 多人下注的奖金 | `gamble:<round_id>:payout` | `gamble_win` |
+| 石头剪刀布入场费 | `rps:<rps_games.id>:entry:<uid>` | `rps_entry`，退款 `rps_draw`（平局）、`rps_timeout`（超时）、`rps_failed`（创建失败） |
+| 石头剪刀布奖金 | `rps:<game_id>:win` | `rps_win` |
+| 骰宝，每个面板消息一局 | `sicbo:<chat_id>:<message_id>:bet` 与 `sicbo:<chat_id>:<message_id>:win` | `sicbo_bet`、`sicbo_win` |
+| 御神签，每人每天一次 | `omikuji:<uid>:<日期>` | `omikuji` |
+| RPG 回血 | `rpg:heal:<chat_id>:<message_id>`（命令消息） | `rpg_heal` |
+| RPG 击败怪物 | `rpg:monster:<chat_id>:<message_id>:reward` | `rpg_monster` |
+| RPG 玩家对战 | `rpg:pvp:<chat_id>:<message_id>:loss`（败者）与 `rpg:pvp:<chat_id>:<message_id>:win`（胜者） | `rpg_pvp_loss`、`rpg_pvp_win` |
 
 时间戳一律是 `YYYYMMDDTHHMMSS`。几条身份的来由：
 
@@ -149,8 +158,8 @@ await balance.credit(connection, user_id, 50, op_key=balance.make_op_key("topup"
 - 抽奖、善意赠币的资格窗口只随着时间戳写入而前进，所以 op_key 由「上一次的时间戳」派生（与 `lottery:` 同理）。
 - 商店以按钮回调的 query id 为身份：同一次点击被重复投递不会重复扣款与发放，两次不同的点击是两次购买。
 
-游戏用持久化的轮次或对局 id（如 `rps:<game_id>:entry:<uid>`、`gamble:<round_id>:bet:<uid>`），
-命名由游戏工作流补充到下面的清单。
+游戏用持久化的轮次或对局 id（如 `rps:<game_id>:entry:<uid>`、`gamble:<round_id>:bet:<uid>`）。游戏状态的持久化与重启恢复见
+[job-recovery.md](job-recovery.md) 的「游戏状态」。
 
 ## 事务所有权
 
@@ -216,7 +225,15 @@ await balance.credit(connection, user_id, 50, op_key=balance.make_op_key("topup"
 
 ### 游戏（`features/games/`）
 
-由游戏工作流填写：每个入口的文件、操作、op_key 与事务边界。
+| 文件 | 操作 | op_key | 事务边界 |
+|---|---|---|---|
+| `games/gamble_rounds.py` | 下注 | `gamble:<round_id>:bet:<uid>` | 锁轮次行 → 校验面板与开放状态 → 登记 `gamble_bets` → 扣款，同事务 |
+| `games/gamble_rounds.py` | 结算 / 中奖者缺失时退款 | `gamble:<round_id>:payout` / `refund:gamble:<round_id>:bet:<uid>` | 锁轮次行 → 读下注 → 入账或逐笔退款 → 轮次状态转换，同事务 |
+| `games/rps_games.py` | 建局与双方入场费 | `rps:<game_id>:entry:<uid>` | 按 id 升序锁双方 user 行 → 建局 → 两笔扣款，同事务 |
+| `games/rps_games.py` | 结算 / 平局、超时、创建失败退款 | `rps:<game_id>:win` / `refund:rps:<game_id>:entry:<uid>` | 锁对局行，状态仍为 `choosing` 才转换，余额变动同事务 |
+| `games/sicbo.py` | 下注与奖金 | `sicbo:<chat_id>:<message_id>:bet` / `:win` | 扣款与入账同事务 |
+| `games/omikuji.py` | 抽签扣费 | `omikuji:<uid>:<日期>` | 锁用户 → 检查当天记录 → 扣费 → 登记签文，同事务 |
+| `games/rpg/settlement.py` | 回血 / 怪物奖励 / PvP | `rpg:heal:…`、`rpg:monster:…:reward`、`rpg:pvp:…:loss` / `:win` | 余额变动与角色状态同事务；PvP 双方同事务 |
 
 ## 账本与对账
 

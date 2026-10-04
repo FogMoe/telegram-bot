@@ -7,12 +7,13 @@ from mysql_support import (
     execute,
     fetch,
     fetch_scalar,
+    head_revision,
     run,
     upgrade,
 )
 
 REV_0018 = "0018_privacy_retention"
-HEAD = "0020_job_claims"
+HEAD = head_revision()
 
 
 def columns(url: str, table: str) -> list[str]:

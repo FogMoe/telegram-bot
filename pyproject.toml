@@ -72,6 +72,10 @@ files = [
     "modules/features/conversation/handlers.py",
     "modules/app/smoke_check.py",
     "modules/features/ai/job_claims.py",
+    "modules/features/games/gamble_rounds.py",
+    "modules/features/games/rps_games.py",
+    "modules/features/games/panels.py",
+    "modules/features/games/rpg/settlement.py",
 ]
 # 其余模块只用来取类型信息，不报告它们自己的错误。
 follow_imports = "silent"

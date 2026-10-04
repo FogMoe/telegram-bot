@@ -60,7 +60,7 @@ app → core
 | `economy/` | 金币相关：`/lottery` `/give` `/rich`、商店、签到、质押、充值 |
 | `crypto/` | 行情、图表、预测、swap，以及管理员的行情监控命令 |
 | `admin/` | 开发者命令与 `/admin_announce` |
-| `games/` `media/` `moderation/` | 玩法、媒体、群管 |
+| `games/` `media/` `moderation/` | 玩法、媒体、群管；游戏里持有金币的状态（下注轮次、石头剪刀布对局）持久化在 MySQL，恢复策略见 [job-recovery.md](job-recovery.md) 的「游戏状态」 |
 
 `features/conversation/` 内部：
 
