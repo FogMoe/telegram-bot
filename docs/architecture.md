@@ -42,7 +42,8 @@ app → core
 | `migration_support.py` | Alembic 迁移的支撑代码：数据库 URL 优先级、版本表宽度、可重入 DDL 助手，见 [database-migrations.md](database-migrations.md) |
 | `mysql_connection.py` | **兼容层**：把上面三者 re-export 出去，保留全项目既有的 import 路径 |
 | `telegram_history.py` | Telegram 可见事件 → 对话历史的记录层，只写库并发信号 |
-| `process_user.py` | 用户金币、好感、印象、抽奖 |
+| `balance.py` / `stake_reward_pool.py` | 金币与奖池变动的唯一入口：带 op_key 的幂等操作和账本，契约见 [balance-service.md](balance-service.md) |
+| `process_user.py` | 用户好感、印象、抽奖；旧的金币函数暂时保留并委托给余额服务（待移除） |
 | `redaction.py` / `command_privacy.py` | 敏感数据脱敏策略的单一来源、凭据类命令的私聊限制，契约见 [sensitive-data.md](sensitive-data.md) |
 | `telegram_utils.py` / `prompt_utils.py` / `token_estimator.py` / `archive_utils.py` / `command_cooldown.py` | 通用工具 |
 
@@ -68,6 +69,7 @@ app → core
 | `lifecycle.py` | `post_init` 与 bot 身份缓存 |
 | `triggers.py` | 群聊里是否唤起 AI 的判断 |
 | `batching.py` | 私聊连发消息的批处理窗口 |
+| `billing.py` | 一轮对话的扣费：每条消息按持久身份记一笔账，整轮同一个事务，奖池贡献同事务 |
 | `messages.py` | 消息 → AI 输入的整理与编辑去重 |
 | `clear.py` | `/clear` |
 | `history_hooks.py` | 注入 core 的历史回调，并注册历史入口 handler |

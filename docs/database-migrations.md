@@ -73,6 +73,10 @@ SELECT version_num FROM alembic_version;
   - 删除 `web_password` 中不以 `$argon2id$` 开头的行。受影响的用户用 `/webpassword` 重新设置。
   - 把 `chat_records_group` 里 `/charge`、`/webpassword`（含 `/charge@BotName`，命令名大小写不敏感）的参数替换成 `[redacted]`，命令本身保留。文本消息直接处理；非文本消息先解 base64、脱敏、再编码回去。
   - 降级不会恢复被删除或脱敏的数据。
+- **0019 `coin_ledger`。** 新建 `coin_ledger`、`stake_pool_ledger`、`topup_requests`，不改动已有表。
+  新版本的所有余额操作都依赖这三张表，所以先迁移、再启动新版本。账本从升级后开始记录，
+  升级前的余额由每个用户的第一行隐含，对账方法见 [balance-service.md](balance-service.md)。
+  升级前发出的管理员充值按钮会失效：点击只提示让用户重新发起，不会入账。
 
 0018 删除的是旧哈希。先部署会写入 Argon2id 的代码，再执行 0018；否则迁移之后用旧代码设置的 SHA-256 哈希会再次留在库里。
 
@@ -150,6 +154,7 @@ MySQL 的 DDL 会隐式提交。迁移中途失败时，已执行的 DDL 保留�
 | `0016_add_ai_schedule_daily_limit` | `user.ai_schedule_trigger_date` / `ai_schedule_trigger_count` | — |
 | `0017_schema_contracts` | 见「升级后检查」 | 重复数据的对账见「备份表的处置」 |
 | `0018_privacy_retention` | 无新对象 | 删除旧密码哈希、脱敏群聊历史（SQL 在迁移文件里） |
+| `0019_coin_ledger` | `coin_ledger`、`stake_pool_ledger`、`topup_requests` | — |
 
 ## 离线 SQL
 

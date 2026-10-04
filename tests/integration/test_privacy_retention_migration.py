@@ -1,4 +1,4 @@
-"""0018_privacy_retention：旧的 web 密码哈希与群聊历史里的敏感命令参数。"""
+"""0019_coin_ledger：旧的 web 密码哈希与群聊历史里的敏感命令参数。"""
 
 import base64
 
@@ -6,7 +6,7 @@ import pytest
 from mysql_support import current_versions, execute, fetch, upgrade
 
 REV_0017 = "0017_schema_contracts"
-HEAD = "0018_privacy_retention"
+HEAD = "0019_coin_ledger"
 
 ARGON2_HASH = "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$aGFzaGhhc2hoYXNoaGFzaA"
 SHA256_HEX = "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"

@@ -40,7 +40,7 @@ def _offline_sql(revision_range: str) -> str:
 def test_migration_graph_has_a_single_head():
     script = ScriptDirectory.from_config(_config())
 
-    assert script.get_heads() == ["0018_privacy_retention"]
+    assert script.get_heads() == ["0019_coin_ledger"]
 
 
 def test_every_revision_id_fits_the_version_column():
@@ -61,7 +61,7 @@ def test_offline_sql_from_base_creates_a_wide_version_table():
     # 超长 revision 完整写入，没有被截断。
     assert "0014_add_ai_user_diary_page_index" in sql
     assert "0002_add_chat_records_last_rotated_at" in sql
-    assert "UPDATE alembic_version SET version_num='0018_privacy_retention'" in sql
+    assert "UPDATE alembic_version SET version_num='0019_coin_ledger'" in sql
 
 
 def test_offline_sql_from_a_revision_widens_the_existing_version_table_first():
@@ -78,6 +78,15 @@ def test_offline_sql_contains_the_schema_contract_ddl():
     assert "AUTO_INCREMENT PRIMARY KEY" in sql
     assert "uq_chat_records_conversation_id" in sql
     assert "ADD PRIMARY KEY (`user_id`)" in sql
+
+
+def test_offline_sql_contains_the_ledger_tables():
+    sql = _offline_sql("0018_privacy_retention:head")
+
+    assert "CREATE TABLE IF NOT EXISTS `coin_ledger`" in sql
+    assert "UNIQUE KEY `uq_coin_ledger_op_key` (`op_key`)" in sql
+    assert "CREATE TABLE IF NOT EXISTS `stake_pool_ledger`" in sql
+    assert "CREATE TABLE IF NOT EXISTS `topup_requests`" in sql
 
 
 class TestResolveDatabaseUrl:

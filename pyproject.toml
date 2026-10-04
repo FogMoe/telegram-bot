@@ -56,6 +56,9 @@ explicit_package_bases = true
 files = [
     "modules/core/sql.py",
     "modules/core/db.py",
+    "modules/core/balance.py",
+    "modules/core/stake_reward_pool.py",
+    "modules/features/conversation/billing.py",
     "modules/app/smoke_check.py",
 ]
 # 其余模块只用来取类型信息，不报告它们自己的错误。
