@@ -63,7 +63,9 @@
 
 ### 测试不读取 `.env`
 
-`core/config.py` 在导入时读取配置，`tests/conftest.py` 会在导入项目模块之前设置 `BOT_ENV_FILE=`（空值），所以 pytest 默认不读取仓库根的 `.env`，只使用进程环境变量和代码默认值。需要让测试读取指定文件时，自己设置 `BOT_ENV_FILE=<路径>`。
+`core/config.py` 在导入时读取配置，`tests/conftest.py` 会在导入项目模块之前设置 `BOT_ENV_FILE=`（空值），所以 pytest 默认不读取仓库根的 `.env`；随后把生效配置换成只含代码默认值的设置（`AppSettings.from_values()`），进程环境变量也不会影响测试。需要让测试读取指定文件时，自己设置 `BOT_ENV_FILE=<路径>`。
+
+单个测试要改配置，用 `settings_override` 夹具：`settings_override(AI_CHAT_ORDER="openai,zhipu", OPENAI_CHAT_MODEL="m")` 在本测试内使用「代码默认值 + 传入值」的配置，所有在调用时读 `config.<NAME>` 的代码都能看到，测试结束时恢复。只改个别常量时也可以 monkeypatch `config.<NAME>`；两者同时用时先装配置再 patch。纯单元测试可以不碰全局配置，直接给支持的函数传 `settings=SimpleNamespace(...)`。机制与限制见 [architecture.md](architecture.md) 的「配置注入」。
 
 下面的真实连通性检查是唯一的例外：设置 `RUN_ENV_API_CONNECTIVITY_TESTS=1` 时 conftest 不会屏蔽 `.env`，测试读取其中的真实配置。
 

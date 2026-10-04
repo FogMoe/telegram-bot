@@ -1,36 +1,10 @@
 """一轮 AI 对话的业务操作。
 
-Telegram handler（`handlers.py`）负责把 `Update` 映射成 `TurnRequest`、做群聊触发与冷却判断，
-这里从「一批已通过准入的消息」开始，到「回复已投递、历史已落库」结束。
+Telegram handler（`handlers.py`）负责把 `Update` 映射成 `TurnRequest`、做群聊触发与冷却判断；
+这里从「一批已通过准入的消息」开始，到「回复已投递、历史已落库」结束。阶段顺序是
+`turn_types.Stage`，阶段、事务所有权与计时方式见 docs/architecture.md 的「一轮对话」。
 
-阶段（`Stage`），严格按此顺序，每个阶段的耗时记录在 `TurnResult.timings`：
-
-| 阶段 | 做什么 | 可能提前结束的状态 |
-|---|---|---|
-| `plan` | 选出有内容的消息，按长度定价 | `NOTHING_TO_PROCESS`、`MESSAGE_TOO_LONG` |
-| `charge` | 写完上一项历史事件，整轮扣费 | `UNREGISTERED`、`INSUFFICIENT_BALANCE` |
-| `context` | 读取印象、日记，拼用户状态提示词 | |
-| `prepare` | 逐条整理消息，下载并识别图片 | `MEDIA_TOO_LARGE`、`MEDIA_FAILED` |
-| `history_in` | 写入用户消息、读取历史 | |
-| `model` | 输入状态、执行模型与工具、规范化回复 | |
-| `history_out` | 写入工具结果与 AI 回复 | |
-| `delivery` | 容量提示、最终回复、生成的媒体、群聊历史 | |
-| `finalize` | AI 代执行 /clear 的归档、零余额边界写入 | |
-
-提前结束的状态都已经回复了用户。排队（等会话锁）发生在进入这里之前，由 handler 测量后放进
-`TurnRequest.queue_seconds`。
-
-事务所有权：
-
-- 整轮唯一的跨语句事务是 `charge` 阶段的 `billing.charge_turn`：每条消息一笔账、奖池贡献在
-  同一个事务里，余额不足整体回滚。事务在该调用返回前已经提交或回滚，之后的阶段都不持有事务。
-- 历史写入（`history_in`、`history_out`、`finalize`）每次调用各自是 `core.chat_records`
-  里的一次短事务；没有把扣费和历史放进同一个事务，也没有补偿式退款（与重构前一致）。
-- `model` 阶段不持有数据库事务；工具自己需要时开自己的事务（走余额服务）。
-- `delivery` 阶段只做 Telegram 发送与群聊历史记录。
-
-重构前后保持一致的已知行为（不是本模块的新决定）：扣费之后才处理媒体，图片过大或识别失败只回复
-提示、不退款；模型阶段失败由 router 转成固定的错误文本，仍然走完投递与历史。
+某个阶段决定结束这一轮时（用户已经收到提示）抛内部异常 `_Stop`，`TurnResult.status` 说明原因。
 """
 
 from __future__ import annotations
