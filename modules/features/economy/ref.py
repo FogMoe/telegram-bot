@@ -1,15 +1,11 @@
 import logging
+from sqlalchemy.exc import IntegrityError
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
 
-from core import config, mysql_connection, process_user
-import asyncio
-from core.command_cooldown import cooldown 
-
-# 用于存储正在处理的邀请记录，防止重复处理
-processing_invitations = set()
-processing_lock = asyncio.Lock()
+from core import balance, config, mysql_connection, process_user, sql
+from core.command_cooldown import cooldown
 
 # 配置logger
 logger = logging.getLogger(__name__)
@@ -280,74 +276,122 @@ async def ref_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #             logger.error(traceback.format_exc())
 
 # 数据库操作函数
-async def add_invitation_record(invited_user_id, referrer_id, invited_user_name):
-    """添加邀请记录到数据库，并给邀请人和被邀请人发放奖励"""
-    # 如果此邀请组合正在处理中，则跳过
-    invitation_key = f"{invited_user_id}_{referrer_id}"
 
-    async with processing_lock:
-        if invitation_key in processing_invitations:
+
+class _InvitedUserChanged(Exception):
+    """「被邀请人是否已有账户」的判断过期了（并发的开户或删除）：重新判断一次。"""
+
+
+def invitee_op_key(invited_user_id: int) -> str:
+    """被邀请人的邀请奖励：一个被邀请人只能被邀请一次，所以只入账一次。"""
+    return balance.make_op_key("ref_invitee", invited_user_id)
+
+
+def referrer_op_key(invited_user_id: int) -> str:
+    """邀请人因这个被邀请人得到的奖励。"""
+    return balance.make_op_key("ref_referrer", invited_user_id)
+
+
+async def _record_invitation(
+    connection,
+    invited_user_id: int,
+    referrer_id: int,
+    invited_user_name: str,
+    *,
+    invited_exists: bool,
+) -> tuple[bool, bool]:
+    """在一个事务里完成：开户（需要时）、邀请记录、双方的邀请奖励。
+
+    先按 user id 升序锁住双方，再写邀请记录。`user_invitations` 的主键是被邀请人，
+    重复邀请由唯一键拒绝（此时还没有任何奖励入账）；奖励的 op_key 由被邀请人派生，
+    同一个被邀请人的奖励即使被重放也只入账一次。
+    """
+    to_lock = [referrer_id]
+    if invited_exists:
+        to_lock.append(invited_user_id)
+    try:
+        await balance.lock_users(connection, to_lock)
+    except balance.UserNotFound as exc:
+        if exc.user_id == referrer_id:
             return False, False
-        processing_invitations.add(invitation_key)
+        raise _InvitedUserChanged() from exc
+
+    is_new_user = False
+    if not invited_exists:
+        # 与 /me 一样，新用户的开户奖励走账本（signup:<uid>）；邀请奖励另算。
+        try:
+            await connection.exec_driver_sql(
+                "INSERT INTO user (id, name, coins) VALUES (%s, %s, 0)",
+                (invited_user_id, invited_user_name),
+            )
+        except IntegrityError as exc:
+            if sql.is_duplicate_key_error(exc):
+                raise _InvitedUserChanged() from exc
+            raise
+        is_new_user = True
+        if config.NEW_USER_BONUS_COINS > 0:
+            await balance.credit(
+                connection,
+                invited_user_id,
+                config.NEW_USER_BONUS_COINS,
+                op_key=balance.make_op_key("signup", invited_user_id),
+                reason="signup",
+            )
 
     try:
-        is_new_user = False
-        async with mysql_connection.transaction() as connection:
-            # 检查被邀请用户是否已经有邀请记录
-            row = await mysql_connection.fetch_one(
-                "SELECT referrer_id FROM user_invitations WHERE invited_user_id = %s",
-                (invited_user_id,),
-                connection=connection,
-            )
-            if row:
-                return False, False
+        await connection.exec_driver_sql(
+            "INSERT INTO user_invitations (invited_user_id, referrer_id, invitation_time, reward_claimed) VALUES (%s, %s, NOW(), TRUE)",
+            (invited_user_id, referrer_id),
+        )
+    except IntegrityError as exc:
+        if sql.is_duplicate_key_error(exc):
+            return False, False  # 已经被邀请过：什么都没有写入
+        raise
 
-            # 检查邀请人是否存在
-            row = await mysql_connection.fetch_one(
-                "SELECT id FROM user WHERE id = %s",
-                (referrer_id,),
-                connection=connection,
-            )
-            if not row:
-                return False, False
+    await balance.credit(
+        connection,
+        invited_user_id,
+        INVITATION_REWARD,
+        op_key=invitee_op_key(invited_user_id),
+        reason="ref_invitee",
+        ref=f"referrer:{referrer_id}",
+    )
+    await balance.credit(
+        connection,
+        referrer_id,
+        INVITATION_REWARD,
+        op_key=referrer_op_key(invited_user_id),
+        reason="ref_referrer",
+        ref=f"invited:{invited_user_id}",
+    )
+    return True, is_new_user
 
-            # 确保被邀请用户存在于user表中
-            row = await mysql_connection.fetch_one(
-                "SELECT id FROM user WHERE id = %s",
-                (invited_user_id,),
-                connection=connection,
-            )
-            if not row:
-                await connection.exec_driver_sql(
-                    "INSERT INTO user (id, name, coins) VALUES (%s, %s, %s)",
-                    (invited_user_id, invited_user_name, INVITED_USER_REWARD),
+
+async def add_invitation_record(invited_user_id, referrer_id, invited_user_name):
+    """添加邀请记录到数据库，并给邀请人和被邀请人发放奖励。
+
+    返回 (是否成功, 被邀请人是否是这次新开的户)。重复邀请、邀请人不存在、数据库错误都返回
+    (False, False)。
+    """
+    try:
+        for _ in range(2):
+            invited_exists = await process_user.user_exists(invited_user_id)
+            try:
+                return await balance.run_in_transaction(
+                    lambda connection: _record_invitation(
+                        connection,
+                        invited_user_id,
+                        referrer_id,
+                        invited_user_name,
+                        invited_exists=invited_exists,
+                    )
                 )
-                is_new_user = True
-            else:
-                await process_user.add_free_coins(
-                    invited_user_id,
-                    INVITATION_REWARD,
-                    connection=connection,
-                )
-
-            await connection.exec_driver_sql(
-                "INSERT INTO user_invitations (invited_user_id, referrer_id, invitation_time, reward_claimed) VALUES (%s, %s, NOW(), TRUE)",
-                (invited_user_id, referrer_id),
-            )
-
-            await process_user.add_free_coins(
-                referrer_id,
-                INVITATION_REWARD,
-                connection=connection,
-            )
-
-        return True, is_new_user
+            except _InvitedUserChanged:
+                continue
+        return False, False
     except Exception as e:
         logger.error(f"Database error in add_invitation_record: {e}")
         return False, False
-    finally:
-        async with processing_lock:
-            processing_invitations.discard(invitation_key)
 
 async def async_add_invitation_record(invited_user_id, referrer_id, invited_user_name):
     """异步添加邀请记录"""

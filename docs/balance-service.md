@@ -73,6 +73,7 @@ await balance.credit(connection, user_id, 50, op_key=balance.make_op_key("topup"
 | `credit_standalone` / `debit_standalone` / `refund_standalone` | 同上，自己开事务，死锁时整个事务重跑 |
 | `get_operation(op_key, *, connection=None, for_update=False)` | 查询已记录的操作，没有返回 `None` |
 | `lock_user(connection, user_id)` | 锁住 user 行并返回当前余额，用于「先判断资格再变动」 |
+| `lock_users(connection, user_ids)` | 按 user id 升序锁住多个 user 行，一个事务变动多个用户（转账、邀请奖励）时使用 |
 | `run_in_transaction(work)` | 开事务执行 `work(connection)`，死锁时重跑；`work` 必须可安全重跑 |
 | `make_op_key(*parts)` / `new_op_key(prefix)` / `refund_op_key(original)` | op_key 的构造与派生 |
 | `audit_ledger()` | 对账，见下文 |
@@ -124,9 +125,32 @@ await balance.credit(connection, user_id, 50, op_key=balance.make_op_key("topup"
 | 图片 `/pic` | `pic:<chat_id>:<message_id>` | `pic`，退款 `pic_failed` |
 | 高清图 | `pic_hd:<callback query id>` | `pic_hd`，退款 `pic_hd_failed` |
 | 奖池贡献 | `pool:<消费的 op_key>` | `spend_share` |
+| 新用户开户奖励（`/me`、邀请注册） | `signup:<uid>` | `signup` |
+| 邀请奖励：被邀请人 / 邀请人 | `ref_invitee:<被邀请人 uid>` / `ref_referrer:<被邀请人 uid>` | `ref_invitee` / `ref_referrer` |
+| 任务奖励 | `task:<uid>:<task_id>` | `task` |
+| 商店：记忆上限 / 权限升级 | `shop:memory:<callback query id>` / `shop:perm<等级>:<callback query id>` | `shop_memory` / `shop_permission` |
+| 商店：刮刮乐、欢乐彩 | 扣款 `shop:<scratch\|huanle>:<callback query id>`，开奖 `…:win`，保底 `…:bonus` | `shop_<item>` / `shop_<item>_win` / `shop_<item>_bonus` |
+| 质押 | `stake:<chat_id>:<message_id>` | `stake` |
+| 质押领奖（用户入账与奖池扣减共用同一个 op_key，分属两张账本） | `stake_collect:<uid>:<stake_time>:<领奖窗口起点>` | `stake_reward` |
+| 质押赎回：本金 / 顺带结算的回报（回报同样两张账本共用） | `stake_withdraw:<uid>:<stake_time>` / `stake_withdraw_reward:<uid>:<stake_time>` | `stake_withdraw` / `stake_reward` |
+| `/give`：发送者扣款（本金加手续费）/ 收款人入账 | `give:<chat_id>:<message_id>` / `give:<chat_id>:<message_id>:recv` | `give` / `give_received` |
+| `/bribe` | `bribe:<chat_id>:<message_id>` | `bribe` |
+| BTC 预测：下注 / 中奖 / 过期退款 | `btc:<uid>:<开始时间>:bet` / `:win` / `:expired`（见下） | `btc_bet` / `btc_win` / `btc_expired`，退款 op_key 为 `refund:btc:<uid>:<开始时间>:bet` |
+| `/swap` 兑换 | `swap:<chat_id>:<message_id>` | `swap` |
+| AI 善意赠币 | `kindness:<收款人 uid>:<上一次赠币时间，从未赠过为 never>` | `kindness` |
 
-后续路径沿用同样的做法：游戏用持久化的轮次或对局 id（如 `rps:<game_id>:entry:<uid>`、
-`gamble:<round_id>:bet:<uid>`），商店、质押、邀请等用各自的记录 id。
+时间戳一律是 `YYYYMMDDTHHMMSS`。几条身份的来由：
+
+- 质押记录以 `user_id` 为主键、没有自己的 id，所以用 `stake_time`（以及领奖窗口起点 `last_reward_time`，
+  从未领过为 `stake_time`）标识「哪一次质押的哪一段窗口」。领奖成功后窗口起点前进，同一窗口不会再领。
+- 预测记录同样以 `user_id` 为主键，用开始时间标识；新预测只能在上一条结算或过期处理之后创建，
+  开始时间不会重复。创建时去掉微秒，因为 MySQL 的 DATETIME 会对微秒四舍五入，op_key 必须与读回的值一致。
+  升级到账本之前创建、没有 `bet` 记录的预测，过期时退不了款，改用 `:expired` 入账原额。
+- 抽奖、善意赠币的资格窗口只随着时间戳写入而前进，所以 op_key 由「上一次的时间戳」派生（与 `lottery:` 同理）。
+- 商店以按钮回调的 query id 为身份：同一次点击被重复投递不会重复扣款与发放，两次不同的点击是两次购买。
+
+游戏用持久化的轮次或对局 id（如 `rps:<game_id>:entry:<uid>`、`gamble:<round_id>:bet:<uid>`），
+命名由游戏工作流补充到下面的清单。
 
 ## 事务所有权
 
@@ -136,7 +160,14 @@ await balance.credit(connection, user_id, 50, op_key=balance.make_op_key("topup"
   所以不要在事务外塞副作用。
 - 事务里不要做外部副作用（发消息、调模型）。
 - 锁顺序固定为先 `user` 行、后奖池行。需要自己的资格判断与余额变动串行时，先
-  `lock_user`，再在锁内读取自己的状态。
+  `lock_user`，再在锁内读取自己的状态。领奖这类要在锁内按奖池余额决定发多少的操作，
+  先 `lock_user`，再 `get_pool_balance(for_update=True)`，不能反过来：反过来会和
+  「扣费后贡献奖池」的路径互相等待。
+- 一个事务涉及多个用户（`/give` 的发送者与收款人、邀请的邀请人与被邀请人）时，用 `lock_users`
+  按 user id 升序一次锁完，再做任何写入。A 赠 B 与 B 赠 A 同时发生也不会死锁。
+  需要依据名字等信息先解析出对方 id 的，在事务之前解析。
+- 同一用户的业务状态（每日次数、质押记录、待处理请求）在 `lock_user` 之后用普通读取即可，
+  不要对可能不存在的键 `FOR UPDATE`。
 - REPEATABLE READ 下，事务里更早的普通 `SELECT` 可能看不到已提交的并发写。
   需要最新值时用锁定读（`FOR UPDATE`），或保证事务的第一次一致性读发生在拿到 user 行锁之后。
   不要对可能不存在的唯一键做 `SELECT ... FOR UPDATE`：间隙锁会让两个首次写入互相死锁。
@@ -156,6 +187,36 @@ await balance.credit(connection, user_id, 50, op_key=balance.make_op_key("topup"
 - **奖池贡献**：和扣费同事务提交，或在交付成功后单独记账，op_key 为 `pool:<消费的 op_key>`；
   扣费失败、交付失败都不贡献。
 - 同一个 op_key 配不同参数是调用方的 bug：抛 `OperationConflict`，不会改动数据。
+
+## 余额入口清单
+
+每个改动用户余额或奖池的入口，以及它的事务边界。「同事务」指余额变动与该行写的业务状态在一个事务里提交，
+任何一步失败整体回滚，所以失败不需要退款；只有「先扣费、再做事务之外的交付」的路径才有 `refund`。
+`debit` 余额不足都发生在写入之前，调用方据此直接返回，不继续后面的步骤，也不贡献奖池。
+
+### 商店、质押、转账、奖励（`features/economy/`、`features/crypto/`、`features/ai/tools/`、`features/profile/`）
+
+| 入口 | 变动 | op_key | 事务边界 |
+|---|---|---|---|
+| `/me`（`profile/handlers.py` `me`） | 开户奖励入账 | `signup:<uid>` | 注册 `INSERT` 与入账同事务；是否首次开户在事务外判断，并发的两次首次 `/me` 由 op_key 保证只入账一次，老用户不会补发 |
+| 邀请注册 / `/ref`（`economy/ref.py` `add_invitation_record`） | 开户奖励（新用户）、被邀请人与邀请人各一笔邀请奖励 | `signup:<uid>`、`ref_invitee:<uid>`、`ref_referrer:<uid>` | 开户、`user_invitations` 记录与三笔入账同事务；双方按 id 升序锁定；`user_invitations` 以被邀请人为主键，同一被邀请人只奖励一次，重复邀请在任何入账之前被唯一键拒绝 |
+| `/task`（`economy/task.py`） | 任务奖励入账 | `task:<uid>:<task_id>` | 锁用户行后确认未完成，入账与 `user_task` 记录同事务；用户不存在时不写完成记录 |
+| 商店（`economy/shop.py`）购买记忆上限、权限升级 | 扣款 | `shop:memory:<qid>`、`shop:perm<等级>:<qid>` | 扣款与 `permanent_records_limit` / `permission` 更新同事务 |
+| 商店刮刮乐、欢乐彩 | 扣款、开奖入账、保底奖励 | `shop:<item>:<qid>`、`…:win`、`…:bonus` | 三者同事务；进程内的保底计数只在提交后更新，回滚不会留下半个计数；重复点击只读回第一次的结果 |
+| `/stake`（`economy/stake_coin.py` `open_stake`） | 扣款 | `stake:<chat>:<msg>` | 扣款与 `user_stakes` 记录同事务 |
+| 质押领奖（`collect_stake_reward`） | 用户入账、奖池扣减 | `stake_collect:…`（两张账本共用） | 入账、奖池扣减、`last_reward_time` 推进同事务；先 `lock_user` 再锁奖池行，按锁内余额决定发放的周期数 |
+| 质押赎回（`withdraw_stake_principal`） | 本金入账、回报入账与奖池扣减 | `stake_withdraw:…`、`stake_withdraw_reward:…` | 入账、奖池扣减、删除质押记录同事务 |
+| `/give`（`economy/coins.py` `transfer_coins`） | 发送者扣款（本金加手续费）、收款人入账 | `give:<chat>:<msg>`、`…:recv` | 扣款、入账、`user_give_daily` 次数同事务；双方按 id 升序锁定；每日次数在锁内读取与累加；重复投递的命令最先被识别为重放 |
+| `/bribe`（`economy/bribe.py`，命令当前禁用） | 扣款 | `bribe:<chat>:<msg>` | 扣款与好感度写入同事务 |
+| `/btc_predict` 下注（`crypto/crypto_predict.py` `create_prediction`） | 扣款 | `btc:<uid>:<开始时间>:bet` | 扣款先于写入，与预测记录同事务；余额不足不留预测 |
+| 预测结算（`check_prediction_result`） | 中奖入账 | `btc:<uid>:<开始时间>:win` | 取价在事务外；标记完成与入账同事务，锁内重新确认预测仍未结算 |
+| 过期未结算预测（`create_prediction` 内） | 退回下注 | `refund:btc:<uid>:<开始时间>:bet`（旧预测兜底 `…:expired`） | 退款、标记完成与新一轮下注同事务 |
+| `/swap`（`crypto/swap_fogmoe_solana_token.py` `submit_swap_request`） | 扣款 | `swap:<chat>:<msg>` | 扣款与 `token_swap_requests` 记录同事务；待处理请求与余额都在锁内确认 |
+| AI `kindness_gift` 工具（`ai/tools/user_tools.py` `grant_kindness`） | 入账 | `kindness:<uid>:<上一次赠币时间>` | 先锁收款人，冷却检查（数据库时钟）、入账、`kindness_gifts` 记录同事务 |
+
+### 游戏（`features/games/`）
+
+由游戏工作流填写：每个入口的文件、操作、op_key 与事务边界。
 
 ## 账本与对账
 
@@ -192,15 +253,17 @@ await balance.credit(connection, user_id, 50, op_key=balance.make_op_key("topup"
 | `update_user_coins`、`async_update_user_coins` | `balance.credit` / `balance.debit` |
 | `stake_reward_pool.add_to_pool` / `subtract_from_pool` | `credit_pool` / `debit_pool` |
 
-调用方迁移完成后整组删除，不保留兼容层。查找剩余调用方：搜索这些函数名；
-账本里 `reason LIKE 'legacy:%'` 的行显示它们在生产中还被谁触发。
+调用方迁移完成后整组删除，不保留兼容层。除 `features/games/` 外，所有调用方已经迁移到上面的清单；
+查找剩余调用方：搜索这些函数名，账本里 `reason LIKE 'legacy:%'` 的行显示它们在生产中还被谁触发。
 
-不经过余额服务的变动：新用户注册时 `user` 行带着初始奖励一起插入（`features/profile/handlers.py`
-的 `/me`，`features/economy/ref.py` 的邀请注册路径），这部分作为开户余额由账本第一行隐含。
+没有不经过余额服务的变动：新用户注册（`/me`、邀请注册）以余额 0 开户，再用 `signup:<uid>` 把开户奖励
+记进账本。升级到账本之前注册的用户没有 `signup` 记录，他们的开户奖励仍由账本第一行隐含。
 
 ## 测试
 
-`tests/integration/` 里的余额、奖池、对话扣费、充值、签到抽奖测试使用真实 MySQL，夹具与运行方式见
+`tests/integration/` 里的余额、奖池、对话扣费、充值、签到抽奖，以及商店、质押、`/give`、邀请与开户奖励、任务、
+BTC 预测、兑换、善意赠币的测试使用真实 MySQL，夹具与运行方式见
 [database-migrations.md](database-migrations.md) 的「运行集成测试」。造用户、读账本、Telegram 替身在
 `tests/integration/economy_support.py`。纯逻辑（op_key 派生、拆分、套餐规则）的单元测试在
-`tests/test_balance_unit.py`。
+`tests/test_balance_unit.py`；各入口的手续费、保底、权限升级规则与 op_key 派生在
+`tests/test_economy_logic.py`。

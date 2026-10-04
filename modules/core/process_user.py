@@ -255,33 +255,47 @@ def get_user_affection_sync(user_id: int) -> int:
     return mysql_connection.run_sync(get_user_affection(user_id))
 
 
-async def update_user_affection(user_id: int, delta: int) -> int:
+async def update_user_affection(
+    user_id: int,
+    delta: int,
+    *,
+    connection: AsyncConnection | None = None,
+) -> int:
+    """调整好感度（单次变化限制在 ±10，总值限制在 ±100），返回调整后的值。
+
+    传入 `connection` 时在调用方的事务里执行，不自己开事务；扣费与好感度变化要一起提交时用它。
+    """
     delta = int(delta)
     if delta > 10:
         delta = 10
     elif delta < -10:
         delta = -10
 
-    async with mysql_connection.transaction() as connection:
-        row = await mysql_connection.fetch_one(
-            "SELECT affection FROM ai_user_affection WHERE user_id = %s FOR UPDATE",
-            (user_id,),
-            connection=connection,
+    if connection is not None:
+        return await _apply_affection_delta(connection, user_id, delta)
+    async with mysql_connection.transaction() as own_connection:
+        return await _apply_affection_delta(own_connection, user_id, delta)
+
+
+async def _apply_affection_delta(connection: AsyncConnection, user_id: int, delta: int) -> int:
+    row = await mysql_connection.fetch_one(
+        "SELECT affection FROM ai_user_affection WHERE user_id = %s FOR UPDATE",
+        (user_id,),
+        connection=connection,
+    )
+    current = row[0] if row else 0
+    updated = max(-100, min(100, current + delta))
+
+    if row:
+        await connection.exec_driver_sql(
+            "UPDATE ai_user_affection SET affection = %s WHERE user_id = %s",
+            (updated, user_id),
         )
-        current = row[0] if row else 0
-        updated = max(-100, min(100, current + delta))
-
-        if row:
-            await connection.exec_driver_sql(
-                "UPDATE ai_user_affection SET affection = %s WHERE user_id = %s",
-                (updated, user_id),
-            )
-        else:
-            await connection.exec_driver_sql(
-                "INSERT INTO ai_user_affection (user_id, affection) VALUES (%s, %s)",
-                (user_id, updated),
-            )
-
+    else:
+        await connection.exec_driver_sql(
+            "INSERT INTO ai_user_affection (user_id, affection) VALUES (%s, %s)",
+            (user_id, updated),
+        )
     return updated
 
 
