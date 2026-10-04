@@ -1,6 +1,8 @@
 import asyncio
 import logging
 
+import pytest
+
 from features.ai import telegram_visible_sender
 
 
@@ -73,3 +75,42 @@ def test_no_response_sentinel_is_removed_before_visible_content_is_sent(monkeypa
         assert handler.sent_count == 1
 
     asyncio.run(run_test())
+
+
+def test_a_lease_lost_while_the_send_is_being_prepared_still_stops_the_delivery(monkeypatch):
+    import threading
+
+    from features.ai.types import JobAbortedError
+
+    sent_texts = []
+    event = threading.Event()
+
+    async def fake_normalize(text, *, logger):
+        event.set()  # 贴纸校验期间租约丢失
+        return text
+
+    async def fake_send_ai_reply_with_stickers(**kwargs):
+        sent_texts.append(kwargs["text"])
+        return ["sent_message"]
+
+    monkeypatch.setattr(telegram_visible_sender, "normalize_sticker_directives", fake_normalize)
+    monkeypatch.setattr(
+        telegram_visible_sender, "send_ai_reply_with_stickers", fake_send_ai_reply_with_stickers
+    )
+
+    async def run_test():
+        handler = telegram_visible_sender.TelegramVisibleContentHandler(
+            bot=_Bot(),
+            chat_id=123,
+            first_text_send=_unused_send,
+            fallback_send=_unused_send,
+            logger=logging.getLogger(__name__),
+            abort_event=event,
+        )
+        with pytest.raises(JobAbortedError):
+            await handler("你好")
+        assert handler.sent_count == 0
+
+    asyncio.run(run_test())
+
+    assert sent_texts == []

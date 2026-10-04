@@ -64,6 +64,8 @@ class TelegramVisibleContentHandler:
             await self.bot.send_chat_action(chat_id=self.chat_id, action="typing")
         except Exception:
             self.logger.debug("Failed to send typing action before visible AI content")
+        # 贴纸校验与输入状态都是 await：租约可能在这期间丢失，真正发送之前再检查一次。
+        self._raise_if_aborted()
         try:
             send_messages = await send_ai_reply_with_stickers(
                 bot=self.bot,
@@ -100,6 +102,7 @@ class TelegramVisibleContentHandler:
             await self.bot.send_chat_action(chat_id=self.chat_id, action=action)
         except Exception:
             self.logger.debug("Failed to send upload action before generated media")
+        self._raise_if_aborted()
 
         if tool_name == "generate_image":
             sent_messages = await send_generated_images_from_tool_result(
