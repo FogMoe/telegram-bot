@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 
 from features.ai.tools.context import (
@@ -68,7 +69,7 @@ def test_search_prior_context_is_bounded_to_active_user_and_earlier_summaries(
 ):
     captured = {}
 
-    def fake_fetch_all(sql, params):
+    async def fake_fetch_all(sql, params):
         captured.update(sql=sql, params=params)
         return [
             (
@@ -79,14 +80,9 @@ def test_search_prior_context_is_bounded_to_active_user_and_earlier_summaries(
         ]
 
     monkeypatch.setattr(summary_tools.mysql_connection, "fetch_all", fake_fetch_all)
-    monkeypatch.setattr(
-        summary_tools.mysql_connection,
-        "run_sync",
-        lambda value: value,
-    )
     set_tool_request_context({"user_id": 123, "summary_record_id": 456})
     try:
-        result = summary_tools.search_prior_context_tool("白鲸项目", limit=3)
+        result = asyncio.run(summary_tools.search_prior_context_tool("白鲸项目", limit=3))
     finally:
         clear_tool_request_context()
 

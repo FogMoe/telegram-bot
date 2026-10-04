@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 
 import pytest
@@ -8,12 +9,21 @@ from features.ai.tools.context import clear_tool_request_context, set_tool_reque
 from features.ai.tools.models import ReadDiaryPageArgs, UserDiaryArgs, parameters_schema
 
 
+def _run(coro):
+    return asyncio.run(coro)
+
+
+def _no_run_sync(coro):
+    coro.close()
+    raise AssertionError("diary tools must await the database, not bridge through run_sync")
+
+
 class _FakeDiaryDatabase:
     def __init__(self):
         self.rows = {}
         self.last_write_sql = ""
 
-    def fetch_one(self, sql, params):
+    async def fetch_one(self, sql, params):
         if "SELECT MAX(page_no)" in sql:
             return (max(self.rows),) if self.rows else (None,)
         if "SELECT content, title, summary" in sql:
@@ -30,7 +40,7 @@ class _FakeDiaryDatabase:
             )
         raise AssertionError(f"Unexpected fetch_one query: {sql}")
 
-    def fetch_all(self, sql, params):
+    async def fetch_all(self, sql, params):
         assert "ORDER BY page_no ASC" in sql
         preview_chars, _user_id = params
         return [
@@ -46,7 +56,7 @@ class _FakeDiaryDatabase:
             for page_no, row in sorted(self.rows.items())
         ]
 
-    def execute(self, sql, params):
+    async def execute(self, sql, params):
         self.last_write_sql = sql
         _user_id, page_no, title, summary, content = params
         existing = self.rows.get(page_no)
@@ -82,7 +92,7 @@ class _FakeDiaryDatabase:
 @pytest.fixture
 def diary_db(monkeypatch):
     fake = _FakeDiaryDatabase()
-    monkeypatch.setattr(memory_tools.mysql_connection, "run_sync", lambda value: value)
+    monkeypatch.setattr(memory_tools.mysql_connection, "run_sync", _no_run_sync)
     monkeypatch.setattr(memory_tools.mysql_connection, "fetch_one", fake.fetch_one)
     monkeypatch.setattr(memory_tools.mysql_connection, "fetch_all", fake.fetch_all)
     monkeypatch.setattr(memory_tools.mysql_connection, "execute", fake.execute)
@@ -124,7 +134,7 @@ def test_recap_read_diary_page_reads_content_without_a_write_path(diary_db):
         summary="Current projects.",
     )
 
-    result = memory_tools.read_diary_page_tool(page=2)
+    result = _run(memory_tools.read_diary_page_tool(page=2))
 
     assert result == {
         "page": 2,
@@ -139,7 +149,7 @@ def test_user_diary_index_lists_pages_without_full_content(diary_db):
     diary_db.add_page(2, "Private details", title="Projects", summary="Current projects.")
     diary_db.add_page(1, "\n  First   observation\nSecond line")
 
-    result = memory_tools.user_diary_tool(action="index")
+    result = _run(memory_tools.user_diary_tool(action="index"))
 
     assert result["action"] == "index"
     assert result["total_pages"] == 2
@@ -161,7 +171,7 @@ def test_user_diary_index_lists_pages_without_full_content(diary_db):
 def test_user_diary_read_marks_legacy_metadata_as_incomplete(diary_db):
     diary_db.add_page(1, "First observation\nSecond line")
 
-    result = memory_tools.user_diary_tool(action="read", page=1)
+    result = _run(memory_tools.user_diary_tool(action="read", page=1))
 
     assert result["title"] == "Untitled page 1"
     assert result["summary"] == "First observation Second line"
@@ -170,18 +180,18 @@ def test_user_diary_read_marks_legacy_metadata_as_incomplete(diary_db):
 
 
 def test_user_diary_create_requires_title_and_summary(diary_db):
-    missing_summary = memory_tools.user_diary_tool(
+    missing_summary = _run(memory_tools.user_diary_tool(
         action="append",
         page=1,
         content="First entry",
         title="Relationship",
-    )
-    missing_title = memory_tools.user_diary_tool(
+    ))
+    missing_title = _run(memory_tools.user_diary_tool(
         action="append",
         page=1,
         content="First entry",
         summary="The first lasting observation.",
-    )
+    ))
 
     assert missing_summary["error"] == (
         "Missing summary for diary page 1; summarize the updated page"
@@ -200,17 +210,17 @@ def test_user_diary_write_updates_content_and_metadata_together(diary_db):
         summary="Earlier observation.",
     )
 
-    missing_summary = memory_tools.user_diary_tool(
+    missing_summary = _run(memory_tools.user_diary_tool(
         action="append",
         page=1,
         content="New entry",
-    )
-    result = memory_tools.user_diary_tool(
+    ))
+    result = _run(memory_tools.user_diary_tool(
         action="append",
         page=1,
         content="New entry",
         summary="Earlier and new observations.",
-    )
+    ))
 
     assert "Missing summary" in missing_summary["error"]
     assert result["title"] == "Relationship"
@@ -232,7 +242,7 @@ def test_user_diary_index_reports_no_next_page_at_limit(diary_db):
             summary=f"Summary {page_no}",
         )
 
-    result = memory_tools.user_diary_tool(action="index")
+    result = _run(memory_tools.user_diary_tool(action="index"))
 
     assert result["total_pages"] == memory_tools.MAX_USER_DIARY_PAGES
     assert result["next_page"] is None

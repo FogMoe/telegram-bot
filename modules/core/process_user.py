@@ -56,6 +56,7 @@ async def get_user_affection(user_id: int) -> int:
 
 
 def get_user_affection_sync(user_id: int) -> int:
+    # 同步边界：只能在没有事件循环的线程里调用，主路径用 get_user_affection；见 docs/runtime.md。
     return mysql_connection.run_sync(get_user_affection(user_id))
 
 
@@ -104,6 +105,7 @@ async def _apply_affection_delta(connection: AsyncConnection, user_id: int, delt
 
 
 def update_user_affection_sync(user_id: int, delta: int) -> int:
+    # 同步边界：只能在没有事件循环的线程里调用，主路径用 update_user_affection；见 docs/runtime.md。
     return mysql_connection.run_sync(update_user_affection(user_id, delta))
 
 
@@ -155,6 +157,7 @@ async def update_user_impression(user_id: int, impression: str) -> str:
 
 
 def update_user_impression_sync(user_id: int, impression: str) -> str:
+    # 同步边界：只能在没有事件循环的线程里调用，主路径用 update_user_impression；见 docs/runtime.md。
     return mysql_connection.run_sync(update_user_impression(user_id, impression))
 
 

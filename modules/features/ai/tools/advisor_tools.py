@@ -14,9 +14,29 @@ from .context import get_tool_request_context
 _CALL_COUNT_CONTEXT_KEY = "_advisor_call_count"
 _RATE_LIMITS: dict[str, list[float]] = {}
 _RATE_LIMIT_LOCK = threading.Lock()
-_ADVISOR_SEMAPHORE = threading.BoundedSemaphore(
-    config.AI_ADVISOR_MAX_CONCURRENT_REQUESTS
-)
+
+
+class _AdvisorConcurrency:
+    """顾问的并发上限：不等待，满了就让调用方返回 busy。
+
+    工具在事件循环里运行，检查与占用之间没有 await，所以不需要锁；
+    上限在每次占用时读取配置，换配置立即生效。
+    """
+
+    def __init__(self) -> None:
+        self._inflight = 0
+
+    def acquire(self, blocking: bool = False) -> bool:
+        if self._inflight >= config.AI_ADVISOR_MAX_CONCURRENT_REQUESTS:
+            return False
+        self._inflight += 1
+        return True
+
+    def release(self) -> None:
+        self._inflight = max(self._inflight - 1, 0)
+
+
+_ADVISOR_SEMAPHORE = _AdvisorConcurrency()
 
 
 def _configured_advisor_available() -> bool:
@@ -98,7 +118,7 @@ def _usage_total_tokens(response: Any) -> object:
     return getattr(usage, "total_tokens", None)
 
 
-def advisor_tool(task: str, case_facts: str | None = None) -> dict[str, Any]:
+async def advisor_tool(task: str, case_facts: str | None = None) -> dict[str, Any]:
     if not task or not task.strip():
         return {
             "status": "error",
@@ -143,7 +163,7 @@ def advisor_tool(task: str, case_facts: str | None = None) -> dict[str, Any]:
             }
 
         started_at = time.monotonic()
-        response = run_ai_task(
+        response = await run_ai_task(
             "advisor",
             messages=_advisor_messages(task.strip(), case_facts),
             timeout=config.AI_ADVISOR_TIMEOUT_SECONDS,

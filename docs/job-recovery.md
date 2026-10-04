@@ -33,7 +33,9 @@
 - **失去所有权就取消**：续期被拒绝（token 已变、状态已变）、或者连续无法确认租约满一个租约长度（数据库不可达），worker 被取消并置位 `abort_event`。续期遇到的单次数据库异常只记日志，等下一拍。
 - **执行上限**：超过 `*_EXECUTION_TIMEOUT_SECONDS` 取消 worker。此时 claim 仍属于本 worker，按失败所处阶段收尾，见「按阶段的恢复策略」。
 
-`abort_event` 是 `threading.Event`，放在 `tool_context[ABORT_EVENT_KEY]`。线程池里的工具循环（`tool_runner.run_tool_loop`）在每一轮模型调用前和每个工具执行前检查它，`TelegramVisibleContentHandler` 在每次发送前检查它；置位后抛 `JobAbortedError`。它继承 `BaseException`，不会被 router 当成 provider 失败去累计熔断或换 provider 重跑。已经在执行的单个工具无法撤回。
+`abort_event` 是 `threading.Event`，放在 `tool_context[ABORT_EVENT_KEY]`。工具循环（`tool_runner.run_tool_loop`）在每一轮模型调用前和每个工具执行前检查它，`TelegramVisibleContentHandler` 在每次发送前检查它；置位后抛 `JobAbortedError`。它继承 `BaseException`，不会被 router 当成 provider 失败去累计熔断或换 provider 重跑。
+
+工具循环与可见内容发送都跑在事件循环里（原生 async，见 [runtime.md](runtime.md)），所以 `run_leased` 取消 worker 时，正在等待的模型调用与 async 工具会被**直接取消**，不必等到下一个检查点；`abort_event` 继续在每个检查点（模型调用前、工具执行前、每次发送前，包括发送准备期间的再次检查）阻止后续动作。已经在线程里执行的同步工具不检查它，无法撤回，线程自己跑完、结果被丢弃。
 
 常量名：`SCHEDULE_LEASE_SECONDS`、`SCHEDULE_HEARTBEAT_SECONDS`、`SCHEDULE_EXECUTION_TIMEOUT_SECONDS`、`SCHEDULE_MAX_CLAIM_ATTEMPTS`、`IDLE_FOLLOWUP_LEASE_SECONDS`、`IDLE_FOLLOWUP_HEARTBEAT_SECONDS`、`IDLE_FOLLOWUP_EXECUTION_TIMEOUT_SECONDS`、`IDLE_FOLLOWUP_MAX_CLAIM_ATTEMPTS`，默认值取自 `job_claims.DEFAULT_*`。
 
@@ -104,6 +106,7 @@
 - 已经 claim、还停在 `claimed` 阶段的任务（比如在等会话锁），在拿到锁之后检查到应用正在停止，立即放回队列并写 `released`，不计为一次尝试。worker 被取消时同样释放 `claimed` 阶段的 claim。
 - 已经进入 `generating` / `delivering` 的任务不强求优雅完成。PTB 会等正在执行的轮询结束，进程被强制终止时 claim 留在库里，租约到期后下一次启动按上面的策略回收。
 - 租约到期之前任务不会被别的轮询接手，所以崩溃或强杀之后，任务最迟在一个租约长度加一个轮询间隔之后被回收。
+- 进程停止时的整体顺序（准入关闭、后台任务取消、HTTP 客户端与线程适配器关闭、数据库引擎 dispose）见 [runtime.md](runtime.md) 的「取消与关停」；上面这几条 claim 语义不受它影响。
 
 ## 数据
 

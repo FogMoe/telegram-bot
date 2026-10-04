@@ -229,7 +229,7 @@ class TestAbortSignal:
         completions = []
         executed = []
 
-        def fake_completion(*args, **kwargs):
+        async def fake_completion(*args, **kwargs):
             completions.append(True)
             return Response(Message("", tool_calls))
 
@@ -242,11 +242,13 @@ class TestAbortSignal:
         monkeypatch.setitem(tool_runner.AI_TOOL_HANDLERS, "google_search", first_tool_loses_the_claim)
 
         with pytest.raises(JobAbortedError):
-            tool_runner.run_tool_loop(
-                "test_provider",
-                "test_model",
-                [{"role": "user", "content": "search"}],
-                {ABORT_EVENT_KEY: event},
+            run(
+                tool_runner.run_tool_loop(
+                    "test_provider",
+                    "test_model",
+                    [{"role": "user", "content": "search"}],
+                    {ABORT_EVENT_KEY: event},
+                )
             )
 
         # 第一个工具已经执行（无法撤回），第二个工具和下一轮模型调用都没有发生。
@@ -261,15 +263,18 @@ class TestAbortSignal:
         class Response:
             choices = [type("Choice", (), {"message": Message()})()]
 
-        monkeypatch.setattr(
-            tool_runner, "create_chat_completion", lambda *args, **kwargs: Response()
-        )
+        async def fake_completion(*args, **kwargs):
+            return Response()
 
-        message, _ = tool_runner.run_tool_loop(
-            "test_provider",
-            "test_model",
-            [{"role": "user", "content": "hello"}],
-            {"user_id": 1},
+        monkeypatch.setattr(tool_runner, "create_chat_completion", fake_completion)
+
+        message, _ = run(
+            tool_runner.run_tool_loop(
+                "test_provider",
+                "test_model",
+                [{"role": "user", "content": "hello"}],
+                {"user_id": 1},
+            )
         )
 
         assert message == "done"
@@ -280,7 +285,6 @@ class TestAbortSignal:
         async def scenario():
             event = threading.Event()
             handler = telegram_visible_sender.TelegramVisibleContentHandler(
-                loop=asyncio.get_running_loop(),
                 bot=object(),
                 chat_id=1,
                 first_text_send=lambda *a, **k: None,
@@ -295,11 +299,11 @@ class TestAbortSignal:
 
             handler._send = would_send  # type: ignore[method-assign]
             event.set()
-            # __call__ 在工具循环所在的线程里被调用。
+            # 工具循环在事件循环里直接 await 处理器；租约丢失之后每一次发送前都先被拦下。
             with pytest.raises(JobAbortedError):
-                await asyncio.to_thread(handler, "hello")
+                await handler("hello")
             with pytest.raises(JobAbortedError):
-                await asyncio.to_thread(handler.send_tool_media, "generate_image", {})
+                await handler.send_tool_media("generate_image", {})
 
         run(scenario())
 

@@ -19,13 +19,22 @@ def clear_provider_circuit_state():
 
 
 def use_chat_services(monkeypatch, services):
-    """`services` 的键顺序就是 AI_CHAT_ORDER；各 provider 的入口换成对应的替身。"""
+    """`services` 的键顺序就是 AI_CHAT_ORDER；各 provider 的入口换成对应的替身。
+
+    替身是普通函数，由这里包成 async 入口；整轮截止时间不交给替身，记在返回值的 `deadlines` 里。
+    """
     monkeypatch.setattr(config, "AI_SERVICE_ORDER", list(services))
-    monkeypatch.setattr(
-        router,
-        "run_chat_provider",
-        lambda name, *args, **kwargs: services[name](*args, **kwargs),
-    )
+    deadlines = []
+
+    async def fake_run_chat_provider(name, *args, **kwargs):
+        deadlines.append(kwargs.pop("deadline", None))
+        result = services[name](*args, **kwargs)
+        if asyncio.iscoroutine(result):
+            result = await result
+        return result
+
+    monkeypatch.setattr(router, "run_chat_provider", fake_run_chat_provider)
+    return deadlines
 
 
 def test_get_ai_response_retries_image_messages_as_text(monkeypatch):
@@ -49,6 +58,7 @@ def test_get_ai_response_retries_image_messages_as_text(monkeypatch):
         tool_context=None,
         visible_content_handler=None,
         text_fallback_messages=None,
+        deadline=None,
     ):
         calls.append(messages)
         if len(calls) == 1:
@@ -373,7 +383,7 @@ def test_unknown_provider_in_chat_order_counts_as_a_failure_and_falls_back(monke
     monkeypatch.setattr(config, "AI_SERVICE_ORDER", ["typo-provider", "openai"])
     monkeypatch.setattr(config, "OPENAI_CHAT_MODEL", "openai-chat")
 
-    def fake_tool_loop(provider, model, messages, tool_context, **kwargs):
+    async def fake_tool_loop(provider, model, messages, tool_context, **kwargs):
         return f"{provider}:{model}", []
 
     monkeypatch.setattr(chat_provider, "run_tool_loop", fake_tool_loop)
@@ -385,7 +395,7 @@ def test_unknown_provider_in_chat_order_counts_as_a_failure_and_falls_back(monke
 def test_chat_order_comes_from_the_active_settings(monkeypatch):
     seen = []
 
-    def failing_then_ok(name, *args, **kwargs):
+    async def failing_then_ok(name, *args, **kwargs):
         seen.append(name)
         if name == "azure":
             raise RuntimeError("azure down")

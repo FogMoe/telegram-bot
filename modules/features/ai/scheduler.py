@@ -736,7 +736,6 @@ async def _process_schedule_task_locked(
     sent_messages: list = []
     send_func = partial_send(context.bot.send_message, user_id)
     visible_content_handler = TelegramVisibleContentHandler(
-        loop=asyncio.get_running_loop(),
         bot=context.bot,
         chat_id=user_id,
         first_text_send=send_func,

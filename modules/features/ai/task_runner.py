@@ -25,7 +25,7 @@ def _provider_completion_kwargs(provider: str, task: str) -> Dict[str, Any]:
     return completion_kwargs_for_task(provider, task)
 
 
-def run_ai_task(
+async def run_ai_task(
     task: str,
     messages: List[Dict[str, Any]],
     **kwargs: Any,
@@ -62,7 +62,7 @@ def run_ai_task(
                     **_provider_completion_kwargs(provider, task),
                     **kwargs,
                 }
-                return create_chat_completion(provider, model, messages, **request_kwargs)
+                return await create_chat_completion(provider, model, messages, **request_kwargs)
             except ContextBudgetExceededError:
                 raise
             except Exception as exc:

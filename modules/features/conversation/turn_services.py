@@ -186,6 +186,7 @@ async def _run_model(request: ModelRequest) -> ModelResponse:
         tool_context=request.tool_context,
         text_fallback_messages=request.text_fallback_messages,
         visible_content_handler=request.visible_content_handler,
+        deadline=request.deadline,
     )
     return ModelResponse(text=text, tool_logs=tool_logs)
 

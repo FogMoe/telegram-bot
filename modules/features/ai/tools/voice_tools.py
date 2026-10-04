@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 import requests
 
-from core import config
+from core import config, http_sessions
 from core.redaction import describe_exception, log_exception, redact_text
 from .context import get_tool_request_context
 from .filename_utils import prompt_to_filename
@@ -160,7 +160,7 @@ def _cleanup_expired_generated_audio() -> None:
 def _get_session() -> requests.Session:
     session = getattr(_SESSION_LOCAL, "session", None)
     if session is None:
-        session = requests.Session()
+        session = http_sessions.track_session(requests.Session())
         _SESSION_LOCAL.session = session
     return session
 

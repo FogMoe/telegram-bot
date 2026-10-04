@@ -5,7 +5,7 @@ from typing import Dict, Optional
 
 import requests
 
-from core import config
+from core import config, http_sessions
 from core.redaction import describe_exception, log_exception, redact_text
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ _SESSION_LOCAL = threading.local()
 def _get_session() -> requests.Session:
     session = getattr(_SESSION_LOCAL, "session", None)
     if session is None:
-        session = requests.Session()
+        session = http_sessions.track_session(requests.Session())
         _SESSION_LOCAL.session = session
     return session
 

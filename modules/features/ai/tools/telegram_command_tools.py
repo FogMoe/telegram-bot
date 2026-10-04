@@ -36,7 +36,7 @@ def _without_context_messages(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def execute_telegram_command_tool(
+async def execute_telegram_command_tool(
     command: str,
     **kwargs: object,
 ) -> dict[str, Any]:
@@ -105,7 +105,7 @@ def execute_telegram_command_tool(
         if isinstance(cached_result, dict):
             return dict(cached_result)
 
-    outcome = execute_telegram_command(
+    outcome = await execute_telegram_command(
         command=command_value,
         command_text=command_text,
         request_context=request_context,
