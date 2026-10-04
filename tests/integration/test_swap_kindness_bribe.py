@@ -19,8 +19,8 @@ from features.ai.tools import context as tool_context
 from features.ai.tools import user_tools
 from features.crypto import swap_fogmoe_solana_token as swap
 from features.crypto.swap_fogmoe_solana_token import SwapStatus
-from features.economy import bribe
-from features.economy.bribe import BribeStatus
+from features.economy.operations import bribe
+from features.economy.operations.bribe import BribeStatus
 
 swap_command = swap.swap_command.__wrapped__
 WALLET = "5iz3epFDf9SKvLNHWQ42f4wMMrENaudE9eMkxfBLFd2n"
@@ -84,7 +84,7 @@ class TestSwapRequests:
         outcome = run(self.submit(12))
 
         assert outcome.status is SwapStatus.PENDING_EXISTS
-        assert outcome.pending["amount"] == 10000
+        assert outcome.pending.amount == 10000
         assert total(app_database) == 20000
         assert len(self.requests(app_database)) == 1
 
@@ -303,7 +303,7 @@ class TestBribe:
         ) or 0
 
     def pay(self, coins, message_id=11, before=0):
-        return bribe._pay_bribe(1, coins, before, bribe.bribe_op_key(9, message_id))
+        return bribe.pay_bribe(1, coins, before, bribe.bribe_op_key(9, message_id))
 
     def test_the_debit_and_the_affection_gain_are_committed_together(self, app_database):
         seed_user(app_database, 1, free=500)
@@ -369,7 +369,7 @@ class TestBribe:
 
     def test_an_unregistered_user_is_reported(self, app_database):
         outcome = run(
-            bribe._pay_bribe(404, 100, 0, bribe.bribe_op_key(9, 1))
+            bribe.pay_bribe(404, 100, 0, bribe.bribe_op_key(9, 1))
         )
 
         assert outcome.status is BribeStatus.NOT_REGISTERED

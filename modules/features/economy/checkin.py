@@ -1,101 +1,17 @@
+"""/checkin 的 Telegram 适配层：输入映射与回复。签到规则与事务在 `operations/checkin.py`。"""
+
 import html
 import logging
-from datetime import date, datetime, timedelta
 
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import CommandHandler, ContextTypes
 
-from core import balance, mysql_connection
+from core import user_records
 from core.command_cooldown import cooldown
 
-
-def calculate_checkin_reward(consecutive_days):
-    if consecutive_days <= 5:
-        return 1
-    if consecutive_days <= 10:
-        return 2
-    if consecutive_days <= 15:
-        return 3
-    if consecutive_days <= 20:
-        return 4
-    if consecutive_days <= 25:
-        return 5
-    if consecutive_days <= 30:
-        return 6
-    return 7
-
-
-async def get_user_checkin_info(user_id, *, connection=None):
-    row = await mysql_connection.fetch_one(
-        "SELECT last_checkin_date, consecutive_days FROM user_checkin WHERE user_id = %s",
-        (user_id,),
-        connection=connection,
-    )
-    return row
-
-
-async def update_user_checkin(user_id, consecutive_days, *, connection=None, today=None):
-    today = today or datetime.now().date()
-    await mysql_connection.execute(
-        """
-        INSERT INTO user_checkin (user_id, last_checkin_date, consecutive_days)
-        VALUES (%s, %s, %s)
-        ON DUPLICATE KEY UPDATE last_checkin_date = VALUES(last_checkin_date), consecutive_days = VALUES(consecutive_days)
-        """,
-        (user_id, today, consecutive_days),
-        connection=connection,
-    )
-
-
-def checkin_op_key(user_id: int, day: date) -> str:
-    """每个用户每天只有一个签到身份，奖励入账以它为幂等键。"""
-    return balance.make_op_key("checkin", user_id, day.isoformat())
-
-
-async def process_checkin(user_id, *, today=None):
-    """签到：资格判断、签到日期写入、奖励入账在同一个事务里。
-
-    入账失败（异常）时整个事务回滚，日期不会落库，重试仍然可以签到。用户不存在抛
-    `balance.UserNotFound`。
-    """
-    today = today or datetime.now().date()
-    async with mysql_connection.transaction() as connection:
-        # 先锁用户行，同一用户的并发签到在这里串行；之后第一次一致性读能看到上一个持锁者提交的日期。
-        await balance.lock_user(connection, user_id)
-        checkin_info = await get_user_checkin_info(user_id, connection=connection)
-
-        if checkin_info and checkin_info[0] == today:
-            return {
-                "success": False,
-                "message": "您今天已经签到过了！请明天再来。",
-                "consecutive_days": checkin_info[1],
-            }
-
-        consecutive_days = 1
-        if checkin_info:
-            last_checkin_date = checkin_info[0]
-            if last_checkin_date == today - timedelta(days=1):
-                consecutive_days = checkin_info[1] + 1
-
-        reward_coins = calculate_checkin_reward(consecutive_days)
-        await update_user_checkin(
-            user_id, consecutive_days, connection=connection, today=today
-        )
-        await balance.credit(
-            connection,
-            user_id,
-            reward_coins,
-            op_key=checkin_op_key(user_id, today),
-            reason="checkin",
-        )
-
-    return {
-        "success": True,
-        "message": f"签到成功！\n连续签到：{consecutive_days}天\n获得奖励：{reward_coins}金币",
-        "consecutive_days": consecutive_days,
-        "reward": reward_coins,
-    }
+from .operations import checkin as checkin_operations
+from .operations.checkin import MAX_REWARD_DAYS, CheckinStatus
 
 
 @cooldown
@@ -114,28 +30,27 @@ async def checkin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     escaped_username = html.escape(username)
 
-    if not await mysql_connection.async_check_user_exists(user_id):
+    if not await user_records.async_check_user_exists(user_id):
         await update.message.reply_text(
             "请先使用 /me 命令注册账户。\n"
             "Please register first using the /me command."
         )
         return
 
-    result = await process_checkin(user_id)
+    result = await checkin_operations.process_checkin(user_id)
 
-    if result["success"]:
+    if result.status is CheckinStatus.CHECKED_IN:
         message = (
             f"🎉 <b>签到成功</b> 🎉\n\n"
             f"用户: @{escaped_username}\n"
-            f"连续签到: <b>{result['consecutive_days']}</b> 天\n"
-            f"今日奖励: <b>{result['reward']}</b> 金币\n\n"
+            f"连续签到: <b>{result.consecutive_days}</b> 天\n"
+            f"今日奖励: <b>{result.reward}</b> 金币\n\n"
         )
 
-        max_reward_days = 31
-        days_left = max(max_reward_days - result["consecutive_days"], 0)
+        days_left = max(MAX_REWARD_DAYS - result.consecutive_days, 0)
         if days_left > 0:
             message += f"距离最高奖励还有 {days_left} 天\n"
-            progress = min(result["consecutive_days"], max_reward_days) / max_reward_days
+            progress = min(result.consecutive_days, MAX_REWARD_DAYS) / MAX_REWARD_DAYS
             progress_bar = "".join(["🟢" if i / 10 <= progress else "⚪" for i in range(1, 11)])
             message += f"{progress_bar} {int(progress * 100)}%\n\n"
         else:
@@ -144,8 +59,8 @@ async def checkin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += "每天签到可获得金币奖励，连续签到奖励更多！"
     else:
         message = (
-            f"⚠️ {result['message']}\n\n"
-            f"当前连续签到: <b>{result['consecutive_days']}</b> 天\n"
+            f"⚠️ 您今天已经签到过了！请明天再来。\n\n"
+            f"当前连续签到: <b>{result.consecutive_days}</b> 天\n"
             f"请明天再来签到以继续你的连续签到记录！"
         )
 

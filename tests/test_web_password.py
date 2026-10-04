@@ -1,7 +1,7 @@
 import asyncio
 import hashlib
 
-from features.economy import web_password
+from features.economy.operations import web_password
 
 
 def test_hash_password_uses_argon2id_and_verifies():
@@ -43,6 +43,7 @@ def test_set_web_password_stores_argon2id_hash(monkeypatch):
 
     result = asyncio.run(web_password.process_set_web_password(7, "abc12345"))
 
-    assert result["success"] is True
+    assert result.status is web_password.SetPasswordStatus.SAVED
+    assert result.is_update is False
     assert stored[7].startswith("$argon2id$")
     assert "abc12345" not in stored[7]

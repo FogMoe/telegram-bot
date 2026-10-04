@@ -6,8 +6,12 @@ import pytest
 from economy_support import gather_all, ledger_rows, seed_user, user_state
 from mysql_support import execute, fetch, fetch_scalar, run
 
-from core import balance, process_user
-from features.economy import checkin
+from core import balance
+from features.economy import coins as coins_handlers
+from features.economy.operations import checkin, lottery
+from features.economy.operations.checkin import CheckinStatus
+from features.economy.operations.lottery import LotteryStatus
+from features.economy.repositories import lottery as lottery_repository
 
 TODAY = date(2026, 10, 5)
 
@@ -32,8 +36,8 @@ class TestCheckin:
 
         result = run(checkin.process_checkin(1, today=TODAY))
 
-        assert result["success"] is True
-        assert (result["consecutive_days"], result["reward"]) == (1, 1)
+        assert result.status is CheckinStatus.CHECKED_IN
+        assert (result.consecutive_days, result.reward) == (1, 1)
         assert checkin_row(app_database) == {"last_checkin_date": TODAY, "consecutive_days": 1}
         assert user_state(app_database, 1)["free"] == 1
         assert [row["op_key"] for row in ledger_rows(app_database)] == ["checkin:1:2026-10-05"]
@@ -46,8 +50,8 @@ class TestCheckin:
 
         again = run(checkin.process_checkin(1, today=TODAY))
 
-        assert again["success"] is False
-        assert again["consecutive_days"] == 1
+        assert again.status is CheckinStatus.ALREADY_CHECKED_IN
+        assert again.consecutive_days == 1
         assert user_state(app_database, 1)["free"] == 1
         assert len(ledger_rows(app_database)) == 1
 
@@ -64,7 +68,7 @@ class TestCheckin:
 
         result = run(checkin.process_checkin(1, today=TODAY))
 
-        assert (result["consecutive_days"], result["reward"]) == (6, 2)
+        assert (result.consecutive_days, result.reward) == (6, 2)
         assert user_state(app_database, 1)["free"] == 2
 
     def test_a_missed_day_resets_the_streak(self, app_database):
@@ -80,7 +84,7 @@ class TestCheckin:
 
         result = run(checkin.process_checkin(1, today=TODAY))
 
-        assert (result["consecutive_days"], result["reward"]) == (1, 1)
+        assert (result.consecutive_days, result.reward) == (1, 1)
 
     def test_a_credit_failure_leaves_no_checkin_date_and_the_retry_succeeds_once(
         self, app_database, monkeypatch
@@ -102,7 +106,7 @@ class TestCheckin:
         monkeypatch.setattr(balance, "credit", real_credit)
         retry = run(checkin.process_checkin(1, today=TODAY))
 
-        assert retry["success"] is True
+        assert retry.status is CheckinStatus.CHECKED_IN
         assert user_state(app_database, 1)["free"] == 1
         assert len(ledger_rows(app_database)) == 1
 
@@ -117,7 +121,7 @@ class TestCheckin:
         results = run(scenario())
 
         assert all(not isinstance(item, Exception) for item in results), results
-        assert sorted(item["success"] for item in results) == [False] * 4 + [True]
+        assert sorted(item.status is CheckinStatus.CHECKED_IN for item in results) == [False] * 4 + [True]
         assert user_state(app_database, 1)["free"] == 1
         assert len(ledger_rows(app_database)) == 1
 
@@ -131,11 +135,12 @@ class TestCheckin:
 class TestLottery:
     def test_a_draw_credits_once_and_records_the_timestamp(self, app_database, monkeypatch):
         seed_user(app_database, 1)
-        monkeypatch.setattr(process_user, "draw_lottery_coins", lambda rng=None: 7)
+        monkeypatch.setattr(lottery, "draw_lottery_coins", lambda rng=None: 7)
 
-        message = run(process_user.lottery(1))
+        outcome = run(lottery.lottery(1))
 
-        assert "7" in message
+        assert (outcome.status, outcome.coins) == (LotteryStatus.WON, 7)
+        assert "7" in coins_handlers.lottery_message(outcome)
         assert user_state(app_database, 1)["free"] == 7
         assert lottery_row(app_database)["last_lottery_date"] is not None
         rows = ledger_rows(app_database)
@@ -145,12 +150,13 @@ class TestLottery:
 
     def test_a_second_draw_within_24_hours_is_refused(self, app_database, monkeypatch):
         seed_user(app_database, 1)
-        monkeypatch.setattr(process_user, "draw_lottery_coins", lambda rng=None: 3)
-        run(process_user.lottery(1))
+        monkeypatch.setattr(lottery, "draw_lottery_coins", lambda rng=None: 3)
+        run(lottery.lottery(1))
 
-        message = run(process_user.lottery(1))
+        outcome = run(lottery.lottery(1))
 
-        assert "24" in message
+        assert outcome.status is LotteryStatus.COOLING_DOWN
+        assert "24" in coins_handlers.lottery_message(outcome)
         assert user_state(app_database, 1)["free"] == 3
         assert len(ledger_rows(app_database)) == 1
 
@@ -158,15 +164,15 @@ class TestLottery:
         self, app_database, monkeypatch
     ):
         seed_user(app_database, 1)
-        monkeypatch.setattr(process_user, "draw_lottery_coins", lambda rng=None: 3)
-        run(process_user.lottery(1))
+        monkeypatch.setattr(lottery, "draw_lottery_coins", lambda rng=None: 3)
+        run(lottery.lottery(1))
         long_ago = datetime.now() - timedelta(hours=25)
         execute(
             app_database,
             ("UPDATE user_lottery SET last_lottery_date = %s WHERE user_id = 1", (long_ago,)),
         )
 
-        run(process_user.lottery(1))
+        run(lottery.lottery(1))
 
         assert user_state(app_database, 1)["free"] == 6
         keys = [row["op_key"] for row in ledger_rows(app_database)]
@@ -177,42 +183,42 @@ class TestLottery:
         self, app_database, monkeypatch
     ):
         seed_user(app_database, 1)
-        monkeypatch.setattr(process_user, "draw_lottery_coins", lambda rng=None: 5)
-        real_update = process_user.update_user_lottery_date
+        monkeypatch.setattr(lottery, "draw_lottery_coins", lambda rng=None: 5)
+        real_update = lottery_repository.save_last_lottery_date
 
         async def failing_update(*args, **kwargs):
             raise RuntimeError("时间戳写入失败")
 
-        monkeypatch.setattr(process_user, "update_user_lottery_date", failing_update)
+        monkeypatch.setattr(lottery_repository, "save_last_lottery_date", failing_update)
         with pytest.raises(RuntimeError):
-            run(process_user.lottery(1))
+            run(lottery.lottery(1))
 
         assert user_state(app_database, 1)["free"] == 0
         assert ledger_rows(app_database) == []
         assert lottery_row(app_database) is None
 
-        monkeypatch.setattr(process_user, "update_user_lottery_date", real_update)
-        run(process_user.lottery(1))
+        monkeypatch.setattr(lottery_repository, "save_last_lottery_date", real_update)
+        run(lottery.lottery(1))
 
         assert user_state(app_database, 1)["free"] == 5
         assert len(ledger_rows(app_database)) == 1
 
         # 再试一次：窗口已经前进，不会第三次入账。
-        run(process_user.lottery(1))
+        run(lottery.lottery(1))
         assert user_state(app_database, 1)["free"] == 5
 
     def test_concurrent_draws_succeed_once(self, app_database, monkeypatch):
         seed_user(app_database, 1)
-        monkeypatch.setattr(process_user, "draw_lottery_coins", lambda rng=None: 4)
+        monkeypatch.setattr(lottery, "draw_lottery_coins", lambda rng=None: 4)
 
         async def scenario():
             # 直接调用 lottery：进程内的 lottery_locks 只挡得住同一进程，这里验证数据库层的串行。
-            return await gather_all(*[process_user.lottery(1) for _ in range(5)])
+            return await gather_all(*[lottery.lottery(1) for _ in range(5)])
 
         results = run(scenario())
 
         assert all(not isinstance(item, Exception) for item in results), results
-        winners = [item for item in results if "恭喜" in item]
+        winners = [item for item in results if item.status is LotteryStatus.WON]
         assert len(winners) == 1
         assert user_state(app_database, 1)["free"] == 4
         assert len(ledger_rows(app_database)) == 1
@@ -221,10 +227,10 @@ class TestLottery:
     def test_first_time_draws_by_different_users_do_not_deadlock(self, app_database, monkeypatch):
         for user_id in range(1, 9):
             seed_user(app_database, user_id)
-        monkeypatch.setattr(process_user, "draw_lottery_coins", lambda rng=None: 2)
+        monkeypatch.setattr(lottery, "draw_lottery_coins", lambda rng=None: 2)
 
         async def scenario():
-            return await gather_all(*[process_user.lottery(user_id) for user_id in range(1, 9)])
+            return await gather_all(*[lottery.lottery(user_id) for user_id in range(1, 9)])
 
         results = run(scenario())
 
@@ -232,8 +238,9 @@ class TestLottery:
         assert fetch_scalar(app_database, "SELECT SUM(coins) FROM `user`") == 16
 
     def test_unregistered_users_are_asked_to_register(self, app_database):
-        message = run(process_user.lottery(404))
+        outcome = run(lottery.lottery(404))
 
-        assert "/me" in message
+        assert outcome.status is LotteryStatus.NOT_REGISTERED
+        assert "/me" in coins_handlers.lottery_message(outcome)
         assert ledger_rows(app_database) == []
         assert lottery_row(app_database, 404) is None

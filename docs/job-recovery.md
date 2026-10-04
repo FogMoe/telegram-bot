@@ -164,7 +164,8 @@ WHERE outcome IN ('unknown', 'abandoned') ORDER BY id DESC LIMIT 50;
 ## 游戏状态
 
 范围是持有金币的两个游戏：多人下注（`features/games/gamble.py`，业务在 `gamble_rounds.py`）和
-石头剪刀布（`rockpaperscissors_game.py`，业务在 `rps_games.py`）。表由迁移 `0021_game_state` 创建：
+石头剪刀布（`rockpaperscissors_game.py`，业务在 `rps_games.py`）；两者的 SQL 在 `features/games/repositories/gamble.py` 与
+`rps.py`，事务与加锁顺序由业务模块持有，见 [architecture.md](architecture.md) 的「经济与游戏的分层」。表由迁移 `0021_game_state` 创建：
 `gamble_rounds`、`gamble_bets`、`rps_games`。骰宝、御神签与 RPG 不跨请求持有金币：每次点击或命令在
 一个事务里扣款、结算、更新状态，没有需要恢复的中间状态，见 [balance-service.md](balance-service.md)。
 

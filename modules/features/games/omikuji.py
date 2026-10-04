@@ -6,8 +6,10 @@ from datetime import date, datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 import telegram
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
-from core import balance, mysql_connection
+from core import balance, user_records
 from core.command_cooldown import cooldown
+
+from .repositories import omikuji as omikuji_repository
 
 # 防止用户快速多次点击的锁
 # 格式: {user_id: lock_until_timestamp}
@@ -311,13 +313,9 @@ async def draw_daily_fortune(user_id: int, *, today: date | None = None) -> tupl
     async def work(connection) -> tuple[str, str | None]:
         # 锁住用户行之后，这个事务的第一次一致性读能看到上一个持锁者提交的签。
         await balance.lock_user(connection, user_id)
-        existing = await mysql_connection.fetch_one(
-            "SELECT fortune FROM user_omikuji WHERE user_id = %s AND fortune_date = %s",
-            (user_id, today),
-            connection=connection,
-        )
+        existing = await omikuji_repository.get_fortune(user_id, today, connection=connection)
         if existing:
-            return DRAW_ALREADY, existing[0]
+            return DRAW_ALREADY, existing
         try:
             await balance.debit(
                 connection,
@@ -328,11 +326,7 @@ async def draw_daily_fortune(user_id: int, *, today: date | None = None) -> tupl
             )
         except balance.InsufficientBalance:
             return DRAW_INSUFFICIENT, None
-        await connection.exec_driver_sql(
-            "INSERT INTO user_omikuji (user_id, fortune_date, fortune) VALUES (%s, %s, %s) "
-            "ON DUPLICATE KEY UPDATE fortune = VALUES(fortune)",
-            (user_id, today, fortune),
-        )
+        await omikuji_repository.save_fortune(connection, user_id, today, fortune)
         return DRAW_NEW, fortune
 
     try:
@@ -348,15 +342,11 @@ async def get_user_daily_fortune(user_id: int):
     如果不存在记录，返回(False, None)
     """
     try:
-        today = datetime.now().strftime("%Y-%m-%d")
-        result = await mysql_connection.fetch_one(
-            "SELECT fortune FROM user_omikuji WHERE user_id = %s AND fortune_date = %s",
-            (user_id, today),
-        )
+        fortune = await omikuji_repository.get_fortune(user_id, datetime.now().date())
 
-        if result:
-            logger.info(f"用户 {user_id} 今日已抽签，结果: {result[0]}")
-            return True, result[0]
+        if fortune:
+            logger.info(f"用户 {user_id} 今日已抽签，结果: {fortune}")
+            return True, fortune
         logger.info(f"用户 {user_id} 今日尚未抽签")
         return False, None
     except Exception as e:
@@ -367,11 +357,7 @@ async def get_user_daily_fortune(user_id: int):
 async def check_user_registered(user_id: int) -> bool:
     """检查用户是否已注册"""
     try:
-        result = await mysql_connection.fetch_one(
-            "SELECT id FROM user WHERE id = %s",
-            (user_id,),
-        )
-        is_registered = result is not None
+        is_registered = await user_records.check_user_exists(user_id)
         if not is_registered:
             logger.info(f"用户 {user_id} 未注册")
         return is_registered
