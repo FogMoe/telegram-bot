@@ -176,6 +176,29 @@ def test_shutdown_refuses_new_work_until_reopened():
         adapter.shutdown()
 
 
+def test_shutdown_reports_queued_calls_as_closed_not_as_a_cancelled_task():
+    adapter = make_adapter(workers=1)
+    release = threading.Event()
+
+    async def scenario():
+        running = asyncio.create_task(adapter.run(release.wait, 2))
+        await asyncio.sleep(0.02)
+        queued = asyncio.create_task(adapter.run(lambda: "never runs"))
+        await asyncio.sleep(0.02)
+        adapter.shutdown()
+        outcome = (await asyncio.gather(queued, return_exceptions=True))[0]
+        release.set()
+        await asyncio.gather(running, return_exceptions=True)
+        return outcome
+
+    try:
+        outcome = asyncio.run(scenario())
+    finally:
+        release.set()
+
+    assert isinstance(outcome, blocking.AdapterClosedError)
+
+
 def test_pool_sizes_come_from_the_active_configuration(settings_override):
     settings_override(BLOCKING_TOOL_THREADS=3, BLOCKING_IO_THREADS=2)
     # 适配器按首次使用时的配置建线程池：先释放已有的线程池，让它按这份配置重建。

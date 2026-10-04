@@ -114,12 +114,20 @@ class BoundedThreadAdapter:
 
         try:
             result = await loop.run_in_executor(executor, call)
-        except BaseException:
+        except BaseException as exc:
             with self._lock:
                 if state == _QUEUED:
                     state = _ABANDONED
                     self._queued -= 1
             self._publish_depth()
+            if isinstance(exc, asyncio.CancelledError) and self._closed:
+                # 关停取消了排队中的调用，而等待方自己并没有被取消：不要让一个裸的
+                # CancelledError 冒充「任务被取消」，报成适配器已关闭。
+                task = asyncio.current_task()
+                if task is not None and task.cancelling() == 0:
+                    raise AdapterClosedError(
+                        f"blocking adapter {self.name!r} was shut down while the call was queued"
+                    ) from None
             raise
         return result  # type: ignore[return-value]
 
