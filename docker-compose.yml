@@ -9,8 +9,14 @@ services:
     environment:
       # 让容器使用宿主机/外部数据库；根据你的 MySQL 地址修改
       MYSQL_HOST: ${MYSQL_HOST:-host.docker.internal}
-    volumes: [] # 如需落盘日志，改为下方注释形式
-    # volumes:
-    #   - ./logs:/app/logs
+    volumes:
+      # 轮转日志落在宿主机 ./logs，容器重启或重建后仍保留
+      - ./logs:/app/logs
+    logging:
+      # stdout 日志交给 docker logs，限制大小避免占满磁盘
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     # 如需使用代理，可在此添加 extra_hosts 或网络设置

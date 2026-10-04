@@ -1,5 +1,7 @@
 # Description: Configuration file for the bot
 # replace with secure storage (e.g., environment variable / secrets manager)
+import os
+from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import quote_plus
 
@@ -8,10 +10,22 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
+ENV_FILE_VAR = "BOT_ENV_FILE"
+
+
+def resolve_env_file(environ: Mapping[str, str] | None = None) -> Path | None:
+    """决定从哪个文件读取配置：BOT_ENV_FILE 未设置时用仓库根的 .env，
+    设为路径则读取该文件，设为空字符串则完全不读 env 文件（只用进程环境变量）。"""
+    override = (os.environ if environ is None else environ).get(ENV_FILE_VAR)
+    if override is None:
+        return BASE_DIR / ".env"
+    override = override.strip()
+    return Path(override) if override else None
+
 
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=BASE_DIR / ".env",
+        env_file=resolve_env_file(),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -162,6 +176,7 @@ class AppSettings(BaseSettings):
     DATABASE_URL: str | None = None
 
     LOG_LEVEL: str = "INFO"
+    LOG_TO_STDOUT: bool = True
 
     @field_validator("GEMINI_OPENAI_COMPATIBLE", mode="before")
     @classmethod
@@ -353,6 +368,8 @@ SQLALCHEMY_DATABASE_URI = SETTINGS.DATABASE_URL or _build_mysql_dsn()
 
 # 日志级别 (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 LOG_LEVEL = SETTINGS.LOG_LEVEL
+# 日志始终写入轮转文件；容器场景同时输出到 stdout，供 docker logs 查看
+LOG_TO_STDOUT = SETTINGS.LOG_TO_STDOUT
 LOG_DIR = BASE_DIR / "logs"
 LOG_FILE_PATH = LOG_DIR / "tgbot.log"
 

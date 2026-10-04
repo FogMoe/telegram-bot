@@ -1,0 +1,66 @@
+[project]
+name = "fogmoe-telegram-bot"
+version = "0.1.0"
+description = "雾萌 · 多功能 Telegram 机器人"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+
+# 运行时依赖：modules/ 里直接 import 的第三方包都要在这里声明，不能只靠传递依赖。
+# 锁定版本以 uv.lock 为准；requirements.txt / requirements-dev.txt 由锁导出，不要手改。
+dependencies = [
+    "python-telegram-bot[job-queue]",
+    "litellm>=1.80.5",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    # asyncio extra 提供 greenlet；SQLAlchemy 的 async 引擎没有它无法导入。
+    # 上界保持在已验证的 2.0 系列，升级 2.1 需要单独评估并跑 MySQL 集成测试。
+    "SQLAlchemy[asyncio]>=2.0,<2.1",
+    "alembic",
+    "asyncmy",
+    # asyncmy 通过 caching_sha2_password（MySQL 8 默认认证方式）登录时需要 cryptography，
+    # 缺少时只会在首次连接时抛 RuntimeError，所以显式声明。
+    "cryptography",
+    "aiohttp",
+    "requests",
+    "urllib3",
+    "binance-futures-connector",
+    # 1.x 的 markdownify 输出与 0.5 不同，保持在已验证的 0.5 系列。
+    "telegramify-markdown>=0.5,<1",
+    "trafilatura>=2.2.0",
+    "e2b",
+    # 网页密码哈希（Argon2id）。
+    "argon2-cffi",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.16",
+    "mypy>=1.13",
+]
+
+[tool.uv]
+# 这是应用而不是可安装的包：代码靠 modules/ 进入 sys.path，不走打包。
+package = false
+required-version = ">=0.12.5"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# 增量类型检查：只检查下面 files 列出的稳定边界模块，其余代码不在检查范围内。
+# 新边界模块通过 files 加入，规则见 docs/testing-guidelines.md。
+[tool.mypy]
+python_version = "3.13"
+mypy_path = "modules"
+explicit_package_bases = true
+files = [
+    "modules/core/sql.py",
+    "modules/core/db.py",
+    "modules/app/smoke_check.py",
+]
+# 其余模块只用来取类型信息，不报告它们自己的错误。
+follow_imports = "silent"
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = true
+no_implicit_optional = true
