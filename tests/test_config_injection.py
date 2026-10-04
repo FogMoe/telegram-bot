@@ -166,8 +166,6 @@ IMPORT_TIME_CONFIG_READS = {
     ("features/ai/tools/sticker_tools.py", "BASE_DIR"),
     ("features/ai/tools/voice_tools.py", "BASE_DIR"),
     ("features/crypto/monitoring.py", "ADMIN_USER_ID"),
-    ("features/economy/charge_coin.py", "ADMIN_USER_ID"),
-    ("features/economy/ref.py", "NEW_USER_BONUS_COINS"),
     ("features/moderation/spam_control.py", "BASE_DIR"),
 }
 

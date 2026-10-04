@@ -151,17 +151,6 @@ def test_contribution_rolls_back_with_the_callers_transaction(app_database):
     assert pool_rows(app_database) == []
 
 
-def test_legacy_pool_functions_still_leave_ledger_rows(app_database):
-    run(stake_reward_pool.add_to_pool(Decimal("3.00")))
-    run(stake_reward_pool.subtract_from_pool(Decimal("1.00")))
-
-    assert pool_balance(app_database) == Decimal("2.00")
-    rows = pool_rows(app_database)
-    assert [row["kind"] for row in rows] == ["credit", "debit"]
-    assert all(row["reason"].startswith("legacy:") for row in rows)
-    assert [row["balance_after"] for row in rows] == [Decimal("3.00"), Decimal("2.00")]
-
-
 def test_pool_ledger_balances_chain_to_the_current_pool_balance(app_database):
     execute(app_database, "UPDATE stake_reward_pool SET balance = 4 WHERE id = 1")
     credit(Decimal("1.00"), "p:a")

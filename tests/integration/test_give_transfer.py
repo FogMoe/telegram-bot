@@ -15,11 +15,12 @@ from economy_support import (
 from mysql_support import fetch, fetch_scalar, run
 
 from core import balance, mysql_connection, sql
-from features.economy import coins
-from features.economy.coins import GiveStatus
+from features.economy import coins as coin_handlers
+from features.economy.operations import coins as coin_operations
+from features.economy.operations.coins import GiveStatus
 
 TODAY = date(2026, 10, 5)
-give_command = coins.give_command.__wrapped__
+give_command = coin_handlers.give_command.__wrapped__
 
 
 def total(url, user_id):
@@ -37,12 +38,12 @@ def daily_count(url, user_id=1, day=TODAY):
 
 
 def transfer(sender, recipient, amount, message_id, *, chat_id=9, today=TODAY):
-    return coins.transfer_coins(
+    return coin_operations.transfer_coins(
         sender,
         recipient,
         amount,
-        sender_op_key=coins.give_op_key(chat_id, message_id),
-        recipient_op_key=coins.give_recipient_op_key(chat_id, message_id),
+        sender_op_key=coin_operations.give_op_key(chat_id, message_id),
+        recipient_op_key=coin_operations.give_recipient_op_key(chat_id, message_id),
         today=today,
     )
 
@@ -159,9 +160,9 @@ class TestTransfer:
 
         assert all(not isinstance(item, Exception) for item in results), results
         statuses = [item.status for item in results]
-        assert statuses.count(GiveStatus.GIVEN) == coins.GIVE_DAILY_LIMIT
-        assert statuses.count(GiveStatus.DAILY_LIMIT) == 8 - coins.GIVE_DAILY_LIMIT
-        assert daily_count(app_database) == coins.GIVE_DAILY_LIMIT
+        assert statuses.count(GiveStatus.GIVEN) == coin_operations.GIVE_DAILY_LIMIT
+        assert statuses.count(GiveStatus.DAILY_LIMIT) == 8 - coin_operations.GIVE_DAILY_LIMIT
+        assert daily_count(app_database) == coin_operations.GIVE_DAILY_LIMIT
         assert total(app_database, 1) == 1000 - 5 * 12
         assert total(app_database, 2) == 5 * 10
         assert len(ledger_rows(app_database)) == 10
@@ -278,7 +279,7 @@ class TestGiveCommand:
     def test_the_daily_limit_message_is_shown(self, app_database):
         seed_pair(app_database, sender_coins=1000)
         today = datetime.now().date()
-        for index in range(coins.GIVE_DAILY_LIMIT):
+        for index in range(coin_operations.GIVE_DAILY_LIMIT):
             run(transfer(1, 2, 1, index, today=today))
 
         texts = self.give(app_database, ["bob", "10"], message_id=77)

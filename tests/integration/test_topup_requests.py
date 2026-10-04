@@ -17,13 +17,14 @@ from mysql_support import execute, fetch, fetch_scalar, run
 
 from core import balance, config
 from features.economy import charge_coin
+from features.economy.operations import charge as charge_operations
+from features.economy.operations.charge import RedeemStatus
 
 ADMIN_ID = 9000
 
 
 @pytest.fixture(autouse=True)
 def _admin(monkeypatch):
-    monkeypatch.setattr(charge_coin, "ADMIN_USER_ID", ADMIN_ID)
     monkeypatch.setattr(config, "ADMIN_USER_ID", ADMIN_ID)
 
 
@@ -32,7 +33,7 @@ def request_row(url, request_id):
 
 
 def new_request(url, user_id=1, coins=50, cents=199):
-    return run(charge_coin.create_topup_request(user_id, coins, cents))
+    return run(charge_operations.create_topup_request(user_id, coins, cents))
 
 
 class TestDecideTopupRequest:
@@ -40,7 +41,7 @@ class TestDecideTopupRequest:
         seed_user(app_database, 1, free=2)
         request_id = new_request(app_database)
 
-        decision = run(charge_coin.decide_topup_request(request_id, "approve", ADMIN_ID))
+        decision = run(charge_operations.decide_topup_request(request_id, "approve", ADMIN_ID))
 
         assert decision.outcome == "applied"
         assert decision.credit is not None and decision.credit.applied is True
@@ -59,9 +60,9 @@ class TestDecideTopupRequest:
 
         async def scenario():
             return await gather_all(
-                charge_coin.decide_topup_request(request_id, "approve", ADMIN_ID),
-                charge_coin.decide_topup_request(request_id, "approve", ADMIN_ID),
-                charge_coin.decide_topup_request(request_id, "approve", ADMIN_ID),
+                charge_operations.decide_topup_request(request_id, "approve", ADMIN_ID),
+                charge_operations.decide_topup_request(request_id, "approve", ADMIN_ID),
+                charge_operations.decide_topup_request(request_id, "approve", ADMIN_ID),
             )
 
         results = run(scenario())
@@ -76,9 +77,9 @@ class TestDecideTopupRequest:
     def test_a_decided_request_cannot_be_decided_again(self, app_database):
         seed_user(app_database, 1)
         request_id = new_request(app_database)
-        run(charge_coin.decide_topup_request(request_id, "reject", ADMIN_ID))
+        run(charge_operations.decide_topup_request(request_id, "reject", ADMIN_ID))
 
-        again = run(charge_coin.decide_topup_request(request_id, "approve", ADMIN_ID))
+        again = run(charge_operations.decide_topup_request(request_id, "approve", ADMIN_ID))
 
         assert again.outcome == "already_decided"
         assert again.request is not None and again.request.status == "rejected"
@@ -90,7 +91,7 @@ class TestDecideTopupRequest:
         seed_user(app_database, 1, free=5)
         request_id = new_request(app_database)
 
-        decision = run(charge_coin.decide_topup_request(request_id, "reject", ADMIN_ID))
+        decision = run(charge_operations.decide_topup_request(request_id, "reject", ADMIN_ID))
 
         assert decision.outcome == "applied"
         assert user_state(app_database, 1)["free"] == 5
@@ -102,7 +103,7 @@ class TestDecideTopupRequest:
         request_id = new_request(app_database)
         now = datetime(2026, 10, 5, 12, 0, 0)
 
-        decision = run(charge_coin.decide_topup_request(request_id, "block", ADMIN_ID, now=now))
+        decision = run(charge_operations.decide_topup_request(request_id, "block", ADMIN_ID, now=now))
 
         assert decision.outcome == "applied"
         assert decision.blocked_until == datetime(2026, 10, 6, 12, 0, 0)
@@ -124,14 +125,14 @@ class TestDecideTopupRequest:
 
         monkeypatch.setattr(balance, "credit", failing_credit)
         with pytest.raises(RuntimeError):
-            run(charge_coin.decide_topup_request(request_id, "approve", ADMIN_ID))
+            run(charge_operations.decide_topup_request(request_id, "approve", ADMIN_ID))
 
         assert request_row(app_database, request_id)["status"] == "pending"
         assert user_state(app_database, 1)["paid"] == 0
         assert ledger_rows(app_database) == []
 
         monkeypatch.setattr(balance, "credit", real_credit)
-        retry = run(charge_coin.decide_topup_request(request_id, "approve", ADMIN_ID))
+        retry = run(charge_operations.decide_topup_request(request_id, "approve", ADMIN_ID))
 
         assert retry.outcome == "applied"
         assert user_state(app_database, 1)["paid"] == 50
@@ -142,14 +143,14 @@ class TestDecideTopupRequest:
     ):
         request_id = new_request(app_database, user_id=404)
 
-        decision = run(charge_coin.decide_topup_request(request_id, "approve", ADMIN_ID))
+        decision = run(charge_operations.decide_topup_request(request_id, "approve", ADMIN_ID))
 
         assert decision.outcome == "user_missing"
         assert request_row(app_database, request_id)["status"] == "pending"
         assert ledger_rows(app_database) == []
 
     def test_unknown_request_is_reported(self, app_database):
-        decision = run(charge_coin.decide_topup_request(12345, "approve", ADMIN_ID))
+        decision = run(charge_operations.decide_topup_request(12345, "approve", ADMIN_ID))
 
         assert decision.outcome == "not_found"
 
@@ -290,9 +291,9 @@ class TestRedemptionCodes:
         seed_user(app_database, 1)
         code_id = self.seed_code(app_database)
 
-        success, result = run(charge_coin.verify_and_use_code(1, self.CODE))
+        result = run(charge_operations.redeem_code(1, self.CODE))
 
-        assert (success, result) == (True, 100)
+        assert (result.status, result.amount) == (RedeemStatus.REDEEMED, 100)
         assert user_state(app_database, 1) == {"free": 0, "paid": 100, "plan": "paid"}
         assert [r["op_key"] for r in ledger_rows(app_database)] == [f"redeem:{code_id}"]
         used = fetch(app_database, "SELECT is_used, used_by FROM redemption_codes")[0]
@@ -302,11 +303,12 @@ class TestRedemptionCodes:
         seed_user(app_database, 1)
         seed_user(app_database, 2)
         self.seed_code(app_database)
-        run(charge_coin.verify_and_use_code(1, self.CODE))
+        run(charge_operations.redeem_code(1, self.CODE))
 
-        again = run(charge_coin.verify_and_use_code(2, self.CODE))
+        again = run(charge_operations.redeem_code(2, self.CODE))
 
-        assert again[0] is False
+        assert again.status is RedeemStatus.ALREADY_USED
+        assert again.used_by_self is False
         assert user_state(app_database, 2)["paid"] == 0
         assert len(ledger_rows(app_database)) == 1
 
@@ -319,21 +321,23 @@ class TestRedemptionCodes:
             raise RuntimeError("入账失败")
 
         monkeypatch.setattr(balance, "credit", failing_credit)
-        success, _ = run(charge_coin.verify_and_use_code(1, self.CODE))
+        failed = run(charge_operations.redeem_code(1, self.CODE))
 
-        assert success is False
+        assert failed.status is RedeemStatus.FAILED
         assert fetch_scalar(app_database, "SELECT is_used FROM redemption_codes") == 0
         assert user_state(app_database, 1)["paid"] == 0
 
         monkeypatch.setattr(balance, "credit", real_credit)
-        assert run(charge_coin.verify_and_use_code(1, self.CODE)) == (True, 100)
+        retry = run(charge_operations.redeem_code(1, self.CODE))
+        assert (retry.status, retry.amount) == (RedeemStatus.REDEEMED, 100)
         assert user_state(app_database, 1)["paid"] == 100
 
     def test_unregistered_users_get_a_clear_message_and_the_code_stays_unused(self, app_database):
         self.seed_code(app_database)
 
-        success, message = run(charge_coin.verify_and_use_code(404, self.CODE))
+        result = run(charge_operations.redeem_code(404, self.CODE))
 
-        assert success is False and "/me" in message
+        assert result.status is RedeemStatus.NOT_REGISTERED
+        assert "/me" in charge_coin._redeem_failure_message(result)
         assert fetch_scalar(app_database, "SELECT is_used FROM redemption_codes") == 0
         assert ledger_rows(app_database) == []

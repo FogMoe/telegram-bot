@@ -7,8 +7,10 @@ from types import SimpleNamespace
 import pytest
 from telegram.error import Forbidden
 
-from core import process_user, redaction, telegram_history
+from core import process_user, redaction, sql, telegram_history, user_records
 from features.economy import charge_coin, web_password
+from features.economy.operations import charge as charge_operations
+from features.economy.operations import web_password as web_password_operations
 
 CODE = "123e4567-e89b-12d3-a456-426614174000"
 
@@ -65,8 +67,8 @@ def _fail_if_reached(monkeypatch):
         raise AssertionError("handler body must not run outside a private chat")
 
     monkeypatch.setattr(process_user, "async_user_exists", explode)
-    monkeypatch.setattr(web_password.mysql_connection, "async_check_user_exists", explode)
-    monkeypatch.setattr(web_password, "process_set_web_password", explode)
+    monkeypatch.setattr(user_records, "async_check_user_exists", explode)
+    monkeypatch.setattr(web_password_operations, "process_set_web_password", explode)
 
 
 @pytest.mark.parametrize(("command", "handler", "args"), HANDLERS)
@@ -154,13 +156,13 @@ def test_charge_logs_and_replies_show_only_masked_code(monkeypatch, caplog):
         return True
 
     async def redeem(user_id, code):
-        return True, 50
+        return charge_operations.RedeemResult(charge_operations.RedeemStatus.REDEEMED, amount=50)
 
     async def balance(user_id):
         return 150
 
     monkeypatch.setattr(process_user, "async_user_exists", registered)
-    monkeypatch.setattr(charge_coin, "verify_and_use_code", redeem)
+    monkeypatch.setattr(charge_operations, "redeem_code", redeem)
     monkeypatch.setattr(process_user, "async_get_user_coins", balance)
     message = _FakeMessage()
 
@@ -184,16 +186,13 @@ def test_redemption_failure_reply_carries_reference_not_exception_text(monkeypat
         async def __aexit__(self, *exc_info):
             return False
 
-    monkeypatch.setattr(
-        charge_coin.mysql_connection,
-        "transaction",
-        lambda: _BrokenTransaction(),
-    )
+    monkeypatch.setattr(sql, "transaction", lambda: _BrokenTransaction())
 
     with caplog.at_level(logging.DEBUG):
-        success, reason = asyncio.run(charge_coin.verify_and_use_code(7, CODE))
+        result = asyncio.run(charge_operations.redeem_code(7, CODE))
+    reason = charge_coin._redeem_failure_message(result)
 
-    assert success is False
+    assert result.status is charge_operations.RedeemStatus.FAILED
     assert "ERR-" in reason
     assert "db failure" not in reason
     assert CODE not in caplog.text

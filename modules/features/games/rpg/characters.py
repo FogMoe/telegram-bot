@@ -1,12 +1,12 @@
 import logging
-import re
 from typing import Optional, Dict, Any
 
 from sqlalchemy.exc import IntegrityError
 
-from core import mysql_connection
+from core import sql, user_records
 
 from . import settlement
+from ..repositories import rpg as rpg_repository
 from .utils import get_level_from_exp
 
 # --- 数据库交互函数 (RPG 角色) ---
@@ -14,12 +14,7 @@ from .utils import get_level_from_exp
 async def get_character(user_id: int) -> Optional[Dict[str, Any]]:
     """异步获取用户角色数据"""
     try:
-        row = await mysql_connection.fetch_one(
-            "SELECT * FROM rpg_characters WHERE user_id = %s",
-            (user_id,),
-            mapping=True,
-        )
-        return dict(row) if row else None
+        return await rpg_repository.get_character(user_id)
     except Exception as e:
         logging.error(f"获取角色数据时出错 (用户ID: {user_id}): {e}")
         return None
@@ -28,13 +23,8 @@ async def get_character(user_id: int) -> Optional[Dict[str, Any]]:
 async def create_character(user_id: int) -> bool:
     """异步为用户创建初始角色"""
     try:
-        await mysql_connection.execute(
-            """
-            INSERT INTO rpg_characters (user_id, level, hp, max_hp, atk, matk, def, experience, allow_battle)
-            VALUES (%s, 1, 10, 10, 2, 0, 1, 0, TRUE)
-            """,
-            (user_id,),
-        )
+        async with sql.transaction() as connection:
+            await rpg_repository.insert_character(connection, user_id)
         logging.info(f"为用户 {user_id} 创建了 RPG 角色")
         return True
     except IntegrityError:
@@ -54,11 +44,7 @@ async def get_user_id_by_username(username: str) -> Optional[int]:
         return None
 
     try:
-        result = await mysql_connection.fetch_one(
-            "SELECT id FROM user WHERE name = %s",
-            (clean_username,),
-        )
-        return result[0] if result else None
+        return await user_records.find_id_by_name(clean_username)
     except Exception as e:
         logging.error(f"通过用户名获取用户ID时出错 (用户名: {clean_username}): {e}")
         return None
@@ -69,29 +55,17 @@ async def update_character_stats(user_id: int, updates: dict) -> bool:
     if not updates:
         return False # 没有要更新的内容
 
-    # 构建 SET 子句和值列表
-    set_parts = []
-    values = []
-    for key, value in updates.items():
-        # 简单的验证，防止非法字段名 (更健壮的方法是预定义允许的字段)
-        if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', key):
-            set_parts.append(f"{key} = %s")
-            values.append(value)
-        else:
+    # 简单的验证，防止非法字段名 (列名由 repository 再校验一次)
+    for key in updates:
+        if not rpg_repository.is_valid_field_name(key):
             logging.warning(f"尝试更新非法字段名: {key}")
             return False # 阻止更新
 
-    if not set_parts:
-        return False # 没有有效的更新字段
-
-    set_clause = ", ".join(set_parts)
-    values.append(user_id) # 添加 user_id 到值的末尾用于 WHERE 子句
-
     try:
-        async with mysql_connection.transaction() as connection:
-            update_query = f"UPDATE rpg_characters SET {set_clause} WHERE user_id = %s"
-            result = await connection.exec_driver_sql(update_query, tuple(values))
-            rows_affected = result.rowcount
+        async with sql.transaction() as connection:
+            rows_affected = await rpg_repository.update_character_fields(
+                connection, user_id, updates
+            )
         logging.info(f"更新了用户 {user_id} 的角色数据: {updates}, 影响行数: {rows_affected}")
         return rows_affected > 0
     except Exception as e:

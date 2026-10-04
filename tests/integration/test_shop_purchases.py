@@ -18,7 +18,14 @@ from economy_support import (
 from mysql_support import execute, fetch_scalar, run
 
 from core import balance
-from features.economy import shop
+from features.economy import shop, shop_views
+from features.economy.operations import shop as shop_purchases
+from features.economy.operations.shop import (
+    MemoryLimitPurchase,
+    PermissionUpgrade,
+    PurchaseStatus,
+    TicketPurchase,
+)
 
 TODAY = date(2026, 10, 5)
 
@@ -27,8 +34,8 @@ TODAY = date(2026, 10, 5)
 def fresh_shop_state(monkeypatch):
     # 进程内状态：锁绑定事件循环，保底记录跨测试会互相影响，每个测试换新的。
     monkeypatch.setattr(shop, "lock", asyncio.Lock())
-    monkeypatch.setattr(shop, "scratch_records", {})
-    monkeypatch.setattr(shop, "huanle_records", {})
+    monkeypatch.setattr(shop_purchases, "scratch_records", {})
+    monkeypatch.setattr(shop_purchases, "huanle_records", {})
     monkeypatch.setattr(shop, "last_lottery_messages", {})
 
 
@@ -38,6 +45,17 @@ def memory_limit(url, user_id=1):
 
 def permission(url, user_id=1):
     return fetch_scalar(url, "SELECT permission FROM `user` WHERE id = %s", (user_id,))
+
+
+async def buy_memory_limit(user_id, op_key):
+    """购买并返回给用户看的文案（操作结果经展示层转成文案）。"""
+    result = await shop_purchases.buy_memory_limit(MemoryLimitPurchase(user_id, op_key))
+    return shop_views.memory_limit_message(result)
+
+
+async def upgrade_permission(user_id, level, op_key):
+    result = await shop_purchases.upgrade_permission(PermissionUpgrade(user_id, level, op_key))
+    return shop_views.permission_message(result)
 
 
 def fail_after(monkeypatch, name):
@@ -51,11 +69,73 @@ def fail_after(monkeypatch, name):
     monkeypatch.setattr(balance, name, wrapper)
 
 
+class TestTypedResults:
+    """购买操作返回类型化的结果，文案由展示层从结果生成。"""
+
+    def test_a_memory_purchase_reports_the_status_and_the_new_limit(self, app_database):
+        seed_user(app_database, 1, free=250)
+
+        first = run(shop_purchases.buy_memory_limit(MemoryLimitPurchase(1, "shop:memory:q1")))
+        replay = run(shop_purchases.buy_memory_limit(MemoryLimitPurchase(1, "shop:memory:q1")))
+
+        assert first == shop_purchases.MemoryLimitResult(PurchaseStatus.PURCHASED, 101)
+        assert replay == first
+
+    def test_declined_memory_purchases_carry_only_a_status(self, app_database):
+        seed_user(app_database, 1, free=10)
+
+        poor = run(shop_purchases.buy_memory_limit(MemoryLimitPurchase(1, "shop:memory:q1")))
+        stranger = run(shop_purchases.buy_memory_limit(MemoryLimitPurchase(404, "shop:memory:q2")))
+
+        assert poor == shop_purchases.MemoryLimitResult(PurchaseStatus.INSUFFICIENT)
+        assert stranger == shop_purchases.MemoryLimitResult(PurchaseStatus.NOT_REGISTERED)
+
+    def test_a_permission_purchase_reports_the_new_level(self, app_database):
+        seed_user(app_database, 1, free=500)
+
+        result = run(
+            shop_purchases.upgrade_permission(PermissionUpgrade(1, 1, "shop:perm1:q1"))
+        )
+
+        assert result == shop_purchases.PermissionUpgradeResult(PurchaseStatus.PURCHASED, level=1)
+
+    def test_a_refused_upgrade_names_the_reason(self, app_database):
+        seed_user(app_database, 1, free=500)
+
+        result = run(
+            shop_purchases.upgrade_permission(PermissionUpgrade(1, 3, "shop:perm3:q1"))
+        )
+
+        assert result.status is PurchaseStatus.NOT_ELIGIBLE
+        assert result.refusal is shop_purchases.UpgradeRefusal.NEED_LEVEL_2
+
+    def test_a_ticket_result_carries_reward_bonus_and_the_pity_to_commit(self, app_database):
+        seed_user(app_database, 1, free=30)
+
+        result = run(
+            shop_purchases.buy_huanle_ticket(TicketPurchase(1, "shop:huanle:q1"), today=TODAY)
+        )
+
+        assert result.status is PurchaseStatus.PURCHASED
+        assert result.reward >= 0 and result.bonus == 0
+        miss = result.reward == 0
+        assert result.pity == {"count": 1 if miss else 0, "date": TODAY}
+
+    def test_a_declined_ticket_reports_the_balance_it_saw(self, app_database):
+        seed_user(app_database, 1, free=4)
+
+        result = run(
+            shop_purchases.buy_scratch_ticket(TicketPurchase(1, "shop:scratch:q1"), today=TODAY)
+        )
+
+        assert result == shop_purchases.TicketResult(PurchaseStatus.INSUFFICIENT, balance_total=4)
+
+
 class TestMemoryLimit:
     def test_purchase_debits_and_raises_the_limit_in_one_step(self, app_database):
         seed_user(app_database, 1, free=60, paid=60)
 
-        message = run(shop.buy_memory_limit(1, "shop:memory:q1"))
+        message = run(buy_memory_limit(1, "shop:memory:q1"))
 
         assert message == "购买成功！永久记忆上限已提升至 101 条。"
         assert user_state(app_database, 1)["free"] + user_state(app_database, 1)["paid"] == 20
@@ -70,24 +150,24 @@ class TestMemoryLimit:
     def test_an_insufficient_balance_changes_nothing(self, app_database):
         seed_user(app_database, 1, free=99)
 
-        message = run(shop.buy_memory_limit(1, "shop:memory:q1"))
+        message = run(buy_memory_limit(1, "shop:memory:q1"))
 
-        assert message == shop.INSUFFICIENT_MESSAGE
+        assert message == shop_views.INSUFFICIENT_MESSAGE
         assert memory_limit(app_database) == 100
         assert user_state(app_database, 1)["free"] == 99
         assert ledger_rows(app_database) == []
 
     def test_an_unregistered_user_is_told_to_register(self, app_database):
-        message = run(shop.buy_memory_limit(404, "shop:memory:q1"))
+        message = run(buy_memory_limit(404, "shop:memory:q1"))
 
-        assert message == shop.NOT_REGISTERED_MESSAGE
+        assert message == shop_views.NOT_REGISTERED_MESSAGE
         assert ledger_rows(app_database) == []
 
     def test_the_same_click_delivered_twice_is_charged_and_applied_once(self, app_database):
         seed_user(app_database, 1, free=250)
 
-        first = run(shop.buy_memory_limit(1, "shop:memory:q1"))
-        second = run(shop.buy_memory_limit(1, "shop:memory:q1"))
+        first = run(buy_memory_limit(1, "shop:memory:q1"))
+        second = run(buy_memory_limit(1, "shop:memory:q1"))
 
         assert first == second
         assert memory_limit(app_database) == 101
@@ -100,13 +180,13 @@ class TestMemoryLimit:
         async def scenario():
             # 直接调用购买函数，绕过进程内的 asyncio 锁，验证数据库层的串行。
             return await gather_all(
-                *[shop.buy_memory_limit(1, f"shop:memory:q{index}") for index in range(5)]
+                *[buy_memory_limit(1, f"shop:memory:q{index}") for index in range(5)]
             )
 
         results = run(scenario())
 
         assert all(not isinstance(item, Exception) for item in results), results
-        assert sorted(results).count(shop.INSUFFICIENT_MESSAGE) == 4
+        assert sorted(results).count(shop_views.INSUFFICIENT_MESSAGE) == 4
         assert memory_limit(app_database) == 101
         assert user_state(app_database, 1)["free"] == 50
         assert len(ledger_rows(app_database)) == 1
@@ -116,7 +196,7 @@ class TestMemoryLimit:
         fail_after(monkeypatch, "debit")
 
         with pytest.raises(RuntimeError):
-            run(shop.buy_memory_limit(1, "shop:memory:q1"))
+            run(buy_memory_limit(1, "shop:memory:q1"))
 
         assert user_state(app_database, 1)["free"] == 150
         assert memory_limit(app_database) == 100
@@ -127,7 +207,7 @@ class TestPermissionUpgrade:
     def test_level_one_costs_50_and_sets_the_permission(self, app_database):
         seed_user(app_database, 1, free=80)
 
-        message = run(shop.upgrade_permission(1, 1, "shop:perm1:q1"))
+        message = run(upgrade_permission(1, 1, "shop:perm1:q1"))
 
         assert message == "购买成功！您的权限已升级到1级。"
         assert permission(app_database) == 1
@@ -137,8 +217,8 @@ class TestPermissionUpgrade:
     def test_levels_must_be_bought_in_order(self, app_database):
         seed_user(app_database, 1, free=20000)
 
-        skipped_two = run(shop.upgrade_permission(1, 2, "shop:perm2:q1"))
-        skipped_three = run(shop.upgrade_permission(1, 3, "shop:perm3:q2"))
+        skipped_two = run(upgrade_permission(1, 2, "shop:perm2:q1"))
+        skipped_three = run(upgrade_permission(1, 3, "shop:perm3:q2"))
 
         assert skipped_two == "您需要先升级到1级权限。"
         assert skipped_three == "您需要先升级到2级权限。"
@@ -149,7 +229,7 @@ class TestPermissionUpgrade:
         seed_user(app_database, 1, free=10200)
 
         for level, price in ((1, 50), (2, 100), (3, 10000)):
-            run(shop.upgrade_permission(1, level, f"shop:perm{level}:q{level}"))
+            run(upgrade_permission(1, level, f"shop:perm{level}:q{level}"))
             assert permission(app_database) == level
             assert -ledger_rows(app_database)[-1]["delta_free"] == price
 
@@ -159,8 +239,8 @@ class TestPermissionUpgrade:
         seed_user(app_database, 1, free=500)
         execute(app_database, "UPDATE `user` SET permission = 2 WHERE id = 1")
 
-        again_one = run(shop.upgrade_permission(1, 1, "shop:perm1:q1"))
-        again_two = run(shop.upgrade_permission(1, 2, "shop:perm2:q2"))
+        again_one = run(upgrade_permission(1, 1, "shop:perm1:q1"))
+        again_two = run(upgrade_permission(1, 2, "shop:perm2:q2"))
 
         assert again_one == "您已经拥有权限或已升级。"
         assert again_two == "您已经拥有2级或更高权限。"
@@ -170,9 +250,9 @@ class TestPermissionUpgrade:
     def test_an_insufficient_balance_keeps_the_old_permission(self, app_database):
         seed_user(app_database, 1, free=49)
 
-        message = run(shop.upgrade_permission(1, 1, "shop:perm1:q1"))
+        message = run(upgrade_permission(1, 1, "shop:perm1:q1"))
 
-        assert message == shop.INSUFFICIENT_MESSAGE
+        assert message == shop_views.INSUFFICIENT_MESSAGE
         assert permission(app_database) == 0
         assert ledger_rows(app_database) == []
 
@@ -181,7 +261,7 @@ class TestPermissionUpgrade:
 
         async def scenario():
             return await gather_all(
-                *[shop.upgrade_permission(1, 1, f"shop:perm1:q{index}") for index in range(4)]
+                *[upgrade_permission(1, 1, f"shop:perm1:q{index}") for index in range(4)]
             )
 
         results = run(scenario())
@@ -199,7 +279,7 @@ class TestPermissionUpgrade:
         fail_after(monkeypatch, "debit")
 
         with pytest.raises(RuntimeError):
-            run(shop.upgrade_permission(1, 1, "shop:perm1:q1"))
+            run(upgrade_permission(1, 1, "shop:perm1:q1"))
 
         assert permission(app_database) == 0
         assert user_state(app_database, 1)["free"] == 100
@@ -211,11 +291,11 @@ class TestScratchTicket:
     def reward(self, monkeypatch):
         """固定刮刮乐的开奖结果。"""
         holder = SimpleNamespace(value=7)
-        monkeypatch.setattr(shop, "draw_scratch_reward", lambda: holder.value)
+        monkeypatch.setattr(shop_purchases, "draw_scratch_reward", lambda: holder.value)
         return holder
 
     def buy(self, key="shop:scratch:q1"):
-        return run(shop.buy_scratch_ticket(1, key, today=TODAY))
+        return run(shop_purchases.buy_scratch_ticket(TicketPurchase(1, key), today=TODAY))
 
     def test_a_ticket_debits_the_price_and_credits_the_reward(self, app_database, reward):
         seed_user(app_database, 1, free=30)
@@ -223,7 +303,7 @@ class TestScratchTicket:
 
         purchase = self.buy()
 
-        assert (purchase.ok, purchase.reward, purchase.bonus) == (True, 14, 0)
+        assert (purchase.status, purchase.reward, purchase.bonus) == (PurchaseStatus.PURCHASED, 14, 0)
         assert user_state(app_database, 1)["free"] == 34
         assert [(row["op_key"], row["kind"]) for row in ledger_rows(app_database)] == [
             ("shop:scratch:q1", "debit"),
@@ -244,10 +324,13 @@ class TestScratchTicket:
 
         purchase = self.buy()
 
-        assert purchase.ok is False
-        assert purchase.message == "硬币不足，您当前只有 9 个硬币。"
+        assert purchase.status is PurchaseStatus.INSUFFICIENT
+        assert (
+            shop_views.ticket_message(purchase, shop_views.SCRATCH_VIEW)
+            == "硬币不足，您当前只有 9 个硬币。"
+        )
         assert ledger_rows(app_database) == []
-        assert shop.scratch_records == {}
+        assert shop_purchases.scratch_records == {}
 
     def test_five_misses_in_a_row_grant_the_consolation_bonus_once(self, app_database, reward):
         seed_user(app_database, 1, free=100)
@@ -257,7 +340,7 @@ class TestScratchTicket:
 
         assert [purchase.bonus for purchase in purchases] == [0, 0, 0, 0, 10]
         assert "shop:scratch:q4:bonus" in ledger_keys(app_database)
-        assert shop.scratch_records[1]["count"] == 0
+        assert shop_purchases.scratch_records[1]["count"] == 0
         # 5 次 -10 +3，加上一次保底 +10。
         assert user_state(app_database, 1)["free"] == 100 - 5 * 10 + 5 * 3 + 10
 
@@ -270,7 +353,7 @@ class TestScratchTicket:
 
         self.buy("shop:scratch:q9")
 
-        assert shop.scratch_records[1]["count"] == 0
+        assert shop_purchases.scratch_records[1]["count"] == 0
 
     def test_the_same_click_delivered_twice_pays_out_once(self, app_database, reward):
         seed_user(app_database, 1, free=30)
@@ -284,7 +367,7 @@ class TestScratchTicket:
         assert replay.pity is None
         assert user_state(app_database, 1)["free"] == 34
         assert len(ledger_rows(app_database)) == 2
-        assert shop.scratch_records[1]["count"] == 0
+        assert shop_purchases.scratch_records[1]["count"] == 0
 
     def test_a_failure_after_the_reward_rolls_back_the_debit_and_the_streak(
         self, app_database, reward, monkeypatch
@@ -298,7 +381,7 @@ class TestScratchTicket:
 
         assert user_state(app_database, 1)["free"] == 30
         assert ledger_rows(app_database) == []
-        assert shop.scratch_records == {}
+        assert shop_purchases.scratch_records == {}
 
     def test_concurrent_tickets_never_spend_more_than_the_balance(self, app_database, reward):
         seed_user(app_database, 1, free=25)
@@ -307,7 +390,9 @@ class TestScratchTicket:
         async def scenario():
             return await gather_all(
                 *[
-                    shop.buy_scratch_ticket(1, f"shop:scratch:q{index}", today=TODAY)
+                    shop_purchases.buy_scratch_ticket(
+                        TicketPurchase(1, f"shop:scratch:q{index}"), today=TODAY
+                    )
                     for index in range(6)
                 ]
             )
@@ -315,26 +400,32 @@ class TestScratchTicket:
         results = run(scenario())
 
         assert all(not isinstance(item, Exception) for item in results), results
-        assert sum(1 for item in results if item.ok) == 2
+        assert sum(1 for item in results if item.status is PurchaseStatus.PURCHASED) == 2
         assert user_state(app_database, 1)["free"] == 5
 
 
 class TestHuanleTicket:
     def test_a_ticket_costs_one_coin_and_pays_the_drawn_reward(self, app_database, monkeypatch):
         seed_user(app_database, 1, free=3)
-        monkeypatch.setattr(shop, "draw_huanle_reward", lambda: 5)
+        monkeypatch.setattr(shop_purchases, "draw_huanle_reward", lambda: 5)
 
-        purchase = run(shop.buy_huanle_ticket(1, "shop:huanle:q1", today=TODAY))
+        purchase = run(
+            shop_purchases.buy_huanle_ticket(TicketPurchase(1, "shop:huanle:q1"), today=TODAY)
+        )
 
-        assert (purchase.ok, purchase.reward, purchase.bonus) == (True, 5, 0)
+        assert (purchase.status, purchase.reward, purchase.bonus) == (PurchaseStatus.PURCHASED, 5, 0)
         assert user_state(app_database, 1)["free"] == 7
 
     def test_five_empty_tickets_grant_two_coins(self, app_database, monkeypatch):
         seed_user(app_database, 1, free=10)
-        monkeypatch.setattr(shop, "draw_huanle_reward", lambda: 0)
+        monkeypatch.setattr(shop_purchases, "draw_huanle_reward", lambda: 0)
 
         purchases = [
-            run(shop.buy_huanle_ticket(1, f"shop:huanle:q{index}", today=TODAY))
+            run(
+                shop_purchases.buy_huanle_ticket(
+                    TicketPurchase(1, f"shop:huanle:q{index}"), today=TODAY
+                )
+            )
             for index in range(5)
         ]
 
@@ -343,12 +434,17 @@ class TestHuanleTicket:
 
     def test_an_empty_wallet_cannot_buy(self, app_database, monkeypatch):
         seed_user(app_database, 1, free=0)
-        monkeypatch.setattr(shop, "draw_huanle_reward", lambda: 100)
+        monkeypatch.setattr(shop_purchases, "draw_huanle_reward", lambda: 100)
 
-        purchase = run(shop.buy_huanle_ticket(1, "shop:huanle:q1", today=TODAY))
+        purchase = run(
+            shop_purchases.buy_huanle_ticket(TicketPurchase(1, "shop:huanle:q1"), today=TODAY)
+        )
 
-        assert purchase.ok is False
-        assert purchase.message == "硬币不足，您当前只有 0 个硬币。"
+        assert purchase.status is PurchaseStatus.INSUFFICIENT
+        assert (
+            shop_views.ticket_message(purchase, shop_views.HUANLE_VIEW)
+            == "硬币不足，您当前只有 0 个硬币。"
+        )
         assert ledger_rows(app_database) == []
 
 
@@ -364,7 +460,7 @@ class TestShopCallback:
 
     def test_buying_a_scratch_ticket_answers_and_posts_the_record(self, app_database, monkeypatch):
         seed_user(app_database, 1, free=30)
-        monkeypatch.setattr(shop, "draw_scratch_reward", lambda: 12)
+        monkeypatch.setattr(shop_purchases, "draw_scratch_reward", lambda: 12)
 
         answer, sent = self.click("shop_scratch")
 
@@ -374,7 +470,7 @@ class TestShopCallback:
 
     def test_a_redelivered_click_does_not_charge_again(self, app_database, monkeypatch):
         seed_user(app_database, 1, free=30)
-        monkeypatch.setattr(shop, "draw_scratch_reward", lambda: 12)
+        monkeypatch.setattr(shop_purchases, "draw_scratch_reward", lambda: 12)
         monkeypatch.setattr(shop, "lock", asyncio.Lock())
 
         self.click("shop_scratch", query_id="same")
@@ -389,7 +485,7 @@ class TestShopCallback:
 
         answer, sent = self.click("shop_upgrade_1")
 
-        assert answer.texts == [shop.INSUFFICIENT_MESSAGE]
+        assert answer.texts == [shop_views.INSUFFICIENT_MESSAGE]
         assert answer.calls[0][1]["show_alert"] is True
         assert sent.calls == []
         assert ledger_rows(app_database) == []

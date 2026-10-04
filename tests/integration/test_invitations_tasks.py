@@ -17,14 +17,16 @@ from economy_support import (
 from mysql_support import execute, fetch, fetch_scalar, run
 
 from core import balance, config, sql
-from features.economy import ref, task
-from features.economy.task import TaskClaim
+from features.economy import ref as ref_handlers, task as task_handlers
+from features.economy.operations import invitations as ref
+from features.economy.operations import task
+from features.economy.operations.task import TaskClaim
 from features.profile import handlers as profile
 
 BONUS = config.NEW_USER_BONUS_COINS
 REWARD = ref.INVITATION_REWARD
 me_command = profile.me.__wrapped__
-ref_command = ref.ref_command.__wrapped__
+ref_command = ref_handlers.ref_command.__wrapped__
 
 
 def total(url, user_id):
@@ -359,7 +361,7 @@ class TestTaskReward:
     def click(self, *, member_status="member", user_id=1):
         update, answer, _ = make_callback_update(from_user_id=user_id, data="task_check_group1")
         context = make_context(get_chat_member=Recorder(result=SimpleNamespace(status=member_status)))
-        run(task.task_callback(update, context))
+        run(task_handlers.task_callback(update, context))
         return answer.texts
 
     def test_the_button_pays_a_group_member(self, app_database):

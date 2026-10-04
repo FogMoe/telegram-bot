@@ -13,7 +13,9 @@ import pytest
 
 from core import balance, chat_records, config, process_user, sql, stake_reward_pool
 from features.conversation import billing
-from features.economy import charge_coin, checkin
+from features.economy import charge_coin
+from features.economy.operations import charge as charge_operations
+from features.economy.operations import checkin, lottery
 
 
 class TestOpKeys:
@@ -229,22 +231,22 @@ class TestBusinessIdentities:
         )
 
     def test_lottery_key_follows_the_previous_draw_time(self):
-        first = process_user.lottery_op_key(7, None)
-        second = process_user.lottery_op_key(7, datetime(2026, 10, 5, 8, 30, 1))
+        first = lottery.lottery_op_key(7, None)
+        second = lottery.lottery_op_key(7, datetime(2026, 10, 5, 8, 30, 1))
 
         assert first == "lottery:7:never"
         assert second == "lottery:7:20261005T083001"
-        assert process_user.lottery_op_key(7, datetime(2026, 10, 5, 8, 30, 1)) == second
-        assert process_user.lottery_op_key(8, datetime(2026, 10, 5, 8, 30, 1)) != second
+        assert lottery.lottery_op_key(7, datetime(2026, 10, 5, 8, 30, 1)) == second
+        assert lottery.lottery_op_key(8, datetime(2026, 10, 5, 8, 30, 1)) != second
 
     def test_lottery_rewards_stay_within_the_documented_tiers(self):
-        draws = {process_user.draw_lottery_coins() for _ in range(2000)}
+        draws = {lottery.draw_lottery_coins() for _ in range(2000)}
 
         assert draws <= set(range(1, 21))
         assert {1, 20} & draws  # 两端都能抽到：样本足够大
 
     def test_topup_op_key_and_buttons_only_carry_the_request_id(self):
-        assert charge_coin.topup_op_key(17) == "topup:17"
+        assert charge_operations.topup_op_key(17) == "topup:17"
         assert charge_coin.topup_admin_callback_data("approve", 17) == "topup_admin_approve_17"
 
     @pytest.mark.parametrize(
