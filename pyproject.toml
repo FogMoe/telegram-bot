@@ -56,6 +56,13 @@ explicit_package_bases = true
 files = [
     "modules/core/sql.py",
     "modules/core/db.py",
+    "modules/core/ai_providers.py",
+    "modules/core/litellm_models.py",
+    "modules/features/ai/provider_resolver.py",
+    "modules/features/ai/litellm_provider_config.py",
+    "modules/features/ai/litellm_message_sanitizer.py",
+    "modules/features/ai/chat_capabilities.py",
+    "modules/features/ai/chat_provider.py",
     "modules/core/balance.py",
     "modules/core/stake_reward_pool.py",
     "modules/features/conversation/billing.py",

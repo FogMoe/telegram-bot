@@ -7,6 +7,7 @@ from .provider_resolver import (
     completion_kwargs_for_task,
     get_models_for_task,
     get_provider_order_for_task,
+    missing_capability_for_task,
     provider_fallback_model_for_task,
     provider_model_for_task,
 )
@@ -31,6 +32,15 @@ def run_ai_task(
 ) -> Any:
     last_error: Exception | None = None
     for provider in get_provider_order_for_task(task):
+        missing_capability = missing_capability_for_task(provider, task)
+        if missing_capability:
+            logging.warning(
+                "AI task %s skipped provider %s: no %s support",
+                task,
+                provider,
+                missing_capability,
+            )
+            continue
         try:
             models = get_models_for_task(provider, task)
         except Exception as exc:

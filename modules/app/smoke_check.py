@@ -15,10 +15,13 @@ _PLACEHOLDER_TOKEN = "0:smoke-check"
 
 
 def run_smoke_check() -> int:
+    settings = config.current_settings()
     if not config.TELEGRAM_BOT_TOKEN:
-        config.TELEGRAM_BOT_TOKEN = _PLACEHOLDER_TOKEN
+        settings = settings.model_copy(update={"TELEGRAM_BOT_TOKEN": _PLACEHOLDER_TOKEN})
 
-    application = create_application()
+    # 占位 token 只在检查期间生效，不留在进程配置里。
+    with config.use_settings(settings):
+        application = create_application(settings)
 
     handler_count = sum(len(handlers) for handlers in application.handlers.values())
     if handler_count == 0:
