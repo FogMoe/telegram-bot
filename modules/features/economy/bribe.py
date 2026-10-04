@@ -2,15 +2,79 @@
 
 import logging
 import random
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Sequence
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-from core import mysql_connection, process_user
+from core import balance, process_user
 from core.command_cooldown import cooldown
 
 BRIBE_COMMAND_ENABLED = False  # 暂时禁用 /bribe 命令
+
+
+class BribeStatus(StrEnum):
+    PAID = "paid"
+    REPLAYED = "replayed"
+    INSUFFICIENT = "insufficient"
+    NOT_REGISTERED = "not_registered"
+
+
+@dataclass(frozen=True)
+class BribeOutcome:
+    status: BribeStatus
+    balance_total: int = 0
+    total_gain: int = 0
+    affection_after: int = 0
+
+
+def bribe_op_key(chat_id: int, message_id: int) -> str:
+    """贿赂扣款：以命令消息为身份，同一条 /bribe 被重复投递不会再扣一次。"""
+    return balance.make_op_key("bribe", chat_id, message_id)
+
+
+async def _pay_bribe(
+    user_id: int,
+    coins_to_spend: int,
+    affection_before: int,
+    op_key: str,
+) -> BribeOutcome:
+    """扣款与好感度变化在同一个事务里：好感度写入失败时金币一并回滚。"""
+
+    async def work(connection) -> BribeOutcome:
+        try:
+            balances = await balance.lock_user(connection, user_id)
+        except balance.UserNotFound:
+            return BribeOutcome(BribeStatus.NOT_REGISTERED)
+        if await balance.get_operation(op_key, connection=connection) is not None:
+            return BribeOutcome(BribeStatus.REPLAYED)
+        if balances.total < coins_to_spend:
+            return BribeOutcome(BribeStatus.INSUFFICIENT, balance_total=balances.total)
+        try:
+            await balance.debit(
+                connection, user_id, coins_to_spend, op_key=op_key, reason="bribe"
+            )
+        except balance.InsufficientBalance as exc:
+            return BribeOutcome(BribeStatus.INSUFFICIENT, balance_total=exc.balance_total)
+
+        current_affection = affection_before
+        total_gain = 0
+        for _ in range(coins_to_spend // 100):
+            delta = random.randint(1, 10)
+            new_affection = await process_user.update_user_affection(
+                user_id, delta, connection=connection
+            )
+            total_gain += max(0, new_affection - current_affection)
+            current_affection = new_affection
+            if current_affection >= 100:
+                break
+        return BribeOutcome(
+            BribeStatus.PAID, total_gain=total_gain, affection_after=current_affection
+        )
+
+    return await balance.run_in_transaction(work)
 
 
 async def _reply(update: Update, text: str) -> None:
@@ -51,48 +115,35 @@ async def bribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _reply(update, "雾萌娘已经对你满怀好感啦，再多金币也没有上限可涨了！")
         return
 
-    try:
-        async with mysql_connection.transaction() as connection:
-            row = await mysql_connection.fetch_one(
-                "SELECT coins, coins_paid FROM user WHERE id = %s",
-                (user_id,),
-                connection=connection,
-            )
-            if not row:
-                await _reply(update, "请先使用 /me 命令注册个人信息。")
-                return
+    chat_id = getattr(update.effective_chat, "id", None)
+    message_id = getattr(update.message, "message_id", None)
+    if chat_id is None or message_id is None:
+        op_key = balance.new_op_key("bribe:adhoc")
+    else:
+        op_key = bribe_op_key(chat_id, message_id)
 
-            current_coins = (row[0] or 0) + (row[1] or 0)
-            if current_coins < coins_to_spend:
-                await _reply(update, f"您的金币不足，当前拥有 {current_coins} 枚，无法支付 {coins_to_spend} 枚。")
-                return
-            spent = await process_user.spend_user_coins(
-                user_id,
-                coins_to_spend,
-                connection=connection,
-            )
-            if not spent:
-                await _reply(update, f"您的金币不足，当前拥有 {current_coins} 枚，无法支付 {coins_to_spend} 枚。")
-                return
+    try:
+        outcome = await _pay_bribe(user_id, coins_to_spend, affection_before, op_key)
     except Exception as exc:
         logging.error("/bribe 扣除金币失败: %s", exc)
         await _reply(update, "贿赂过程中出现问题，请稍后再试。")
         return
 
-    batches = coins_to_spend // 100
-    total_gain = 0
-    current_affection = affection_before
+    if outcome.status is BribeStatus.NOT_REGISTERED:
+        await _reply(update, "请先使用 /me 命令注册个人信息。")
+        return
+    if outcome.status is BribeStatus.INSUFFICIENT:
+        await _reply(
+            update,
+            f"您的金币不足，当前拥有 {outcome.balance_total} 枚，无法支付 {coins_to_spend} 枚。",
+        )
+        return
+    if outcome.status is BribeStatus.REPLAYED:
+        # 同一条命令被重复投递：上一次已经扣款并写入好感度，不再重复处理。
+        return
 
-    for _ in range(batches):
-        delta = random.randint(1, 10)
-        new_affection = await process_user.async_update_user_affection(user_id, delta)
-        gained = max(0, new_affection - current_affection)
-        total_gain += gained
-        current_affection = new_affection
-        if current_affection >= 100:
-            break
-
-    affection_after = current_affection
+    total_gain = outcome.total_gain
+    affection_after = outcome.affection_after
 
     if total_gain <= 0:
         await _reply(update, "雾萌娘的好感度已经拉满啦，再多金币也收不下了！")

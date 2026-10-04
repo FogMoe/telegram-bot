@@ -8,7 +8,7 @@ API
 - `credit(connection, user_id, amount, *, op_key, reason, kind=CoinKind.FREE, ref=None)`
 - `debit(connection, user_id, amount, *, op_key, reason, ref=None)`：先扣免费再扣付费
 - `refund(connection, original_op_key, *, reason="refund")`：把一次成功的 debit 原路退回
-- `get_operation(op_key)`、`lock_user(connection, user_id)`
+- `get_operation(op_key)`、`lock_user(connection, user_id)`、`lock_users(connection, user_ids)`（多个用户按 id 升序加锁）
 - `credit_standalone` / `debit_standalone` / `refund_standalone`：自己开事务的便捷包装
 
 核心操作都在调用方传入的 `connection`（事务）里执行，不提交也不回滚；调用方可以在同一个事务里
@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -263,6 +263,21 @@ async def lock_user(connection: AsyncConnection, user_id: int) -> UserBalances:
     if row is None:
         raise UserNotFound(user_id)
     return UserBalances(free=int(row[0] or 0), paid=int(row[1] or 0))
+
+
+async def lock_users(
+    connection: AsyncConnection, user_ids: Iterable[int]
+) -> dict[int, UserBalances]:
+    """按 user id 升序依次锁住多个 user 行，返回每个用户当前的余额。
+
+    一个事务要同时变动多个用户（转账、邀请奖励）时必须走这里：所有路径都按同一顺序加锁，
+    A 转给 B 与 B 转给 A 同时发生也不会互相等待。任何一个用户不存在抛 UserNotFound
+    （带上缺失的 user id）。
+    """
+    balances: dict[int, UserBalances] = {}
+    for user_id in sorted(set(user_ids)):
+        balances[user_id] = await lock_user(connection, user_id)
+    return balances
 
 
 def _entry_from_row(row: Any, *, applied: bool) -> BalanceResult:
