@@ -39,6 +39,7 @@ app → core
 | `sql.py` | 通用 SQL 助手：`fetch_one` / `fetch_all` / `execute` 与连接别名 |
 | `chat_records.py` | AI 对话历史存储：写入、归档、裁剪、token 预算、history-state 事件 |
 | `user_records.py` | user 表的基础查询 |
+| `migration_support.py` | Alembic 迁移的支撑代码：数据库 URL 优先级、版本表宽度、可重入 DDL 助手，见 [database-migrations.md](database-migrations.md) |
 | `mysql_connection.py` | **兼容层**：把上面三者 re-export 出去，保留全项目既有的 import 路径 |
 | `telegram_history.py` | Telegram 可见事件 → 对话历史的记录层，只写库并发信号 |
 | `process_user.py` | 用户金币、好感、印象、抽奖 |

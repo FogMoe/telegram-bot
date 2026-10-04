@@ -191,6 +191,8 @@ CREATE DATABASE fogmoe_telegram_bot_db
 
 </details>
 
+升级既有安装、迁移中途失败后的恢复和集成测试的运行方式见 [docs/database-migrations.md](docs/database-migrations.md)。
+
 启动后，在 Telegram 中向机器人发送 `/start` 或 `/help` 即可开始使用。
 
 ### Linux 后台管理脚本

@@ -10,14 +10,16 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute("""CREATE TABLE `stake_reward_pool` (
+    op.execute("""CREATE TABLE IF NOT EXISTS `stake_reward_pool` (
   `id` TINYINT NOT NULL,
   `balance` DECIMAL(20,2) NOT NULL DEFAULT 0,
   `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+    # 重跑时保留已有的奖池余额，不要覆盖。
     op.execute(
-        "INSERT INTO `stake_reward_pool` (`id`, `balance`) VALUES (1, 0)"
+        "INSERT INTO `stake_reward_pool` (`id`, `balance`) VALUES (1, 0) "
+        "ON DUPLICATE KEY UPDATE `id` = `id`"
     )
 
 
