@@ -117,7 +117,7 @@ def test_thread_pools_only_live_in_the_bounded_adapter():
 
 # `asyncio.to_thread` / `run_in_executor` 走事件循环的默认线程池（上限随 CPU 数，不可配置）。
 # 只剩一处：Argon2id 口令哈希，纯 CPU、不碰网络，属于 economy/，不在本次范围内。
-ALLOWED_DEFAULT_EXECUTOR = {"features/economy/web_password.py"}
+ALLOWED_DEFAULT_EXECUTOR = {"features/economy/operations/web_password.py"}
 
 
 def test_the_default_executor_is_not_used_for_network_or_tool_work():

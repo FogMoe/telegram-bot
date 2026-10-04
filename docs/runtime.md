@@ -170,7 +170,7 @@ PTB handler（concurrent_updates 有界）
 
 **不在适配器里、也不在本次范围内的遗留：**
 
-- `features/economy/web_password.py` 的 `asyncio.to_thread(hash_password, …)`：Argon2id 哈希，纯 CPU、不碰网络，用事件循环的默认线程池，属于 economy 模块。
+- `features/economy/operations/web_password.py` 的 `asyncio.to_thread(hash_password, …)`：Argon2id 哈希，纯 CPU、不碰网络，用事件循环的默认线程池，属于 economy 模块。
 - `features/games/rpg/utils.py` 的 `rpg_db_executor`：没有任何调用者的遗留对象，属于 games 模块。
 - `core/chat_records.py` 等处同步的 token 估算（CPU）仍在事件循环里（每次十几毫秒量级）。
 
