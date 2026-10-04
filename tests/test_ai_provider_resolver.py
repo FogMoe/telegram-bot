@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 
 from core import config
@@ -142,7 +143,7 @@ def test_run_ai_task_uses_resolved_models_with_fallback_and_kwarg_override(monke
         lambda provider, task: {"temperature": 1},
     )
 
-    def fake_create_chat_completion(provider, model, request_messages, **kwargs):
+    async def fake_create_chat_completion(provider, model, request_messages, **kwargs):
         calls.append(
             {
                 "provider": provider,
@@ -161,7 +162,7 @@ def test_run_ai_task_uses_resolved_models_with_fallback_and_kwarg_override(monke
         fake_create_chat_completion,
     )
 
-    result = task_runner.run_ai_task("summary", messages, temperature=0)
+    result = asyncio.run(task_runner.run_ai_task("summary", messages, temperature=0))
 
     assert result == "ok"
     assert [call["model"] for call in calls] == ["primary-model", "fallback-model"]
@@ -186,7 +187,7 @@ def test_run_ai_task_does_not_retry_provider_independent_context_error(monkeypat
         lambda provider, task: [f"{provider}-model"],
     )
 
-    def fake_create_chat_completion(provider, model, messages, **kwargs):
+    async def fake_create_chat_completion(provider, model, messages, **kwargs):
         calls.append(provider)
         raise ContextBudgetExceededError(150_001, 150_000)
 
@@ -197,7 +198,7 @@ def test_run_ai_task_does_not_retry_provider_independent_context_error(monkeypat
     )
 
     with pytest.raises(ContextBudgetExceededError):
-        task_runner.run_ai_task("advisor", [{"role": "user", "content": "x"}])
+        asyncio.run(task_runner.run_ai_task("advisor", [{"role": "user", "content": "x"}]))
 
     assert calls == ["openai"]
 
@@ -218,7 +219,7 @@ def test_run_ai_task_skips_invalid_provider_and_uses_fallback(monkeypatch):
 
     monkeypatch.setattr(task_runner, "get_models_for_task", fake_get_models)
 
-    def fake_create_chat_completion(provider, model, messages, **kwargs):
+    async def fake_create_chat_completion(provider, model, messages, **kwargs):
         calls.append((provider, model))
         return "ok"
 
@@ -228,10 +229,10 @@ def test_run_ai_task_skips_invalid_provider_and_uses_fallback(monkeypatch):
         fake_create_chat_completion,
     )
 
-    result = task_runner.run_ai_task(
+    result = asyncio.run(task_runner.run_ai_task(
         "advisor",
         [{"role": "user", "content": "review"}],
-    )
+    ))
 
     assert result == "ok"
     assert calls == [("openai", "fallback-model")]

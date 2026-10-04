@@ -6,8 +6,10 @@ import time
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CommandHandler, ContextTypes, CallbackQueryHandler
-from core import process_user, stake_reward_pool
+from core import balance, process_user, stake_reward_pool
 from core.command_cooldown import cooldown
+from core.command_identity import message_identity
+from core.redaction import log_exception
 
 # 创建一个日志记录器
 logger = logging.getLogger(__name__)
@@ -142,6 +144,46 @@ def format_image_info(image_data):
     
     return "\n".join(info)
 
+async def _refund_coins(op_key: str | None, *, reason: str) -> bool:
+    """退回 `op_key` 对应的那次扣费；没扣过费返回 False，退款失败只记日志。
+
+    refund 只针对已成功的 debit，重复调用也只会退一次，所以异常分支与兜底分支可以放心都调。
+    """
+    if op_key is None:
+        return False
+    try:
+        await balance.refund_standalone(op_key, reason=reason)
+    except Exception as refund_error:
+        log_exception(logger, "图片扣费退款失败", refund_error)
+        return False
+    return True
+
+
+async def _contribute_to_pool(cost: int, op_key: str) -> None:
+    """交付成功后把这次消费的一部分计入奖池，带 op_key，失败只记日志。"""
+    try:
+        await stake_reward_pool.credit_share_of_spend_standalone(cost, spend_op_key=op_key)
+    except Exception as pool_error:
+        logger.error("奖励池入账失败: %s", pool_error)
+
+
+def _pic_op_key(update: Update) -> str:
+    """/pic 的扣费身份是命令消息；同一条命令被重复投递不会再扣一次。"""
+    chat_id = getattr(update.effective_chat, "id", None)
+    message_id = getattr(update.message, "message_id", None)
+    if chat_id is None or message_id is None:
+        return balance.new_op_key("pic:adhoc")
+    return balance.make_op_key("pic", *message_identity(chat_id, message_id))
+
+
+def _hd_op_key(update: Update) -> str:
+    """高清图的扣费身份是这一次按钮点击（callback query id），不是图片 id。"""
+    query_id = getattr(update.callback_query, "id", None)
+    if not query_id:
+        return balance.new_op_key("pic_hd:adhoc")
+    return balance.make_op_key("pic_hd", query_id)
+
+
 @cooldown
 async def pic_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理/pic命令，消耗金币发送随机图片"""
@@ -198,36 +240,53 @@ async def pic_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
             return
     
-    # 获取用户金币数量
-    user_coins = await process_user.async_get_user_coins(user_id)
-    
-    # 检查用户金币是否足够
-    if user_coins < COIN_COST:
+    # 先扣费再取图：余额不足直接返回，不进入后面的步骤。
+    debit_key = _pic_op_key(update)
+    try:
+        await balance.debit_standalone(
+            user_id,
+            COIN_COST,
+            op_key=debit_key,
+            reason="pic",
+        )
+    except (balance.InsufficientBalance, balance.UserNotFound):
+        user_coins = await process_user.async_get_user_coins(user_id)
         await update.message.reply_text(
             f"{user_mention} 您的金币不足！使用此功能需要 {COIN_COST} 个金币，您当前有 {user_coins} 个金币。\n"
             f"Not enough coins! This feature requires {COIN_COST} coins, you have {user_coins} coins."
         )
         return
-    
-    # 发送处理中消息
-    processing_msg = await update.message.reply_text(
-        "⏳ 正在获取图片，请稍候...\n"
-        "Fetching image, please wait..."
-    )
-    
+
+    # 已经扣费：从这里到图片送达之间的任何失败（包括「处理中」提示本身发不出去）都要退款。
+    processing_msg = None
+
+    async def report_failure(text: str) -> None:
+        """把失败告诉用户：有处理中消息就改写它，否则直接回复；通知失败只记日志。"""
+        try:
+            if processing_msg is not None:
+                await processing_msg.edit_text(text)
+            else:
+                await update.message.reply_text(text)
+        except Exception as notify_error:
+            logger.warning("通知图片获取失败时出错: %s", notify_error)
+
     try:
-        # 扣除用户金币
-        await process_user.async_update_user_coins(user_id, -COIN_COST)
-        
+        # 发送处理中消息
+        processing_msg = await update.message.reply_text(
+            "⏳ 正在获取图片，请稍候...\n"
+            "Fetching image, please wait..."
+        )
+
         # 获取随机图片，并避免用户最近看过的图片
         image_data = await get_random_image(is_nsfw, user_id)
         
         if not image_data:
             # 如果获取图片失败，退还金币
-            await process_user.async_update_user_coins(user_id, COIN_COST)
-            await processing_msg.edit_text(
-                f"{user_mention} 获取图片失败，请稍后再试。金币已退还。\n"
-                "Failed to fetch image. Please try again later. Your coins have been refunded."
+            refunded = await _refund_coins(debit_key, reason="pic_failed")
+            await report_failure(
+                f"{user_mention} 获取图片失败，请稍后再试。" + ("金币已退还。" if refunded else "") + "\n"
+                "Failed to fetch image. Please try again later."
+                + (" Your coins have been refunded." if refunded else "")
             )
             return
         
@@ -246,10 +305,11 @@ async def pic_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         
         # 如果都没有有效URL，退还金币并返回错误
         if not sample_url and not file_url:
-            await process_user.async_update_user_coins(user_id, COIN_COST)
-            await processing_msg.edit_text(
-                f"{user_mention} 获取图片URL失败，请稍后再试。金币已退还。\n"
-                "Failed to get image URL. Please try again later. Your coins have been refunded."
+            refunded = await _refund_coins(debit_key, reason="pic_failed")
+            await report_failure(
+                f"{user_mention} 获取图片URL失败，请稍后再试。" + ("金币已退还。" if refunded else "") + "\n"
+                "Failed to get image URL. Please try again later."
+                + (" Your coins have been refunded." if refunded else "")
             )
             return
         
@@ -325,31 +385,32 @@ async def pic_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             has_spoiler=is_nsfw,  # 如果是NSFW内容，启用spoiler效果
             reply_to_message_id=update.message.message_id  # 回复用户的原始命令
         )
-        
-        # 保存消息ID到缓存，以便高清回调使用
-        if image_id and reply_markup:
-            HD_IMAGE_CACHE[image_id]['message_id'] = sent_message.message_id
-        
-        # 删除处理中消息
-        await processing_msg.delete()
-        
-        # 记录日志
-        logger.info(f"用户 {user_name}(ID:{user_id}) 消耗 {COIN_COST} 金币获取了一张{'NSFW' if is_nsfw else '普通'}图片")
-        try:
-            pool_add = stake_reward_pool.calculate_pool_add(COIN_COST)
-            if pool_add > 0:
-                await stake_reward_pool.add_to_pool(pool_add)
-        except Exception as pool_error:
-            logger.error("奖励池入账失败: %s", pool_error)
-        
     except Exception as e:
-        # 处理异常，退还金币
+        # 图片没有送达：退还金币
         logger.error(f"发送图片时出错: {str(e)}")
-        await process_user.async_update_user_coins(user_id, COIN_COST)
-        await processing_msg.edit_text(
-            f"{user_mention} 发送图片时出错，请稍后再试。金币已退还。\n"
-            "Error sending image. Please try again later. Your coins have been refunded."
+        refunded = await _refund_coins(debit_key, reason="pic_failed")
+        await report_failure(
+            f"{user_mention} 发送图片时出错，请稍后再试。" + ("金币已退还。" if refunded else "") + "\n"
+            "Error sending image. Please try again later."
+            + (" Your coins have been refunded." if refunded else "")
         )
+        return
+
+    # 图片已经送达：之后的收尾出错不能再退款。
+    # 保存消息ID到缓存，以便高清回调使用
+    if image_id and reply_markup:
+        HD_IMAGE_CACHE[image_id]['message_id'] = sent_message.message_id
+
+    # 删除处理中消息
+    try:
+        await processing_msg.delete()
+    except Exception as delete_error:
+        logger.warning("删除图片处理中消息失败: %s", delete_error)
+
+    # 记录日志
+    logger.info(f"用户 {user_name}(ID:{user_id}) 消耗 {COIN_COST} 金币获取了一张{'NSFW' if is_nsfw else '普通'}图片")
+    # 交付成功后才贡献奖池
+    await _contribute_to_pool(COIN_COST, debit_key)
 
 async def hd_pic_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理高清图片按钮回调"""
@@ -363,6 +424,8 @@ async def hd_pic_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     processing_completed = False
     # 金币是否已经退还，避免异常分支和 finally 兜底重复退款
     refund_issued = False
+    # 已扣费时的 op_key；None 表示还没扣过费，任何分支都不能退款
+    debit_key = None
     
     # 解析回调数据
     try:
@@ -423,11 +486,17 @@ async def hd_pic_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         logger.info(f"高清图片URL: {hd_url}")
         
-        # 获取用户金币数量
-        user_coins = await process_user.async_get_user_coins(user_id)
-        
-        # 检查用户金币是否足够
-        if user_coins < HD_COIN_COST:
+        # 先扣费再交付；余额不足直接返回。op_key 取这次按钮点击的身份，重复投递不会再扣一次。
+        hd_key = _hd_op_key(update)
+        try:
+            await balance.debit_standalone(
+                user_id,
+                HD_COIN_COST,
+                op_key=hd_key,
+                reason="pic_hd",
+            )
+        except (balance.InsufficientBalance, balance.UserNotFound):
+            user_coins = await process_user.async_get_user_coins(user_id)
             await query.answer(
                 f"金币不足！查看高清图片需要 {HD_COIN_COST} 个金币，您当前有 {user_coins} 个金币。",
                 show_alert=True
@@ -436,7 +505,8 @@ async def hd_pic_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             logger.info(f"用户 {user_id} 金币不足，从处理集合中移除图片 {image_id}")
             PROCESSING_IMAGES.discard(image_id)
             return
-        
+        debit_key = hd_key
+
         # 检查图片大小
         file_size_mb = 0
         if 'stats' in pic_data and 'file_size' in pic_data['stats'] and pic_data['stats']['file_size']:
@@ -458,9 +528,6 @@ async def hd_pic_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
         except Exception as e:
             logger.warning(f"更新原消息失败: {str(e)}")
-        
-        # 扣除用户金币
-        await process_user.async_update_user_coins(user_id, -HD_COIN_COST)
         
         # 获取图片文件名和消息ID
         file_name = hd_url.split('/')[-1].split('?')[0]  # 提取URL中的文件名部分
@@ -532,7 +599,14 @@ async def hd_pic_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # 处理异常，如果还没有成功发送，提供备用链接
         logger.error(f"发送高清图片时出错: {str(e)}")
         
-        if not processing_completed:  # 只有在没有成功发送的情况下提供备用链接
+        if debit_key is None:
+            # 扣费之前（含扣费本身）就出错了：没有收过钱，不能交付备用链接，放回可重试状态。
+            PROCESSING_IMAGES.discard(image_id)
+            try:
+                await query.answer("处理请求时出错，请稍后再试。", show_alert=True)
+            except Exception as answer_error:
+                logger.error(f"回复错误提示失败: {str(answer_error)}")
+        elif not processing_completed:  # 只有在没有成功发送的情况下提供备用链接
             try:
                 keyboard = [[InlineKeyboardButton("下载高清原图", url=hd_url)]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
@@ -552,30 +626,25 @@ async def hd_pic_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 logger.error(f"提供高清图片链接也失败: {str(inner_e)}")
                 
                 # 如果所有尝试都失败，退还金币
-                await process_user.async_update_user_coins(user_id, HD_COIN_COST)
-                refund_issued = True
-                await query.answer("发送高清图片时出错，请稍后再试。您的金币已退还。", show_alert=True)
+                refund_issued = await _refund_coins(debit_key, reason="pic_hd_failed")
+                await query.answer(
+                    "发送高清图片时出错，请稍后再试。" + ("您的金币已退还。" if refund_issued else ""),
+                    show_alert=True,
+                )
         
     finally:
         # 记录处理结果
         if processing_completed:
             logger.info(f"图片 {image_id} 请求已成功处理完成")
-            try:
-                pool_add = stake_reward_pool.calculate_pool_add(HD_COIN_COST)
-                if pool_add > 0:
-                    await stake_reward_pool.add_to_pool(pool_add)
-            except Exception as pool_error:
-                logger.error("奖励池入账失败: %s", pool_error)
+            if debit_key is not None:
+                await _contribute_to_pool(HD_COIN_COST, debit_key)
         else:
-            # 金币不足、数据过期、URL 缺失这些分支都在扣币前就 discard 了 image_id，
-            # 所以集合里还在，就说明币已经扣了却没交付内容。
-            if image_id in PROCESSING_IMAGES and not refund_issued:
-                logger.warning(f"图片 {image_id} 处理失败，已退还金币")
-                # 如果处理未完成且尚未退还金币，确保退还
-                try:
-                    await process_user.async_update_user_coins(user_id, HD_COIN_COST)
-                except Exception as refund_error:
-                    logger.error(f"退还金币失败: {str(refund_error)}")
+            # 只有已经扣过费（debit_key 不为空）才可能需要退款：没扣过费的分支
+            # （余额不足、数据过期、URL 缺失、扣费前的异常）退款会被拒绝，不会凭空多出金币。
+            if debit_key is not None and not refund_issued:
+                logger.warning(f"图片 {image_id} 处理失败，退还金币")
+                # 如果处理未完成且尚未退还金币，确保退还（refund 重复调用也只会退一次）
+                await _refund_coins(debit_key, reason="pic_hd_failed")
 
 async def fetch_and_cache_images(is_nsfw=False, max_retries=3):
     """获取并缓存图片数据"""

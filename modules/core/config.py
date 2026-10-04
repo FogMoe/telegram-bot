@@ -1,17 +1,39 @@
 # Description: Configuration file for the bot
 # replace with secure storage (e.g., environment variable / secrets manager)
+from __future__ import annotations
+
+import os
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote_plus
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 BASE_DIR = Path(__file__).resolve().parents[2]
+
+ENV_FILE_VAR = "BOT_ENV_FILE"
+
+
+def resolve_env_file(environ: Mapping[str, str] | None = None) -> Path | None:
+    """决定从哪个文件读取配置：BOT_ENV_FILE 未设置时用仓库根的 .env，
+    设为路径则读取该文件，设为空字符串则完全不读 env 文件（只用进程环境变量）。"""
+    override = (os.environ if environ is None else environ).get(ENV_FILE_VAR)
+    if override is None:
+        return BASE_DIR / ".env"
+    override = override.strip()
+    return Path(override) if override else None
 
 
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=BASE_DIR / ".env",
+        env_file=resolve_env_file(),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -132,6 +154,19 @@ class AppSettings(BaseSettings):
     CHAT_CONTEXT_HARD_LIMIT_RATIO: float = Field(default=1.25, ge=1.0, le=2.0)
     CHAT_CONTEXT_SAFETY_TOKENS: int = Field(default=2048, ge=0, le=32000)
     CHAT_BATCH_WINDOW_SECONDS: float = 1.0
+
+    # 运行时：准入、整轮截止时间、线程适配器与指标，取值依据见 docs/runtime.md。
+    CHAT_MAX_CONCURRENT_TURNS: int = Field(default=32, ge=1, le=512)
+    CHAT_MAX_QUEUED_TURNS: int = Field(default=32, ge=0, le=1024)
+    CHAT_MAX_PENDING_PER_USER: int = Field(default=3, ge=1, le=20)
+    CHAT_QUEUE_MAX_WAIT_SECONDS: float = Field(default=20.0, ge=0, le=300)
+    CHAT_TURN_DEADLINE_SECONDS: float = Field(default=360.0, ge=30, le=3600)
+    TELEGRAM_CONCURRENT_UPDATES: int = Field(default=128, ge=1, le=1024)
+    BLOCKING_TOOL_THREADS: int = Field(default=8, ge=1, le=64)
+    BLOCKING_IO_THREADS: int = Field(default=4, ge=1, le=32)
+    RUNTIME_METRICS_LOG_INTERVAL_SECONDS: float = Field(default=300.0, ge=0, le=86400)
+    RUNTIME_SHUTDOWN_GRACE_SECONDS: float = Field(default=8.0, ge=0, le=300)
+
     TELEGRAM_HISTORY_RATE_WINDOW_SECONDS: float = Field(default=0.5, gt=0, le=60)
     TELEGRAM_HISTORY_RATE_MAX_EVENTS: int = Field(default=8, ge=1, le=100)
 
@@ -162,6 +197,7 @@ class AppSettings(BaseSettings):
     DATABASE_URL: str | None = None
 
     LOG_LEVEL: str = "INFO"
+    LOG_TO_STDOUT: bool = True
 
     @field_validator("GEMINI_OPENAI_COMPATIBLE", mode="before")
     @classmethod
@@ -186,8 +222,80 @@ class AppSettings(BaseSettings):
             return None
         return value
 
+    @classmethod
+    def from_values(cls, **values: Any) -> AppSettings:
+        """只用代码默认值和显式传入的值构造配置，不读 env 文件，也不读进程环境变量。
+
+        给测试和嵌入式装配用：结果不依赖开发者的 `.env` 或 shell。未知的名字会报错。
+        """
+        return _ExplicitSettings(**values)
+
+
+class _ExplicitSettings(AppSettings):
+    model_config = SettingsConfigDict(env_file=None, extra="forbid")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (init_settings,)
+
+
+def _parse_csv_value(raw_value: str | None) -> list[str]:
+    if not raw_value:
+        return []
+    values = [item.strip().lower() for item in raw_value.split(",") if item.strip()]
+    return values
+
+
+def _build_azure_base_url(settings: AppSettings) -> str:
+    endpoint = settings.AZURE_OPENAI_API_ENDPOINT
+    deployment = settings.AZURE_OPENAI_DEPLOYMENT
+    if not endpoint or not deployment:
+        return ""
+    return f"{endpoint.rstrip('/')}/openai/deployments/{deployment}"
+
+
+def _build_mysql_dsn(settings: AppSettings) -> str:
+    user = settings.MYSQL_USER or ""
+    password = settings.MYSQL_PASSWORD or ""
+    host = settings.MYSQL_HOST or "localhost"
+    database = settings.MYSQL_DATABASE or ""
+    port = settings.MYSQL_PORT
+
+    auth = user
+    if password:
+        auth = f"{user}:{quote_plus(password)}"
+
+    location = f"{host}:{port}" if port else host
+    return f"mysql+asyncmy://{auth}@{location}/{database}?charset=utf8mb4"
+
+
+def _derived_values(settings: AppSettings) -> dict[str, Any]:
+    """模块级常量里不是「字段原样复制」的那几个，由设置推导。导入时和换配置时共用这一份。"""
+    return {
+        "AZURE_OPENAI_BASE_URL": settings.AZURE_OPENAI_BASE_URL
+        or _build_azure_base_url(settings),
+        "MYSQL_CONFIG": {
+            "host": settings.MYSQL_HOST,
+            "user": settings.MYSQL_USER,
+            "password": settings.MYSQL_PASSWORD,
+            "database": settings.MYSQL_DATABASE,
+        },
+        "SQLALCHEMY_DATABASE_URI": settings.DATABASE_URL or _build_mysql_dsn(settings),
+        # AI 服务的排序，按照优先级从高到低排序
+        "AI_SERVICE_ORDER": _parse_csv_value(settings.AI_CHAT_ORDER),
+        "AI_CHAT_TEXT_ONLY_MODELS": _parse_csv_value(settings.AI_CHAT_TEXT_ONLY_MODELS),
+    }
+
 
 SETTINGS = AppSettings()
+_DERIVED = _derived_values(SETTINGS)
 
 
 GEMINI_API_KEY = SETTINGS.GEMINI_API_KEY
@@ -272,15 +380,7 @@ SILICONFLOW_VISION_MODEL = SETTINGS.SILICONFLOW_VISION_MODEL
 SILICONFLOW_CLASSIFIER_MODEL = SETTINGS.SILICONFLOW_CLASSIFIER_MODEL
 SILICONFLOW_ADVISOR_MODEL = SETTINGS.SILICONFLOW_ADVISOR_MODEL
 
-def _build_azure_base_url() -> str:
-    if not AZURE_OPENAI_API_ENDPOINT or not AZURE_OPENAI_DEPLOYMENT:
-        return ""
-    return (
-        f"{AZURE_OPENAI_API_ENDPOINT.rstrip('/')}/openai/deployments/"
-        f"{AZURE_OPENAI_DEPLOYMENT}"
-    )
-
-AZURE_OPENAI_BASE_URL = SETTINGS.AZURE_OPENAI_BASE_URL or _build_azure_base_url()
+AZURE_OPENAI_BASE_URL = _DERIVED["AZURE_OPENAI_BASE_URL"]
 
 AI_RECAP_PROVIDER = SETTINGS.AI_RECAP_PROVIDER
 AI_RECAP_FALLBACK_PROVIDER = SETTINGS.AI_RECAP_FALLBACK_PROVIDER
@@ -306,6 +406,16 @@ CHAT_TOKEN_LIMIT = SETTINGS.CHAT_TOKEN_LIMIT
 CHAT_CONTEXT_HARD_LIMIT_RATIO = SETTINGS.CHAT_CONTEXT_HARD_LIMIT_RATIO
 CHAT_CONTEXT_SAFETY_TOKENS = SETTINGS.CHAT_CONTEXT_SAFETY_TOKENS
 CHAT_BATCH_WINDOW_SECONDS = SETTINGS.CHAT_BATCH_WINDOW_SECONDS
+CHAT_MAX_CONCURRENT_TURNS = SETTINGS.CHAT_MAX_CONCURRENT_TURNS
+CHAT_MAX_QUEUED_TURNS = SETTINGS.CHAT_MAX_QUEUED_TURNS
+CHAT_MAX_PENDING_PER_USER = SETTINGS.CHAT_MAX_PENDING_PER_USER
+CHAT_QUEUE_MAX_WAIT_SECONDS = SETTINGS.CHAT_QUEUE_MAX_WAIT_SECONDS
+CHAT_TURN_DEADLINE_SECONDS = SETTINGS.CHAT_TURN_DEADLINE_SECONDS
+TELEGRAM_CONCURRENT_UPDATES = SETTINGS.TELEGRAM_CONCURRENT_UPDATES
+BLOCKING_TOOL_THREADS = SETTINGS.BLOCKING_TOOL_THREADS
+BLOCKING_IO_THREADS = SETTINGS.BLOCKING_IO_THREADS
+RUNTIME_METRICS_LOG_INTERVAL_SECONDS = SETTINGS.RUNTIME_METRICS_LOG_INTERVAL_SECONDS
+RUNTIME_SHUTDOWN_GRACE_SECONDS = SETTINGS.RUNTIME_SHUTDOWN_GRACE_SECONDS
 TELEGRAM_HISTORY_RATE_WINDOW_SECONDS = SETTINGS.TELEGRAM_HISTORY_RATE_WINDOW_SECONDS
 TELEGRAM_HISTORY_RATE_MAX_EVENTS = SETTINGS.TELEGRAM_HISTORY_RATE_MAX_EVENTS
 
@@ -323,36 +433,19 @@ FISH_AUDIO_REFERENCE_ID = SETTINGS.FISH_AUDIO_REFERENCE_ID
 ADMIN_USER_ID = SETTINGS.ADMIN_USER_ID
 NEW_USER_BONUS_COINS = SETTINGS.NEW_USER_BONUS_COINS
 
-MYSQL_CONFIG = {
-    "host": SETTINGS.MYSQL_HOST,
-    "user": SETTINGS.MYSQL_USER,
-    "password": SETTINGS.MYSQL_PASSWORD,
-    "database": SETTINGS.MYSQL_DATABASE,
-}
+MYSQL_CONFIG = _DERIVED["MYSQL_CONFIG"]
 
 MYSQL_POOL_SIZE = SETTINGS.MYSQL_POOL_SIZE
 MYSQL_MAX_OVERFLOW = SETTINGS.MYSQL_MAX_OVERFLOW
 MYSQL_POOL_RECYCLE = SETTINGS.MYSQL_POOL_RECYCLE
 MYSQL_CONNECT_TIMEOUT = SETTINGS.MYSQL_CONNECT_TIMEOUT
 
-def _build_mysql_dsn() -> str:
-    user = MYSQL_CONFIG.get("user") or ""
-    password = MYSQL_CONFIG.get("password") or ""
-    host = MYSQL_CONFIG.get("host") or "localhost"
-    database = MYSQL_CONFIG.get("database") or ""
-    port = SETTINGS.MYSQL_PORT
-
-    auth = user
-    if password:
-        auth = f"{user}:{quote_plus(password)}"
-
-    location = f"{host}:{port}" if port else host
-    return f"mysql+asyncmy://{auth}@{location}/{database}?charset=utf8mb4"
-
-SQLALCHEMY_DATABASE_URI = SETTINGS.DATABASE_URL or _build_mysql_dsn()
+SQLALCHEMY_DATABASE_URI = _DERIVED["SQLALCHEMY_DATABASE_URI"]
 
 # 日志级别 (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 LOG_LEVEL = SETTINGS.LOG_LEVEL
+# 日志始终写入轮转文件；容器场景同时输出到 stdout，供 docker logs 查看
+LOG_TO_STDOUT = SETTINGS.LOG_TO_STDOUT
 LOG_DIR = BASE_DIR / "logs"
 LOG_FILE_PATH = LOG_DIR / "tgbot.log"
 
@@ -395,16 +488,9 @@ def _load_internal_docs() -> dict[str, str]:
 
 INTERNAL_DOCS: dict[str, str] = _load_internal_docs()
 
-def _parse_csv_value(raw_value: str | None) -> list[str]:
-    if not raw_value:
-        return []
-    values = [item.strip().lower() for item in raw_value.split(",") if item.strip()]
-    return values
-
-
 # AI 服务的排序，按照优先级从高到低排序
-AI_SERVICE_ORDER = _parse_csv_value(SETTINGS.AI_CHAT_ORDER)
-AI_CHAT_TEXT_ONLY_MODELS = _parse_csv_value(SETTINGS.AI_CHAT_TEXT_ONLY_MODELS)
+AI_SERVICE_ORDER = _DERIVED["AI_SERVICE_ORDER"]
+AI_CHAT_TEXT_ONLY_MODELS = _DERIVED["AI_CHAT_TEXT_ONLY_MODELS"]
 AI_DIRECT_TRIGGER_PHRASES = [
     "/fogmoebot",
     "雾萌",
@@ -412,3 +498,64 @@ AI_DIRECT_TRIGGER_PHRASES = [
     "萌娘",
     "fogmoe",
 ]
+
+
+# ---------------------------------------------------------------------------
+# 配置注入
+#
+# 读取配置的代码一律在调用时访问 `config.<NAME>`；换配置就是重新发布这些模块级名字。
+# 契约与迁移计划见 docs/architecture.md 的「配置注入」。
+# ---------------------------------------------------------------------------
+
+# 与设置字段同名、原样复制成模块常量的名字（推导出来的几个在 `_DERIVED` 里单独处理）。
+_PLAIN_FIELDS = tuple(
+    name
+    for name in AppSettings.model_fields
+    if name in globals() and name not in _DERIVED
+)
+
+
+def _publish(settings: AppSettings) -> None:
+    global SETTINGS
+    SETTINGS = settings
+    namespace = globals()
+    for name in _PLAIN_FIELDS:
+        namespace[name] = getattr(settings, name)
+    namespace.update(_derived_values(settings))
+
+
+def current_settings() -> AppSettings:
+    """当前生效的设置对象；进程启动时是从 `.env` 与环境变量加载的那一份。"""
+    return SETTINGS
+
+
+def install_settings(settings: AppSettings) -> AppSettings:
+    """让 `settings` 成为生效配置：重新发布所有模块级常量，返回之前的设置对象。
+
+    只影响在调用时才读 `config.<NAME>` 的代码；`from core.config import X` 或模块顶层
+    `X = config.X` 在导入时已经取走了旧值，见 docs/architecture.md 里的清单。
+    会覆盖此前对这些常量的手工 monkeypatch，所以先装配置，再 patch 个别值。
+    """
+    previous = SETTINGS
+    _publish(settings)
+    return previous
+
+
+@contextmanager
+def use_settings(settings: AppSettings) -> Iterator[AppSettings]:
+    """块内使用 `settings`，退出时恢复之前的设置对象。"""
+    previous = install_settings(settings)
+    try:
+        yield settings
+    finally:
+        _publish(previous)
+
+
+@contextmanager
+def override_settings(**values: Any) -> Iterator[AppSettings]:
+    """块内使用「代码默认值 + `values`」构成的配置，不读 `.env` 与进程环境变量。
+
+    没有传入的设置回到代码默认值，而不是沿用当前值：测试不会因为开发者的环境变量而变化。
+    """
+    with use_settings(AppSettings.from_values(**values)) as settings:
+        yield settings

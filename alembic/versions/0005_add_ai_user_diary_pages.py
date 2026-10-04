@@ -2,6 +2,8 @@
 
 from alembic import op
 
+from modules.core.migration_support import is_offline, table_exists
+
 # revision identifiers, used by Alembic.
 revision = "0005_add_ai_user_diary_pages"
 down_revision = "0004_add_ai_schedules"
@@ -20,15 +22,18 @@ def upgrade() -> None:
   PRIMARY KEY (`user_id`, `page_no`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci"""
     )
-    op.execute(
-        """
-        INSERT INTO ai_user_diary_pages (user_id, page_no, content, created_at, updated_at)
-        SELECT user_id, 1, content, created_at, updated_at
-        FROM ai_user_diary
-        WHERE content IS NOT NULL AND content != ''
-        ON DUPLICATE KEY UPDATE content = VALUES(content), updated_at = VALUES(updated_at)
-        """
-    )
+    # 0006 可能已经删掉旧表（版本号没来得及更新）；此时没有可回填的数据。
+    if is_offline() or table_exists("ai_user_diary"):
+        # 重跑时不覆盖已存在的第 1 页，避免冲掉用户在迁移之后的编辑。
+        op.execute(
+            """
+            INSERT INTO ai_user_diary_pages (user_id, page_no, content, created_at, updated_at)
+            SELECT user_id, 1, content, created_at, updated_at
+            FROM ai_user_diary
+            WHERE content IS NOT NULL AND content != ''
+            ON DUPLICATE KEY UPDATE content = ai_user_diary_pages.content
+            """
+        )
 
 
 def downgrade() -> None:

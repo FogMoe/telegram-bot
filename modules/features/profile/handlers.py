@@ -4,7 +4,7 @@ from telegram import Update
 from telegram.ext import ChatMemberHandler, ContextTypes
 from sqlalchemy.exc import SQLAlchemyError
 
-from core import config, mysql_connection, process_user
+from core import balance, config, mysql_connection, process_user
 from core.command_cooldown import cooldown
 from core.telegram_utils import partial_send, safe_send_markdown
 from features.economy import ref
@@ -45,17 +45,26 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
+        # 是否首次开户只决定「要不要发开户奖励」，在事务外判断（事务内更早的一致性读可能看不到
+        # 并发的开户）。真正的幂等由 signup:<uid> 这个 op_key 保证：并发的两个首次 /me
+        # 只会入账一次，已经注册过的老用户不会再得到奖励。
+        already_registered = await process_user.user_exists(user_id)
         insert_query = (
-            "INSERT INTO user (id, name, coins) VALUES (%s, %s, %s) "
+            "INSERT INTO user (id, name, coins) VALUES (%s, %s, 0) "
             "ON DUPLICATE KEY UPDATE name = VALUES(name)"
         )
         select_query = "SELECT coins, coins_paid, permission, user_plan FROM user WHERE id = %s"
 
         async with mysql_connection.transaction() as connection:
-            await connection.exec_driver_sql(
-                insert_query,
-                (user_id, user_name, config.NEW_USER_BONUS_COINS),
-            )
+            await connection.exec_driver_sql(insert_query, (user_id, user_name))
+            if not already_registered and config.NEW_USER_BONUS_COINS > 0:
+                await balance.credit(
+                    connection,
+                    user_id,
+                    config.NEW_USER_BONUS_COINS,
+                    op_key=balance.make_op_key("signup", user_id),
+                    reason="signup",
+                )
             result = await connection.exec_driver_sql(select_query, (user_id,))
             row = result.fetchone()
             user_coins_free = row[0] if row else 0

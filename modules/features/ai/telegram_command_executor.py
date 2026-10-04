@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import hashlib
 import itertools
 import logging
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import Lock
@@ -14,6 +15,7 @@ from typing import Any
 from telegram import Update
 from telegram.ext import CommandHandler
 
+from core.command_identity import delegated_operation
 from core.telegram_history import (
     capture_telegram_history_events,
     delegated_telegram_command,
@@ -22,11 +24,9 @@ from core.telegram_history import (
 logger = logging.getLogger(__name__)
 
 COMMAND_EXECUTION_TIMEOUT_SECONDS = 30.0
-_OUTER_WAIT_MARGIN_SECONDS = 5.0
 
 _RUNTIME_LOCK = Lock()
 _APPLICATION: Any | None = None
-_EVENT_LOOP: asyncio.AbstractEventLoop | None = None
 _SYNTHETIC_UPDATE_IDS = itertools.count(1)
 
 
@@ -40,13 +40,13 @@ class TelegramCommandOutcome:
 
 def configure_telegram_command_executor(
     application: Any,
-    loop: asyncio.AbstractEventLoop,
+    loop: asyncio.AbstractEventLoop | None = None,
 ) -> None:
-    """保存 Telegram Application 及其主事件循环。"""
-    global _APPLICATION, _EVENT_LOOP
+    """保存 Telegram Application。命令直接在事件循环里执行，不再需要保存循环；
+    `loop` 参数只为兼容旧的调用方。"""
+    global _APPLICATION
     with _RUNTIME_LOCK:
         _APPLICATION = application
-        _EVENT_LOOP = loop
 
 
 def registered_telegram_commands() -> set[str] | None:
@@ -123,6 +123,17 @@ def _build_synthetic_update(
     )
 
 
+def delegated_operation_id(command_text: str, request_context: dict[str, object]) -> str:
+    """这次代执行的身份：触发这一轮的那条消息（含编辑版本）加上命令文本。
+
+    同一轮里不同的命令得到不同的身份，后一次不会被当成前一次的重放；同一轮、同样的命令重放
+    （provider 回退、同一条消息被重复投递）得到相同的身份，副作用仍然只发生一次。
+    """
+    edit_stamp = request_context.get("message_edit_stamp") or ""
+    normalized = " ".join(command_text.split())
+    return hashlib.sha256(f"{edit_stamp}|{normalized}".encode("utf-8")).hexdigest()[:16]
+
+
 def _execution_error(command: str, *, already_visible: bool = False) -> str:
     if already_visible:
         return (
@@ -151,8 +162,10 @@ async def _execute_on_telegram_loop(
         request_context=request_context,
     )
 
+    operation_id = delegated_operation_id(command_text, request_context)
+
     with capture_telegram_history_events(user_id) as events:
-        with delegated_telegram_command():
+        with delegated_telegram_command(), delegated_operation(operation_id):
             try:
                 await asyncio.wait_for(
                     application.process_update(update),
@@ -206,49 +219,39 @@ async def _execute_on_telegram_loop(
     )
 
 
-def execute_telegram_command(
+async def execute_telegram_command(
     *,
     command: str,
     command_text: str,
     request_context: dict[str, object],
 ) -> TelegramCommandOutcome:
-    """从 AI executor 线程同步等待 Telegram 主循环完成命令。"""
+    """在事件循环里直接执行命令：合成的 update 交给 Application 的 handler 处理。
+
+    命令在**全新的上下文**里运行（`contextvars.Context()`）：调用它的这一轮对话带着
+    「不记录 bot 自己发出的消息」等历史作用域，命令的回复要照常被记录、被捕获，
+    这与它由用户亲自发出时一致。调用方被取消（整轮截止时间到期）时，命令任务一起取消。
+    """
     with _RUNTIME_LOCK:
         application = _APPLICATION
-        loop = _EVENT_LOOP
 
-    if application is None or loop is None or not loop.is_running():
+    if application is None:
         return TelegramCommandOutcome(
             success=False,
             error_code="execution_failed",
             error_message=_execution_error(command),
         )
 
-    future = asyncio.run_coroutine_threadsafe(
+    task = asyncio.get_running_loop().create_task(
         _execute_on_telegram_loop(
             application=application,
             command=command,
             command_text=command_text,
             request_context=request_context,
         ),
-        loop,
+        context=contextvars.Context(),
     )
     try:
-        return future.result(
-            timeout=COMMAND_EXECUTION_TIMEOUT_SECONDS + _OUTER_WAIT_MARGIN_SECONDS
-        )
-    except FutureTimeoutError:
-        future.cancel()
-        logger.error("等待 Telegram 命令执行结果超时: /%s", command)
-        return TelegramCommandOutcome(
-            success=False,
-            error_code="execution_unknown",
-            error_message=(
-                f"Execution status for /{command} is unknown. Do not retry "
-                "automatically or claim success. Tell the user to run the command "
-                "themselves if no mechanical reply appears."
-            ),
-        )
+        return await task
     except Exception:
         logger.exception("等待 Telegram 命令执行结果失败: /%s", command)
         return TelegramCommandOutcome(

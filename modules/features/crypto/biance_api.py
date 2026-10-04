@@ -1,6 +1,8 @@
 from binance.um_futures import UMFutures
 from binance.error import ClientError
 import time
+
+from core.redaction import describe_exception
 from datetime import datetime, timedelta
 from requests.exceptions import ConnectionError, ReadTimeout
 from urllib3.exceptions import ProtocolError
@@ -68,7 +70,7 @@ def check_result(trigger_time, trigger_price):
             current_price > trigger_price
         )
     except Exception as e:
-        return f"检查结果时发生错误: {e}"
+        return f"检查结果时发生错误: {describe_exception(e)}"
 
 def monitor_btc_pattern(body_ratio_threshold=0.7, green_vs_red_ratio=1.0):
     """只检测当前是否符合模式，不阻塞等待结果"""
@@ -83,7 +85,7 @@ def monitor_btc_pattern(body_ratio_threshold=0.7, green_vs_red_ratio=1.0):
                 break
             except (ConnectionError, ProtocolError, ReadTimeout) as e:
                 if attempt == max_retries - 1:
-                    return [f"连接错误 (尝试 {max_retries} 次): {e}"], None
+                    return [f"连接错误 (尝试 {max_retries} 次): {describe_exception(e)}"], None
                 time.sleep(retry_delay)
         
         if len(klines) < 3:
@@ -127,4 +129,4 @@ def monitor_btc_pattern(body_ratio_threshold=0.7, green_vs_red_ratio=1.0):
     except ClientError as e:
         return [f"API错误: {e.error_message}"], None
     except Exception as e:
-        return [f"发生未知错误: {e}"], None
+        return [f"发生未知错误: {describe_exception(e)}"], None

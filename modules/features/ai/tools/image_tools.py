@@ -11,7 +11,8 @@ from typing import Any, Optional
 
 import requests
 
-from core import config
+from core import config, http_sessions
+from core.redaction import describe_exception, log_exception, redact_text
 from .context import get_tool_request_context
 from .filename_utils import prompt_to_filename
 
@@ -179,7 +180,7 @@ def _cleanup_expired_generated_images() -> None:
 def _get_session() -> requests.Session:
     session = getattr(_SESSION_LOCAL, "session", None)
     if session is None:
-        session = requests.Session()
+        session = http_sessions.track_session(requests.Session())
         _SESSION_LOCAL.session = session
     return session
 
@@ -435,23 +436,50 @@ def _request_and_save_generated_image(
                 return {
                     "error": "Image generation request failed",
                     "status_code": response.status_code,
-                    "details": detail,
+                    "details": redact_text(detail),
                 }
             response_payload = json.loads(response_content.decode("utf-8"))
     except ImageGenerationSizeError as exc:
-        return {"error": str(exc)}
+        return {"error": describe_exception(exc)}
     except requests.Timeout as exc:
-        logger.warning("Image generation API timed out after %s seconds: %s", timeout, exc)
+        log_exception(
+            logger,
+            f"Image generation API timed out after {timeout} seconds",
+            exc,
+            level=logging.WARNING,
+            include_traceback=False,
+        )
         return {
             "error": f"Image generation API timed out after {timeout} seconds",
         }
     except requests.RequestException as exc:
-        logger.warning("Image generation request failed: %s", exc)
+        error_ref = log_exception(
+            logger,
+            "Image generation request failed",
+            exc,
+            level=logging.WARNING,
+            include_traceback=False,
+        )
         return {
-            "error": f"Failed to contact image generation API: {exc}",
+            "error": (
+                "Failed to contact image generation API: "
+                f"{describe_exception(exc)} (ref: {error_ref})"
+            ),
         }
     except ValueError as exc:
-        return {"error": f"Image generation API returned invalid JSON: {exc}"}
+        error_ref = log_exception(
+            logger,
+            "Image generation API returned invalid JSON",
+            exc,
+            level=logging.WARNING,
+            include_traceback=False,
+        )
+        return {
+            "error": (
+                "Image generation API returned invalid JSON: "
+                f"{describe_exception(exc)} (ref: {error_ref})"
+            )
+        }
 
     image_values = _extract_image_values(response_payload)
     if not image_values:
@@ -473,8 +501,8 @@ def _request_and_save_generated_image(
                 )
             )
         except Exception as exc:
-            logger.exception("Failed to save generated image %s: %s", index + 1, exc)
-            save_errors.append(str(exc))
+            log_exception(logger, f"Failed to save generated image {index + 1}", exc)
+            save_errors.append(describe_exception(exc))
 
     if not saved_images:
         response = {"error": "Generated image data could not be decoded or saved"}

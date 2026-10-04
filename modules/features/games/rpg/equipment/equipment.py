@@ -1,44 +1,21 @@
 import logging
 from typing import Dict, Tuple
 
-from core import mysql_connection
+from core import sql
+from core.redaction import report_error
+
+from ...repositories import rpg as rpg_repository
 
 
 # --- 装备相关功能 ---
 async def get_player_equipment(user_id: int) -> Dict:
     """获取玩家当前装备信息"""
     try:
-        result = await mysql_connection.fetch_one(
-            """
-            SELECT 
-                pe.user_id, 
-                pe.weapon_id, 
-                pe.offhand_id, 
-                pe.armor_id, 
-                pe.treasure1_id, 
-                pe.treasure2_id,
-                w.name as weapon_name, 
-                o.name as offhand_name, 
-                a.name as armor_name, 
-                t1.name as treasure1_name, 
-                t2.name as treasure2_name
-            FROM rpg_player_equipment pe
-            LEFT JOIN rpg_equipment w ON pe.weapon_id = w.id
-            LEFT JOIN rpg_equipment o ON pe.offhand_id = o.id
-            LEFT JOIN rpg_equipment a ON pe.armor_id = a.id
-            LEFT JOIN rpg_equipment t1 ON pe.treasure1_id = t1.id
-            LEFT JOIN rpg_equipment t2 ON pe.treasure2_id = t2.id
-            WHERE pe.user_id = %s
-            """,
-            (user_id,),
-            mapping=True,
-        )
+        result = await rpg_repository.get_player_equipment(user_id)
 
         if not result:
-            await mysql_connection.execute(
-                "INSERT INTO rpg_player_equipment (user_id) VALUES (%s)",
-                (user_id,),
-            )
+            async with sql.transaction() as connection:
+                await rpg_repository.insert_player_equipment(connection, user_id)
             return {
                 'user_id': user_id,
                 'weapon_id': None,
@@ -53,7 +30,7 @@ async def get_player_equipment(user_id: int) -> Dict:
                 'treasure2_name': None
             }
 
-        return dict(result)
+        return result
     except Exception as e:
         logging.error(f"获取玩家装备信息失败: {e}")
         return None
@@ -65,12 +42,7 @@ async def get_equipment_details(equipment_id: int) -> Dict:
         return None
 
     try:
-        result = await mysql_connection.fetch_one(
-            "SELECT * FROM rpg_equipment WHERE id = %s",
-            (equipment_id,),
-            mapping=True,
-        )
-        return dict(result) if result else None
+        return await rpg_repository.get_equipment(equipment_id)
     except Exception as e:
         logging.error(f"获取装备详情失败: {e}")
         return None
@@ -100,19 +72,10 @@ async def equip_item(user_id: int, equipment_id: int) -> Tuple[bool, str]:
             return False, f"不支持的装备类型: {equipment_type}"
             
         # 更新玩家装备
-        async with mysql_connection.transaction() as connection:
-            query = f"""
-            UPDATE rpg_player_equipment 
-            SET {slot_column} = %s
-            WHERE user_id = %s
-            """
-            result = await connection.exec_driver_sql(query, (equipment_id, user_id))
-            if result.rowcount == 0:
-                insert_query = f"""
-                INSERT INTO rpg_player_equipment (user_id, {slot_column})
-                VALUES (%s, %s)
-                """
-                await connection.exec_driver_sql(insert_query, (user_id, equipment_id))
+        async with sql.transaction() as connection:
+            await rpg_repository.set_equipment_slot(
+                connection, user_id, slot_column, equipment_id
+            )
 
         result = (True, f"成功装备 {equipment['name']}")
         
@@ -123,8 +86,8 @@ async def equip_item(user_id: int, equipment_id: int) -> Tuple[bool, str]:
         return result
                 
     except Exception as e:
-        logging.error(f"装备物品过程中出错: {e}")
-        return False, f"装备出错: {str(e)}"
+        notice = report_error(logging.getLogger(__name__), "装备物品过程中出错", e)
+        return False, f"装备出错，请稍后再试。\n{notice}"
 
 
 async def unequip_item(user_id: int, equipment_type: str) -> Tuple[bool, str]:
@@ -149,13 +112,8 @@ async def unequip_item(user_id: int, equipment_type: str) -> Tuple[bool, str]:
         equipment_name = current_equipment[slot_name]
             
         # 更新玩家装备
-        async with mysql_connection.transaction() as connection:
-            query = f"""
-            UPDATE rpg_player_equipment 
-            SET {slot_column} = NULL
-            WHERE user_id = %s
-            """
-            await connection.exec_driver_sql(query, (user_id,))
+        async with sql.transaction() as connection:
+            await rpg_repository.clear_equipment_slot(connection, user_id, slot_column)
 
         result = (True, f"成功卸下 {equipment_name}")
         
@@ -165,8 +123,8 @@ async def unequip_item(user_id: int, equipment_type: str) -> Tuple[bool, str]:
             
         return result
     except Exception as e:
-        logging.error(f"卸下装备过程中出错: {e}")
-        return False, f"卸下装备出错: {str(e)}"
+        notice = report_error(logging.getLogger(__name__), "卸下装备过程中出错", e)
+        return False, f"卸下装备出错，请稍后再试。\n{notice}"
 
 
 async def update_equipment_stats(user_id: int) -> bool:
@@ -195,34 +153,15 @@ async def update_equipment_stats(user_id: int) -> bool:
                     total_matk_bonus += equipment['matk_bonus']
         
         # 更新装备统计缓存表
-        async with mysql_connection.transaction() as connection:
-            query = """
-            UPDATE rpg_player_equipment_stats
-            SET total_atk_bonus = %s, total_def_bonus = %s, 
-                total_hp_bonus = %s, total_matk_bonus = %s
-            WHERE user_id = %s
-            """
-            result = await connection.exec_driver_sql(
-                query,
-                (
-                    total_atk_bonus, total_def_bonus,
-                    total_hp_bonus, total_matk_bonus,
-                    user_id,
-                ),
+        async with sql.transaction() as connection:
+            await rpg_repository.save_equipment_stats(
+                connection,
+                user_id,
+                atk_bonus=total_atk_bonus,
+                def_bonus=total_def_bonus,
+                hp_bonus=total_hp_bonus,
+                matk_bonus=total_matk_bonus,
             )
-            if result.rowcount == 0:
-                insert_query = """
-                INSERT INTO rpg_player_equipment_stats
-                (user_id, total_atk_bonus, total_def_bonus, total_hp_bonus, total_matk_bonus)
-                VALUES (%s, %s, %s, %s, %s)
-                """
-                await connection.exec_driver_sql(
-                    insert_query,
-                    (
-                        user_id, total_atk_bonus, total_def_bonus,
-                        total_hp_bonus, total_matk_bonus,
-                    ),
-                )
         return True
             
     except Exception as e:
@@ -233,14 +172,7 @@ async def update_equipment_stats(user_id: int) -> bool:
 async def get_equipment_stats(user_id: int) -> Dict:
     """获取玩家装备的属性加成总和"""
     try:
-        result = await mysql_connection.fetch_one(
-            """
-            SELECT * FROM rpg_player_equipment_stats
-            WHERE user_id = %s
-            """,
-            (user_id,),
-            mapping=True,
-        )
+        result = await rpg_repository.get_equipment_stats(user_id)
 
         if not result:
             return {
@@ -251,7 +183,7 @@ async def get_equipment_stats(user_id: int) -> Dict:
                 'total_matk_bonus': 0
             }
 
-        return dict(result)
+        return result
     except Exception as e:
         logging.error(f"获取装备属性加成数据失败: {e}")
         return None

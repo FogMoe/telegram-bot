@@ -1,49 +1,22 @@
-import random
-from datetime import datetime, timedelta
+import logging
 
-from . import config, mysql_connection
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-USER_PLAN_FREE = "free"
-USER_PLAN_PAID = "paid"
-USER_PLAN_ADMIN = "admin"
+from . import mysql_connection, user_records
+# 套餐常量与推导规则的定义在 balance 里，这里原样转出，旧代码的 import 路径不变。
+from .balance import USER_PLAN_ADMIN as USER_PLAN_ADMIN
+from .balance import USER_PLAN_FREE as USER_PLAN_FREE
+from .balance import USER_PLAN_PAID as USER_PLAN_PAID
+from .balance import resolve_user_plan as resolve_user_plan
 
-
-def resolve_user_plan(user_id: int, coins_paid: int) -> str:
-    if user_id == config.ADMIN_USER_ID:
-        return USER_PLAN_ADMIN
-    return USER_PLAN_PAID if coins_paid > 0 else USER_PLAN_FREE
-
-# 添加用户抽奖锁字典，防止同一用户并发抽奖
-lottery_locks = {}
+logger = logging.getLogger(__name__)
 
 
-async def get_user_last_lottery_date(user_id):
-    row = await mysql_connection.fetch_one(
-        "SELECT last_lottery_date FROM user_lottery WHERE user_id = %s",
-        (user_id,),
-    )
-    return row[0] if row else None
-
-
-async def update_user_lottery_date(user_id):
-    await mysql_connection.execute(
-        "INSERT INTO user_lottery (user_id, last_lottery_date) VALUES (%s, %s) "
-        "ON DUPLICATE KEY UPDATE last_lottery_date = VALUES(last_lottery_date)",
-        (user_id, datetime.now()),
-    )
+# 用户基础读取的 SQL 在 core.user_records；这里的同名函数是历史 import 路径，只做转发。
 
 
 async def get_user_coin_balances(user_id, *, connection=None) -> tuple[int, int]:
-    row = await mysql_connection.fetch_one(
-        "SELECT coins, coins_paid FROM user WHERE id = %s",
-        (user_id,),
-        connection=connection,
-    )
-    if not row:
-        return 0, 0
-    coins_free = row[0] or 0
-    coins_paid = row[1] or 0
-    return coins_free, coins_paid
+    return await user_records.get_coin_balances(user_id, connection=connection)
 
 
 async def get_user_total_coins(user_id, *, connection=None) -> int:
@@ -54,139 +27,16 @@ async def get_user_total_coins(user_id, *, connection=None) -> int:
     return coins_free + coins_paid
 
 
-async def add_free_coins(user_id, coins, *, connection=None) -> int:
-    coins = int(coins)
-    if coins <= 0:
-        return 0
-    await mysql_connection.execute(
-        "UPDATE user SET coins = coins + %s WHERE id = %s",
-        (coins, user_id),
-        connection=connection,
-    )
-    return coins
-
-
-async def add_paid_coins(user_id, coins, *, connection=None) -> int:
-    coins = int(coins)
-    if coins <= 0:
-        return 0
-    plan = resolve_user_plan(user_id, coins_paid=1)
-    await mysql_connection.execute(
-        "UPDATE user SET coins_paid = coins_paid + %s, user_plan = %s WHERE id = %s",
-        (coins, plan, user_id),
-        connection=connection,
-    )
-    return coins
-
-
-async def spend_user_coins(user_id, amount, *, connection=None) -> bool:
-    amount = int(amount)
-    if amount <= 0:
-        return True
-    if connection is None:
-        async with mysql_connection.transaction() as connection:
-            return await spend_user_coins(user_id, amount, connection=connection)
-
-    row = await mysql_connection.fetch_one(
-        "SELECT coins, coins_paid FROM user WHERE id = %s FOR UPDATE",
-        (user_id,),
-        connection=connection,
-    )
-    if not row:
-        return False
-    coins_free = row[0] or 0
-    coins_paid = row[1] or 0
-    total = coins_free + coins_paid
-    if total < amount:
-        return False
-
-    if coins_free >= amount:
-        new_free = coins_free - amount
-        new_paid = coins_paid
-    else:
-        remaining = amount - coins_free
-        new_free = 0
-        new_paid = coins_paid - remaining
-    plan = resolve_user_plan(user_id, new_paid)
-    await connection.exec_driver_sql(
-        "UPDATE user SET coins = %s, coins_paid = %s, user_plan = %s WHERE id = %s",
-        (new_free, new_paid, plan, user_id),
-    )
-    return True
-
-
-async def update_user_coins(user_id, coins, *, connection=None):
-    coins = int(coins)
-    if coins >= 0:
-        return await add_free_coins(user_id, coins, connection=connection)
-    return await spend_user_coins(user_id, -coins, connection=connection)
-
-
 async def user_exists(user_id):
-    row = await mysql_connection.fetch_one(
-        "SELECT id FROM user WHERE id = %s",
-        (user_id,),
-    )
-    return row is not None
+    return await user_records.check_user_exists(user_id)
 
 
 async def async_user_exists(user_id):
     return await user_exists(user_id)
 
 
-async def lottery(user_id):
-    if not await user_exists(user_id):
-        return (
-            "请先使用 /me 命令获取个人信息。\n"
-            "Please register first using the /me command."
-        )
-
-    last_lottery_date = await get_user_last_lottery_date(user_id)
-    if last_lottery_date and datetime.now() - last_lottery_date < timedelta(hours=24):
-        return (
-            "每24小时您只能参加一次抽奖喵。下次再来吧！\n"
-            "You can only participate in the lottery once every 24 hours. Meow! Come back later!"
-        )
-
-    probabilities = [0.4, 0.1, 0.5]
-    coins_distribution = [
-        random.choices(range(1, 5), k=1)[0],
-        random.choices(range(11, 21), k=1)[0],
-        random.choices(range(5, 11), k=1)[0],
-    ]
-    coins = random.choices(coins_distribution, probabilities)[0]
-
-    await update_user_coins(user_id, coins)
-    await update_user_lottery_date(user_id)
-
-    return (
-        f"恭喜！您赢得了 {coins} 枚硬币喵。\n"
-        f"Congratulations! You have won {coins} coins. Meow!"
-    )
-
-
-async def async_lottery(user_id):
-    if user_id in lottery_locks:
-        return (
-            "抽奖操作过于频繁，请等待上一次操作完成。\n"
-            "You're drawing too fast, please wait for the previous lottery to complete."
-        )
-
-    try:
-        lottery_locks[user_id] = True
-        return await lottery(user_id)
-    finally:
-        lottery_locks.pop(user_id, None)
-
-
 async def get_user_personal_info(user_id: int) -> str:
-    row = await mysql_connection.fetch_one(
-        "SELECT info FROM user WHERE id = %s",
-        (user_id,),
-    )
-    if not row or row[0] is None or row[0] == "":
-        return ""
-    return str(row[0])
+    return await user_records.get_personal_info(user_id)
 
 
 async def get_user_coins(user_id: int) -> int:
@@ -206,40 +56,56 @@ async def get_user_affection(user_id: int) -> int:
 
 
 def get_user_affection_sync(user_id: int) -> int:
+    # 同步边界：只能在没有事件循环的线程里调用，主路径用 get_user_affection；见 docs/runtime.md。
     return mysql_connection.run_sync(get_user_affection(user_id))
 
 
-async def update_user_affection(user_id: int, delta: int) -> int:
+async def update_user_affection(
+    user_id: int,
+    delta: int,
+    *,
+    connection: AsyncConnection | None = None,
+) -> int:
+    """调整好感度（单次变化限制在 ±10，总值限制在 ±100），返回调整后的值。
+
+    传入 `connection` 时在调用方的事务里执行，不自己开事务；扣费与好感度变化要一起提交时用它。
+    """
     delta = int(delta)
     if delta > 10:
         delta = 10
     elif delta < -10:
         delta = -10
 
-    async with mysql_connection.transaction() as connection:
-        row = await mysql_connection.fetch_one(
-            "SELECT affection FROM ai_user_affection WHERE user_id = %s FOR UPDATE",
-            (user_id,),
-            connection=connection,
+    if connection is not None:
+        return await _apply_affection_delta(connection, user_id, delta)
+    async with mysql_connection.transaction() as own_connection:
+        return await _apply_affection_delta(own_connection, user_id, delta)
+
+
+async def _apply_affection_delta(connection: AsyncConnection, user_id: int, delta: int) -> int:
+    row = await mysql_connection.fetch_one(
+        "SELECT affection FROM ai_user_affection WHERE user_id = %s FOR UPDATE",
+        (user_id,),
+        connection=connection,
+    )
+    current = row[0] if row else 0
+    updated = max(-100, min(100, current + delta))
+
+    if row:
+        await connection.exec_driver_sql(
+            "UPDATE ai_user_affection SET affection = %s WHERE user_id = %s",
+            (updated, user_id),
         )
-        current = row[0] if row else 0
-        updated = max(-100, min(100, current + delta))
-
-        if row:
-            await connection.exec_driver_sql(
-                "UPDATE ai_user_affection SET affection = %s WHERE user_id = %s",
-                (updated, user_id),
-            )
-        else:
-            await connection.exec_driver_sql(
-                "INSERT INTO ai_user_affection (user_id, affection) VALUES (%s, %s)",
-                (user_id, updated),
-            )
-
+    else:
+        await connection.exec_driver_sql(
+            "INSERT INTO ai_user_affection (user_id, affection) VALUES (%s, %s)",
+            (user_id, updated),
+        )
     return updated
 
 
 def update_user_affection_sync(user_id: int, delta: int) -> int:
+    # 同步边界：只能在没有事件循环的线程里调用，主路径用 update_user_affection；见 docs/runtime.md。
     return mysql_connection.run_sync(update_user_affection(user_id, delta))
 
 
@@ -252,19 +118,11 @@ async def async_update_user_affection(user_id: int, delta: int) -> int:
 
 
 async def get_user_permission(user_id: int) -> int:
-    row = await mysql_connection.fetch_one(
-        "SELECT permission FROM user WHERE id = %s",
-        (user_id,),
-    )
-    return row[0] if row else 0
+    return await user_records.get_permission(user_id)
 
 
 async def async_get_user_permission(user_id: int) -> int:
     return await get_user_permission(user_id)
-
-
-async def async_update_user_coins(user_id: int, amount: int) -> None:
-    await update_user_coins(user_id, amount)
 
 
 async def get_user_impression(user_id: int) -> str:
@@ -299,6 +157,7 @@ async def update_user_impression(user_id: int, impression: str) -> str:
 
 
 def update_user_impression_sync(user_id: int, impression: str) -> str:
+    # 同步边界：只能在没有事件循环的线程里调用，主路径用 update_user_impression；见 docs/runtime.md。
     return mysql_connection.run_sync(update_user_impression(user_id, impression))
 
 

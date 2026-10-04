@@ -1,20 +1,30 @@
+"""由 provider 声明表构造 LiteLLM 的认证与端点参数。"""
+
 from typing import Any, Dict
 
-from core import config
+from core import ai_providers
+from core.ai_providers import BaseUrlStyle
+
+# 没有 key 但配置了自定义 base URL 时使用的占位 key（OpenAI-compatible 的本地端点）。
+KEYLESS_PLACEHOLDER_API_KEY = "sk-no-key-required"
 
 
-def azure_api_base() -> str:
-    if config.AZURE_OPENAI_API_ENDPOINT:
-        return config.AZURE_OPENAI_API_ENDPOINT.rstrip("/")
+def azure_api_base(settings: Any = None) -> str:
+    read = ai_providers.read_setting
+    credentials = ai_providers.require("azure").credentials
+    endpoint = read(settings, credentials.api_base) if credentials.api_base else None
+    if endpoint:
+        return endpoint.rstrip("/")
 
-    base_url = config.AZURE_OPENAI_BASE_URL or ""
+    fallback = credentials.api_base_fallback
+    base_url = (read(settings, fallback) if fallback else None) or ""
     marker = "/openai/deployments/"
     if marker in base_url:
         return base_url.split(marker, 1)[0].rstrip("/")
     return base_url.rstrip("/")
 
 
-def openai_compatible_api_base(value: str) -> str:
+def openai_compatible_api_base(value: str | None) -> str:
     base_url = (value or "").rstrip("/")
     suffix = "/chat/completions"
     if base_url.lower().endswith(suffix):
@@ -22,7 +32,7 @@ def openai_compatible_api_base(value: str) -> str:
     return base_url
 
 
-def gemini_native_api_base(value: str) -> str:
+def gemini_native_api_base(value: str | None) -> str:
     base_url = (value or "").rstrip("/")
     suffix = "/models"
     if base_url.lower().endswith(suffix):
@@ -30,107 +40,65 @@ def gemini_native_api_base(value: str) -> str:
     return base_url
 
 
-def _openai_params() -> Dict[str, Any]:
-    api_key = config.OPENAI_API_KEY
-    if not api_key and config.OPENAI_BASE_URL:
-        api_key = "sk-no-key-required"
+def _missing(key: str) -> RuntimeError:
+    return RuntimeError(f"Missing {key} configuration.")
+
+
+def _raw_api_base(spec: ai_providers.ProviderSpec, settings: Any) -> Any:
+    key = spec.credentials.api_base
+    return ai_providers.read_setting(settings, key) if key else None
+
+
+def _api_base(
+    spec: ai_providers.ProviderSpec,
+    settings: Any,
+) -> str | None:
+    """按声明的整理方式得到 api_base；没有配置返回 None 或空串（由调用方判断是否必需）。"""
+    credentials = spec.credentials
+    raw = _raw_api_base(spec, settings)
+
+    style = credentials.base_style
+    if style is BaseUrlStyle.AZURE:
+        return azure_api_base(settings)
+    if style is BaseUrlStyle.OPENAI_COMPATIBLE:
+        return openai_compatible_api_base(raw)
+    if style is BaseUrlStyle.GEMINI:
+        if not raw:
+            return None
+        if spec.uses_openai_compatible_endpoint(settings):
+            return openai_compatible_api_base(raw)
+        return gemini_native_api_base(raw)
+    return raw or None
+
+
+def provider_params(provider: str, settings: Any = None) -> Dict[str, Any]:
+    spec = ai_providers.require(provider)
+    credentials = spec.credentials
+    read = ai_providers.read_setting
+
+    api_key = read(settings, credentials.api_key)
+    if not api_key and credentials.keyless_with_base and _raw_api_base(spec, settings):
+        api_key = KEYLESS_PLACEHOLDER_API_KEY
     if not api_key:
-        raise RuntimeError("Missing OPENAI_API_KEY configuration.")
+        raise _missing(credentials.api_key)
+
+    if (
+        spec.openai_compatible_flag
+        and spec.uses_openai_compatible_endpoint(settings)
+        and not _raw_api_base(spec, settings)
+    ):
+        raise RuntimeError(f"{spec.openai_compatible_flag} requires {credentials.api_base}.")
 
     params: Dict[str, Any] = {"api_key": api_key}
-    if config.OPENAI_BASE_URL:
-        params["api_base"] = config.OPENAI_BASE_URL
+    api_base = _api_base(spec, settings)
+    if credentials.base_required and not api_base:
+        raise _missing(credentials.api_base or "api_base")
+    if api_base:
+        params["api_base"] = api_base
+
+    if credentials.api_version:
+        api_version = read(settings, credentials.api_version)
+        if not api_version:
+            raise _missing(credentials.api_version)
+        params["api_version"] = api_version
     return params
-
-
-def _openrouter_params() -> Dict[str, Any]:
-    if not config.OPENROUTER_API_KEY:
-        raise RuntimeError("Missing OPENROUTER_API_KEY configuration.")
-    api_base = openai_compatible_api_base(config.OPENROUTER_API_BASE)
-    if not api_base:
-        raise RuntimeError("Missing OPENROUTER_API_BASE configuration.")
-    return {
-        "api_key": config.OPENROUTER_API_KEY,
-        "api_base": api_base,
-    }
-
-
-def _fogmoe_params() -> Dict[str, Any]:
-    if not config.FOGMOE_API_KEY:
-        raise RuntimeError("Missing FOGMOE_API_KEY configuration.")
-    api_base = openai_compatible_api_base(config.FOGMOE_API_BASE)
-    if not api_base:
-        raise RuntimeError("Missing FOGMOE_API_BASE configuration.")
-    return {
-        "api_key": config.FOGMOE_API_KEY,
-        "api_base": api_base,
-    }
-
-
-def _gemini_params() -> Dict[str, Any]:
-    if not config.GEMINI_API_KEY:
-        raise RuntimeError("Missing GEMINI_API_KEY configuration.")
-    if config.GEMINI_OPENAI_COMPATIBLE and not config.GEMINI_API_BASE:
-        raise RuntimeError("GEMINI_OPENAI_COMPATIBLE requires GEMINI_API_BASE.")
-    params = {"api_key": config.GEMINI_API_KEY}
-    if config.GEMINI_API_BASE:
-        params["api_base"] = (
-            openai_compatible_api_base(config.GEMINI_API_BASE)
-            if config.GEMINI_OPENAI_COMPATIBLE
-            else gemini_native_api_base(config.GEMINI_API_BASE)
-        )
-    return params
-
-
-def _zai_params() -> Dict[str, Any]:
-    if not config.ZAI_API_KEY:
-        raise RuntimeError("Missing ZAI_API_KEY configuration.")
-    params = {"api_key": config.ZAI_API_KEY}
-    if config.ZAI_API_BASE:
-        params["api_base"] = config.ZAI_API_BASE
-    return params
-
-
-def _siliconflow_params() -> Dict[str, Any]:
-    if not config.SILICONFLOW_API_KEY:
-        raise RuntimeError("Missing SILICONFLOW_API_KEY configuration.")
-    api_base = openai_compatible_api_base(config.SILICONFLOW_API_BASE)
-    if not api_base:
-        raise RuntimeError("Missing SILICONFLOW_API_BASE configuration.")
-    return {
-        "api_key": config.SILICONFLOW_API_KEY,
-        "api_base": api_base,
-    }
-
-
-def _azure_params() -> Dict[str, Any]:
-    if not config.AZURE_OPENAI_API_KEY:
-        raise RuntimeError("Missing AZURE_OPENAI_API_KEY configuration.")
-    api_base = azure_api_base()
-    if not api_base:
-        raise RuntimeError("Missing AZURE_OPENAI_API_ENDPOINT configuration.")
-    if not config.AZURE_OPENAI_API_VERSION:
-        raise RuntimeError("Missing AZURE_OPENAI_API_VERSION configuration.")
-    return {
-        "api_key": config.AZURE_OPENAI_API_KEY,
-        "api_base": api_base,
-        "api_version": config.AZURE_OPENAI_API_VERSION,
-    }
-
-
-PROVIDER_PARAM_BUILDERS = {
-    "openai": _openai_params,
-    "openrouter": _openrouter_params,
-    "fogmoe": _fogmoe_params,
-    "gemini": _gemini_params,
-    "zai": _zai_params,
-    "siliconflow": _siliconflow_params,
-    "azure": _azure_params,
-}
-
-
-def provider_params(provider: str) -> Dict[str, Any]:
-    builder = PROVIDER_PARAM_BUILDERS.get(provider)
-    if not builder:
-        raise RuntimeError(f"Unsupported AI provider: {provider}")
-    return builder()

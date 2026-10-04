@@ -9,6 +9,7 @@ import threading
 import html
 from collections import defaultdict
 from core.command_cooldown import cooldown
+from core.redaction import report_error
 
 # HTML标签白名单
 ALLOWED_HTML_TAGS = {
@@ -203,8 +204,8 @@ async def show_keywords(update: Update, chat_id: int):
         
         await update.message.reply_text(message)
     except Exception as e:
-        logging.error(f"获取关键词列表时出错: {str(e)}")
-        await update.message.reply_text(f"获取关键词列表时出错: {str(e)}")
+        notice = report_error(logging.getLogger(__name__), "获取关键词列表时出错", e)
+        await update.message.reply_text(f"获取关键词列表时出错，请稍后再试。\n{notice}")
 
 async def add_keyword(update: Update, chat_id: int, user_id: int, keyword: str, response: str):
     """添加关键词"""
@@ -265,8 +266,8 @@ async def add_keyword(update: Update, chat_id: int, user_id: int, keyword: str, 
         else:
             await update.message.reply_text(f"已添加关键词触发器：'{keyword}'")
     except Exception as e:
-        logging.error(f"添加关键词时出错: {str(e)}")
-        await update.message.reply_text(f"添加关键词时出错: {str(e)}")
+        notice = report_error(logging.getLogger(__name__), "添加关键词时出错", e)
+        await update.message.reply_text(f"添加关键词时出错，请稍后再试。\n{notice}")
 
 async def del_keyword(update: Update, chat_id: int, keyword: str):
     """删除关键词"""
@@ -283,8 +284,8 @@ async def del_keyword(update: Update, chat_id: int, keyword: str):
         else:
             await update.message.reply_text(f"未找到关键词：'{keyword}'")
     except Exception as e:
-        logging.error(f"删除关键词时出错: {str(e)}")
-        await update.message.reply_text(f"删除关键词时出错: {str(e)}")
+        notice = report_error(logging.getLogger(__name__), "删除关键词时出错", e)
+        await update.message.reply_text(f"删除关键词时出错，请稍后再试。\n{notice}")
 
 # 添加帮助函数获取有效消息
 def get_effective_message(update: Update):

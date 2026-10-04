@@ -1,94 +1,26 @@
+"""/webpassword 的 Telegram 适配层：输入映射与回复。校验、哈希与存储在 `operations/web_password.py`。
+
+命令只允许私聊（`private_chat_only`），密码参数不会出现在日志与历史里，见 docs/sensitive-data.md。
+"""
+
 import logging
-import hashlib
-import re
+from datetime import datetime
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, CommandHandler
 
-from core import mysql_connection
+from core import user_records
 from core.command_cooldown import cooldown
+from core.command_privacy import private_chat_only
 import html
 
-def hash_password(password):
-    """对密码进行哈希处理"""
-    return hashlib.sha256(password.encode('utf-8')).hexdigest()
+from .operations import web_password as web_password_operations
+from .operations.web_password import SetPasswordStatus
 
-def validate_password(password):
-    """验证密码格式"""
-    # 密码长度6-20位，包含字母和数字
-    if len(password) < 6 or len(password) > 20:
-        return False, "密码长度必须在6-20位之间"
-    
-    if not re.match(r'^[a-zA-Z0-9]+$', password):
-        return False, "密码只能包含字母和数字"
-    
-    # 必须包含至少一个字母和一个数字
-    if not re.search(r'[a-zA-Z]', password) or not re.search(r'[0-9]', password):
-        return False, "密码必须包含至少一个字母和一个数字"
-    
-    return True, "密码格式正确"
+SET_FAILED_MESSAGE = "设置Web密码时发生错误，请稍后再试"
 
-async def get_user_web_password(user_id):
-    """获取用户Web密码信息"""
-    try:
-        row = await mysql_connection.fetch_one(
-            "SELECT password, created_at, updated_at FROM web_password WHERE user_id = %s",
-            (user_id,),
-            mapping=True,
-        )
-        return row  # RowMapping 或 None
-    except Exception as e:
-        logging.error(f"获取用户Web密码信息失败: {str(e)}")
-        return None
 
-async def set_user_web_password(user_id, password_hash):
-    """设置用户Web密码"""
-    try:
-        # 使用 INSERT ... ON DUPLICATE KEY UPDATE 来更新或插入记录
-        await mysql_connection.execute(
-            """
-            INSERT INTO web_password (user_id, password)
-            VALUES (%s, %s)
-            ON DUPLICATE KEY UPDATE password = VALUES(password)
-            """,
-            (user_id, password_hash),
-        )
-        return True
-    except Exception as e:
-        logging.error(f"设置用户Web密码失败: {str(e)}")
-        return False
-
-async def process_set_web_password(user_id, password):
-    """处理设置Web密码逻辑"""
-    # 验证密码格式
-    is_valid, message = validate_password(password)
-    if not is_valid:
-        return {
-            "success": False,
-            "message": message
-        }
-    
-    # 对密码进行哈希处理
-    password_hash = hash_password(password)
-    
-    # 检查是否已有密码
-    existing_password = await get_user_web_password(user_id)
-    is_update = existing_password is not None
-    
-    # 设置密码
-    if await set_user_web_password(user_id, password_hash):
-        action = "更新" if is_update else "设置"
-        return {
-            "success": True,
-            "message": f"Web密码{action}成功！",
-            "is_update": is_update
-        }
-    else:
-        return {
-            "success": False,
-            "message": "设置Web密码时发生错误，请稍后再试"
-        }
-
+@private_chat_only("webpassword")
 @cooldown
 async def webpassword_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理/webpassword命令"""
@@ -109,7 +41,7 @@ async def webpassword_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     escaped_username = html.escape(username)
     
     # 检查用户是否注册
-    if not await mysql_connection.async_check_user_exists(user_id):
+    if not await user_records.async_check_user_exists(user_id):
         await update.message.reply_text(
             "请先使用 /me 命令注册账户。\n"
             "Please register first using the /me command."
@@ -119,14 +51,14 @@ async def webpassword_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     # 检查是否提供了密码参数
     if not context.args:
         # 显示当前密码状态
-        password_info = await get_user_web_password(user_id)
+        password_info = await web_password_operations.get_user_web_password(user_id)
         if password_info:
             message = (
                 f"🔐 <b>Web密码状态</b>\n\n"
                 f"用户: @{escaped_username}\n"
                 f"状态: <b>已设置</b>\n"
-                f"设置时间: {password_info['created_at'].strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"更新时间: {password_info['updated_at'].strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                f"设置时间: {password_info.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"更新时间: {password_info.updated_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 f"使用方法: <code>/webpassword 新密码</code>\n"
                 f"密码要求: 6-20位，包含字母和数字"
             )
@@ -156,12 +88,11 @@ async def webpassword_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     password = " ".join(context.args)
     
     # 异步处理设置密码
-    result = await process_set_web_password(user_id, password)
+    result = await web_password_operations.process_set_web_password(user_id, password)
     
     # 构建响应消息
-    if result["success"]:
-        action_text = "更新" if result["is_update"] else "设置"
-        from datetime import datetime
+    if result.status is SetPasswordStatus.SAVED:
+        action_text = "更新" if result.is_update else "设置"
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         message = (
             f"✅ <b>Web密码{action_text}成功</b>\n\n"
@@ -171,9 +102,10 @@ async def webpassword_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"⚠️ 请妥善保管您的密码，不要泄露给他人！"
         )
     else:
+        reason = result.message if result.status is SetPasswordStatus.INVALID else SET_FAILED_MESSAGE
         message = (
             f"❌ <b>Web密码设置失败</b>\n\n"
-            f"错误信息: {result['message']}\n\n"
+            f"错误信息: {reason}\n\n"
             f"密码要求:\n"
             f"• 长度: 6-20位\n"
             f"• 字符: 仅限字母和数字\n"

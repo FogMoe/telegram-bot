@@ -1,0 +1,179 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 与 Dockerfile 里的 uv 镜像版本保持一致
+  UV_VERSION: "0.12.5"
+  # 只按 uv.lock 安装；锁与 pyproject 不一致时由 lint job 的 `uv lock --check` 报错
+  UV_FROZEN: "1"
+
+jobs:
+  lint:
+    name: Lint, types and lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Lock file matches pyproject.toml
+        run: uv lock --check
+
+      - name: Exported requirements match the lock
+        run: |
+          uv export --no-dev --no-hashes --no-annotate --no-emit-project -o requirements.txt
+          uv export --no-hashes --no-annotate --no-emit-project -o requirements-dev.txt
+          git diff --exit-code -- requirements.txt requirements-dev.txt
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Ruff
+        run: uv run ruff check .
+
+      - name: Mypy (stable boundary modules listed in pyproject.toml)
+        run: uv run mypy
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Pytest (MySQL integration tests run in their own job)
+        run: uv run pytest -ra --ignore=tests/integration
+
+  integration:
+    name: MySQL integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent -h 127.0.0.1 -uroot -pci-root-password"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      # 每个测试自己建库、用完删除，只需要 root 连接
+      TEST_MYSQL_URL: mysql+asyncmy://root:ci-root-password@127.0.0.1:3306
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Pytest tests/integration
+        run: |
+          if [ ! -d tests/integration ]; then
+            echo "::warning::tests/integration does not exist yet"
+            exit 0
+          fi
+          code=0
+          uv run pytest tests/integration -ra --junitxml=integration-report.xml || code=$?
+          if [ "$code" -eq 5 ]; then
+            echo "::warning::tests/integration has no tests yet"
+            exit 0
+          fi
+          exit "$code"
+
+      - name: Fail if the integration tests were all skipped
+        run: |
+          if [ ! -f integration-report.xml ]; then
+            exit 0
+          fi
+          uv run python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse("integration-report.xml").getroot()
+          suites = [root] if root.tag == "testsuite" else list(root)
+          total = sum(int(s.get("tests", 0)) for s in suites)
+          skipped = sum(int(s.get("skipped", 0)) for s in suites)
+          print(f"integration tests: {total} collected, {skipped} skipped")
+          if total and skipped == total:
+              sys.exit("every integration test was skipped; TEST_MYSQL_URL is not taking effect")
+          PY
+
+  image:
+    name: Image build and startup smoke check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build image
+        run: docker build -t fogmoe-telegram-bot:ci .
+
+      - name: Image runs Python 3.13
+        run: docker run --rm fogmoe-telegram-bot:ci python -c "import sys; assert sys.version_info[:2] == (3, 13), sys.version"
+
+      # 没有 .env、没有数据库、不连 Telegram：依赖可导入、Application 能组装、handler 能注册
+      - name: Startup smoke check
+        run: docker run --rm fogmoe-telegram-bot:ci python -u modules/main.py --check
+
+      - name: Migrations ship with the image
+        run: docker run --rm fogmoe-telegram-bot:ci python -m alembic heads
+
+      # 日志同时进入 stdout（docker logs）和挂载的 ./logs（跨重启保留）
+      - name: Logs reach stdout and the mounted log directory
+        run: |
+          mkdir -p logs-smoke
+          docker run --rm -v "$PWD/logs-smoke:/app/logs" -w /app/modules fogmoe-telegram-bot:ci \
+            python -c "import logging; from core.bot_logging import configure_logging; configure_logging(); logging.info('container-log-smoke')" \
+            | grep container-log-smoke > /dev/null
+          grep container-log-smoke logs-smoke/tgbot.log > /dev/null
+
+  run-bot-script:
+    name: runBot.sh start, status, restart, stop
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Syntax check
+        run: |
+          for script in runBot.sh scripts/verify_run_bot.sh; do
+            bash -n "$script"
+          done
+
+      - name: Verify process management with a stub entry point
+        run: bash scripts/verify_run_bot.sh

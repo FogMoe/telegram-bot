@@ -5,7 +5,10 @@ from typing import Dict, Optional
 
 import requests
 
-from core import config
+from core import config, http_sessions
+from core.redaction import describe_exception, log_exception, redact_text
+
+logger = logging.getLogger(__name__)
 
 JUDGE0_API_URL = getattr(config, "JUDGE0_API_URL", "")
 JUDGE0_API_KEY = getattr(config, "JUDGE0_API_KEY", "")
@@ -15,7 +18,7 @@ _SESSION_LOCAL = threading.local()
 def _get_session() -> requests.Session:
     session = getattr(_SESSION_LOCAL, "session", None)
     if session is None:
-        session = requests.Session()
+        session = http_sessions.track_session(requests.Session())
         _SESSION_LOCAL.session = session
     return session
 
@@ -56,11 +59,13 @@ def execute_python_code_tool(
         return {
             "error": "Submission failed",
             "status_code": getattr(exc.response, "status_code", None),
-            "details": detail,
+            "details": redact_text(detail),
         }
     except requests.RequestException as exc:
-        logging.exception("Request failed: %s", exc)
-        return {"error": f"Failed to contact: {exc}"}
+        error_ref = log_exception(logger, "Judge0 request failed", exc)
+        return {
+            "error": f"Failed to contact Judge0: {describe_exception(exc)} (ref: {error_ref})"
+        }
 
     def _decode_field(value: Optional[str]) -> Optional[str]:
         if value in (None, ""):

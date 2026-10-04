@@ -188,7 +188,7 @@ def test_load_recap_memory_context_uses_saved_impression_and_diary_index(monkeyp
 def test_generate_recap_requests_strict_sdk_json_schema(monkeypatch):
     captured = {}
 
-    def fake_run_recap_agent(messages, user_id, response_format):
+    async def fake_run_recap_agent(messages, user_id, response_format):
         captured.update(
             messages=messages,
             user_id=user_id,
@@ -202,14 +202,14 @@ def test_generate_recap_requests_strict_sdk_json_schema(monkeypatch):
 
     monkeypatch.setattr(idle_followup, "_run_recap_agent", fake_run_recap_agent)
 
-    result = idle_followup._generate_recap_sync(
+    result = asyncio.run(idle_followup._generate_recap_with_retries(
         321,
         [{"role": "user", "content": "最近很忙"}],
         {
             "impression": "喜欢简洁回答",
             "diary_index": [{"page": 1, "title": "Projects", "summary": "旧项目"}],
         },
-    )
+    ))
 
     response_format = captured["response_format"]
     assert result["recap"] == "聊了计划"
@@ -245,7 +245,7 @@ def test_run_recap_agent_exposes_only_read_only_memory_tools(monkeypatch):
         lambda provider, task: {},
     )
 
-    def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
+    async def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
         captured.update(
             provider=provider,
             model=model,
@@ -259,11 +259,11 @@ def test_run_recap_agent_exposes_only_read_only_memory_tools(monkeypatch):
     monkeypatch.setattr(idle_followup, "run_tool_loop", fake_run_tool_loop)
 
     response_format = {"type": "json_schema"}
-    result = idle_followup._run_recap_agent(
+    result = asyncio.run(idle_followup._run_recap_agent(
         [{"role": "user", "content": "review"}],
         456,
         response_format,
-    )
+    ))
 
     tool_names = {
         tool["function"]["name"]
@@ -415,6 +415,14 @@ def test_process_claim_keeps_main_ai_tools_enabled(monkeypatch):
     async def fake_send(*args):
         captured["send_args"] = args
 
+    async def fake_enter_stage(run, stage):
+        captured.setdefault("stages", []).append(stage)
+
+    async def fake_mark_fired(claim, **kwargs):
+        captured["fired"] = claim
+
+    monkeypatch.setattr(idle_followup, "_enter_stage", fake_enter_stage)
+    monkeypatch.setattr(idle_followup, "_mark_claim_fired", fake_mark_fired)
     monkeypatch.setattr(idle_followup, "_claim_is_current", always_current)
     monkeypatch.setattr(
         idle_followup,
@@ -449,6 +457,9 @@ def test_process_claim_keeps_main_ai_tools_enabled(monkeypatch):
     assert "<memory_suggestion>" in captured["persist_args"][1]
     assert captured["persist_args"][3] == tool_logs
     assert captured["send_args"][2] == tool_logs
+    # 主模型执行之前进入 generating，投递之前进入 delivering，投递之后才终结 claim。
+    assert captured["stages"] == ["generating", "delivering"]
+    assert captured["fired"] == claim
 
 
 def test_process_claim_pauses_before_recap_when_coins_are_exhausted(monkeypatch):

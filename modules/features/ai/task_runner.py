@@ -7,6 +7,7 @@ from .provider_resolver import (
     completion_kwargs_for_task,
     get_models_for_task,
     get_provider_order_for_task,
+    missing_capability_for_task,
     provider_fallback_model_for_task,
     provider_model_for_task,
 )
@@ -24,13 +25,22 @@ def _provider_completion_kwargs(provider: str, task: str) -> Dict[str, Any]:
     return completion_kwargs_for_task(provider, task)
 
 
-def run_ai_task(
+async def run_ai_task(
     task: str,
     messages: List[Dict[str, Any]],
     **kwargs: Any,
 ) -> Any:
     last_error: Exception | None = None
     for provider in get_provider_order_for_task(task):
+        missing_capability = missing_capability_for_task(provider, task)
+        if missing_capability:
+            logging.warning(
+                "AI task %s skipped provider %s: no %s support",
+                task,
+                provider,
+                missing_capability,
+            )
+            continue
         try:
             models = get_models_for_task(provider, task)
         except Exception as exc:
@@ -52,7 +62,7 @@ def run_ai_task(
                     **_provider_completion_kwargs(provider, task),
                     **kwargs,
                 }
-                return create_chat_completion(provider, model, messages, **request_kwargs)
+                return await create_chat_completion(provider, model, messages, **request_kwargs)
             except ContextBudgetExceededError:
                 raise
             except Exception as exc:

@@ -1,26 +1,28 @@
-from core import mysql_connection, process_user
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-import logging
-from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
-from core.command_cooldown import cooldown
+"""/task 的 Telegram 适配层：菜单、检查群成员身份、回复。任务定义与领取在 `operations/task.py`。"""
 
+import logging
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
+
+from core.command_cooldown import cooldown
+from core.redaction import log_exception
+
+from .operations import task as task_operations
+from .operations.task import (
+    REWARD_COINS_1,
+    REWARD_COINS_2,
+    TARGET_GROUP_ID1,
+    TARGET_GROUP_ID2,
+    TASK_ID_CHECK_GROUP1,
+    TASK_ID_CHECK_GROUP2,
+    TASK_NAME_1,
+    TASK_NAME_2,
+    TaskClaim,
+)
 
 logger = logging.getLogger(__name__)
-# 任务ID
-TASK_ID_CHECK_GROUP1 = 1  # 任务1：加入 @ScarletKc_Group 群组
-TASK_ID_CHECK_GROUP2 = 2  # 任务2：加入 @FOG_MOE 群组
 
-# 指定目标群组ID（使用群组ID，此格式适用于 Telegram API）
-TARGET_GROUP_ID1 = -1001870858408  # 替换为 @ScarletKc_Group 实际群组 ID
-TARGET_GROUP_ID2 = -1002053007005  # 替换为 @FOG_MOE 实际群组 ID
-
-# 用于提示展示，可用群组用户名或名称
-TASK_NAME_1 = "@ScarletKc_Group"
-TASK_NAME_2 = "@FOG_MOE"
-
-# 奖励硬币数，可根据需求设置
-REWARD_COINS_1 = 10
-REWARD_COINS_2 = 10
 
 @cooldown
 async def task_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -75,11 +77,7 @@ async def task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 检查任务是否已完成
-    row = await mysql_connection.fetch_one(
-        "SELECT 1 FROM user_task WHERE user_id = %s AND task_id = %s",
-        (user_id, task_id),
-    )
-    if row:
+    if await task_operations.is_task_completed(user_id, task_id):
         await query.answer("您已完成该任务，不能重复领取奖励。", show_alert=True)
         return
 
@@ -96,19 +94,18 @@ async def task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 发放奖励并记录任务完成
     try:
-        async with mysql_connection.transaction() as connection:
-            await process_user.add_free_coins(
-                user_id,
-                reward_coins,
-                connection=connection,
-            )
-            await connection.exec_driver_sql(
-                "INSERT INTO user_task (user_id, task_id) VALUES (%s, %s)",
-                (user_id, task_id),
-            )
-        await query.answer(f"恭喜您完成任务，获得 {reward_coins} 个硬币奖励！", show_alert=True)
+        status = await task_operations.claim_task_reward(user_id, task_id, reward_coins)
     except Exception:
+        log_exception(logger, f"发放任务奖励失败: user_id={user_id} task_id={task_id}")
         await query.answer("发放奖励时出现错误，请稍后再试。", show_alert=True)
+        return
+
+    if status is TaskClaim.NOT_REGISTERED:
+        await query.answer("请先使用 /me 命令获取个人信息。", show_alert=True)
+    elif status is TaskClaim.ALREADY_DONE:
+        await query.answer("您已完成该任务，不能重复领取奖励。", show_alert=True)
+    else:
+        await query.answer(f"恭喜您完成任务，获得 {reward_coins} 个硬币奖励！", show_alert=True)
 
 
 def setup_task_handlers(application) -> None:

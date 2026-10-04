@@ -1,6 +1,12 @@
-"""Initial schema migration."""
+"""Initial schema migration.
+
+全部 DDL 可重入（CREATE TABLE IF NOT EXISTS / 先查列再 ADD COLUMN），
+中途失败后可直接重跑。chat_records / user_lottery 的缺陷由 0017 修复。
+"""
 
 from alembic import op
+
+from modules.core.migration_support import add_columns_if_missing
 
 # revision identifiers, used by Alembic.
 revision = "0001_initial"
@@ -10,7 +16,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute("""CREATE TABLE `chat_records` (
+    op.execute("""CREATE TABLE IF NOT EXISTS `chat_records` (
   `id` int NOT NULL,
   `conversation_id` bigint NOT NULL,
   `messages` json NOT NULL,
@@ -37,7 +43,7 @@ def upgrade() -> None:
   INDEX `idx_group_created` (`group_id`, `created_at`),
   INDEX `idx_group_message` (`group_id`, `message_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci""")
-    op.execute("""CREATE TABLE `user` (
+    op.execute("""CREATE TABLE IF NOT EXISTS `user` (
   `id`        BIGINT NOT NULL,
   `tg_uid`    BIGINT NULL UNIQUE,
   `provider`  ENUM('telegram','local','web') NOT NULL DEFAULT 'telegram',
@@ -47,36 +53,36 @@ def upgrade() -> None:
   `info`      VARCHAR(500)  DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci""")
-    op.execute("""CREATE TABLE `user_lottery` (
+    op.execute("""CREATE TABLE IF NOT EXISTS `user_lottery` (
   `user_id` bigint NOT NULL,
   `last_lottery_date` datetime DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci""")
-    op.execute("""CREATE TABLE `user_task` (
+    op.execute("""CREATE TABLE IF NOT EXISTS `user_task` (
   `user_id` BIGINT NOT NULL,
   `task_id` INT NOT NULL,
   `completed_date` DATETIME DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`user_id`, `task_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
-    op.execute("""CREATE TABLE `group_verification` (
+    op.execute("""CREATE TABLE IF NOT EXISTS `group_verification` (
   `group_id` BIGINT NOT NULL,
   `group_name` TEXT COLLATE utf8mb4_general_ci NOT NULL,
   PRIMARY KEY (`group_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci""")
-    op.execute("""CREATE TABLE `verification_tasks` (
+    op.execute("""CREATE TABLE IF NOT EXISTS `verification_tasks` (
   `user_id` BIGINT NOT NULL,
   `group_id` BIGINT NOT NULL,
   `message_id` BIGINT NOT NULL,
   `expire_time` DATETIME NOT NULL,
   PRIMARY KEY (`user_id`, `group_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
-    op.execute("""CREATE TABLE `user_stakes` (
+    op.execute("""CREATE TABLE IF NOT EXISTS `user_stakes` (
   `user_id` BIGINT NOT NULL,
   `stake_amount` INT NOT NULL,
   `stake_time` DATETIME NOT NULL,
   `last_reward_time` DATETIME NULL,
   PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
-    op.execute("""CREATE TABLE `user_btc_predictions` (
+    op.execute("""CREATE TABLE IF NOT EXISTS `user_btc_predictions` (
   `user_id` BIGINT NOT NULL,
   `predict_type` VARCHAR(10) NOT NULL,
   `amount` INT NOT NULL,
@@ -86,7 +92,7 @@ def upgrade() -> None:
   `is_completed` BOOLEAN DEFAULT FALSE,
   PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
-    op.execute("""CREATE TABLE `token_swap_requests` (
+    op.execute("""CREATE TABLE IF NOT EXISTS `token_swap_requests` (
   `id` INT AUTO_INCREMENT PRIMARY KEY,
   `user_id` BIGINT NOT NULL,
   `username` VARCHAR(255) NOT NULL,
@@ -104,7 +110,7 @@ def upgrade() -> None:
   `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY `group_keyword_unique` (`group_id`, `keyword`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci""")
-    op.execute("""CREATE TABLE `group_spam_control` (
+    op.execute("""CREATE TABLE IF NOT EXISTS `group_spam_control` (
   `group_id` BIGINT NOT NULL,
   `enabled` BOOLEAN NOT NULL DEFAULT FALSE,
   `enabled_by` BIGINT,
@@ -121,18 +127,21 @@ def upgrade() -> None:
   `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY `group_spam_keyword_unique` (`group_id`, `keyword`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci""")
-    op.execute("""CREATE TABLE `user_omikuji` (
+    op.execute("""CREATE TABLE IF NOT EXISTS `user_omikuji` (
   `user_id` bigint NOT NULL,
   `fortune_date` DATE NOT NULL,
   `fortune` VARCHAR(10) NOT NULL,
   `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`user_id`, `fortune_date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci""")
-    op.execute("""ALTER TABLE `group_spam_control`
-ADD COLUMN `block_links` BOOLEAN NOT NULL DEFAULT FALSE""")
-    op.execute("""ALTER TABLE `group_spam_control`
-ADD COLUMN `block_mentions` BOOLEAN NOT NULL DEFAULT FALSE""")
-    op.execute("""CREATE TABLE `redemption_codes` (
+    add_columns_if_missing(
+        "group_spam_control",
+        [
+            ("block_links", "BOOLEAN NOT NULL DEFAULT FALSE"),
+            ("block_mentions", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        ],
+    )
+    op.execute("""CREATE TABLE IF NOT EXISTS `redemption_codes` (
   `id` INT AUTO_INCREMENT PRIMARY KEY,
   `code` VARCHAR(255) NOT NULL UNIQUE,
   `amount` INT NOT NULL,
@@ -141,7 +150,7 @@ ADD COLUMN `block_mentions` BOOLEAN NOT NULL DEFAULT FALSE""")
   `used_at` DATETIME DEFAULT NULL,
   FOREIGN KEY (used_by) REFERENCES user(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci""")
-    op.execute("""CREATE TABLE `user_invitations` (
+    op.execute("""CREATE TABLE IF NOT EXISTS `user_invitations` (
   `invited_user_id` BIGINT NOT NULL,
   `referrer_id` BIGINT NOT NULL,
   `invitation_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -168,7 +177,7 @@ ADD COLUMN `block_mentions` BOOLEAN NOT NULL DEFAULT FALSE""")
   `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`group_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci""")
-    op.execute("""CREATE TABLE rpg_characters (
+    op.execute("""CREATE TABLE IF NOT EXISTS rpg_characters (
     character_id INT AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT UNIQUE NOT NULL,
     level INT DEFAULT 1,
@@ -181,7 +190,7 @@ ADD COLUMN `block_mentions` BOOLEAN NOT NULL DEFAULT FALSE""")
     allow_battle BOOLEAN DEFAULT TRUE,
     FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
 )""")
-    op.execute("""CREATE TABLE rpg_equipment (
+    op.execute("""CREATE TABLE IF NOT EXISTS rpg_equipment (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(50) NOT NULL,
     type ENUM('weapon', 'offhand', 'armor', 'treasure1', 'treasure2') NOT NULL,
@@ -194,7 +203,7 @@ ADD COLUMN `block_mentions` BOOLEAN NOT NULL DEFAULT FALSE""")
     rarity INT DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )""")
-    op.execute("""CREATE TABLE rpg_items (
+    op.execute("""CREATE TABLE IF NOT EXISTS rpg_items (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(50) NOT NULL,
     type ENUM('consumable', 'material', 'quest') NOT NULL,
@@ -204,7 +213,7 @@ ADD COLUMN `block_mentions` BOOLEAN NOT NULL DEFAULT FALSE""")
     use_limit INT DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )""")
-    op.execute("""CREATE TABLE rpg_player_equipment (
+    op.execute("""CREATE TABLE IF NOT EXISTS rpg_player_equipment (
     user_id BIGINT NOT NULL,
     weapon_id INT DEFAULT NULL,
     offhand_id INT DEFAULT NULL,
@@ -219,7 +228,7 @@ ADD COLUMN `block_mentions` BOOLEAN NOT NULL DEFAULT FALSE""")
     FOREIGN KEY (treasure2_id) REFERENCES rpg_equipment(id) ON DELETE SET NULL,
     PRIMARY KEY (user_id)
 )""")
-    op.execute("""CREATE TABLE rpg_player_inventory (
+    op.execute("""CREATE TABLE IF NOT EXISTS rpg_player_inventory (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT NOT NULL,
     item_id INT NOT NULL,
@@ -228,7 +237,7 @@ ADD COLUMN `block_mentions` BOOLEAN NOT NULL DEFAULT FALSE""")
     FOREIGN KEY (item_id) REFERENCES rpg_items(id) ON DELETE CASCADE,
     UNIQUE KEY (user_id, item_id)
 )""")
-    op.execute("""CREATE TABLE rpg_shop (
+    op.execute("""CREATE TABLE IF NOT EXISTS rpg_shop (
     id INT AUTO_INCREMENT PRIMARY KEY,
     item_type ENUM('equipment', 'item') NOT NULL,
     item_id INT NOT NULL,
@@ -239,7 +248,7 @@ ADD COLUMN `block_mentions` BOOLEAN NOT NULL DEFAULT FALSE""")
     INDEX (item_type, item_id),
     UNIQUE KEY (item_type, item_id)
 )""")
-    op.execute("""CREATE TABLE rpg_player_equipment_stats (
+    op.execute("""CREATE TABLE IF NOT EXISTS rpg_player_equipment_stats (
     user_id BIGINT NOT NULL,
     total_atk_bonus INT DEFAULT 0,
     total_def_bonus INT DEFAULT 0,
@@ -249,7 +258,7 @@ ADD COLUMN `block_mentions` BOOLEAN NOT NULL DEFAULT FALSE""")
     FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE,
     PRIMARY KEY (user_id)
 )""")
-    op.execute("""CREATE TABLE web_password (
+    op.execute("""CREATE TABLE IF NOT EXISTS web_password (
     user_id BIGINT NOT NULL,
     password VARCHAR(255) NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,

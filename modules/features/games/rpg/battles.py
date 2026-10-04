@@ -1,17 +1,13 @@
 import logging
 import asyncio
-import math
 import time
 
-# 导入自定义模块
-from core import process_user
-
+from . import settlement
 from .utils import calculate_damage, calculate_exp_gain, get_level_from_exp
 from .characters import (
     check_and_process_level_up,
     get_character,
     get_user_id_by_username,
-    update_character_stats,
 )
 
 # --- 玩家间战斗系统 ---
@@ -125,33 +121,28 @@ async def run_battle(update, context, attacker_id: int, defender_id: int):
         winner_name = winner_user.username or winner_user.first_name
         loser_name = loser_user.username or loser_user.first_name
 
-        # 1. 计算金币变化
-        loser_coins = await process_user.async_get_user_coins(loser_id)
-        coins_lost = math.floor(loser_coins * 0.10)
-        coins_to_winner = math.floor(coins_lost * 0.8) # 80% 给赢家
-        coins_deducted = coins_lost # 实际扣除额
-
-        reward_log = f"\n--- 战后结算 ---\n{loser_name} 损失了 {coins_deducted} 🪙 金币。\n"
-        reward_log += f"{winner_name} 获得了 {coins_to_winner} 🪙 金币。\n"
-
-        # 更新金币
-        await process_user.async_update_user_coins(loser_id, -coins_deducted)
-        await process_user.async_update_user_coins(winner_id, coins_to_winner)
-
-        # 2. 计算经验值变化
+        # 1. 经验值：由双方等级决定
         winner_level = get_level_from_exp(winner_char['experience'])
         loser_level = get_level_from_exp(loser_char['experience'])
         exp_gain = calculate_exp_gain(winner_level, loser_level)
 
-        reward_log += f"{winner_name} 获得了 {exp_gain} 点经验值！"
+        # 2. 结算：败者扣款、胜者入账、胜者经验、双方生命值在同一个事务里提交。
+        # 金额按锁住双方账户之后的最新余额计算；同一条命令被重复投递时不会再结算一次。
+        settled = await settlement.settle_player_battle(
+            chat_id=update.message.chat.id,
+            message_id=update.message.message_id,
+            winner_id=winner_id,
+            loser_id=loser_id,
+            exp_gain=exp_gain,
+            hp_after={attacker_id: attacker_hp, defender_id: defender_hp},
+        )
 
-        # 更新获胜者经验值和血量
-        new_exp = winner_char['experience'] + exp_gain
-        await update_character_stats(winner_id, {'experience': new_exp})
-        
-        # 更新双方的HP到数据库
-        await update_character_stats(attacker_id, {'hp': attacker_hp})
-        await update_character_stats(defender_id, {'hp': defender_hp})
+        if settled.applied:
+            reward_log = f"\n--- 战后结算 ---\n{loser_name} 损失了 {settled.coins_lost} 🪙 金币。\n"
+            reward_log += f"{winner_name} 获得了 {settled.coins_to_winner} 🪙 金币。\n"
+            reward_log += f"{winner_name} 获得了 {exp_gain} 点经验值！"
+        else:
+            reward_log = "\n--- 战后结算 ---\n这场战斗已经结算过了。"
 
         await update.message.reply_text(reward_log)
 

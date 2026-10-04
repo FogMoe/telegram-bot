@@ -1,10 +1,12 @@
 import asyncio
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from core import mysql_connection
 from datetime import datetime, timedelta
 import secrets
 from core.command_cooldown import cooldown
+from core.redaction import report_error
 
 # 在开启验证功能前详细检查必要权限
 async def check_bot_permissions(bot, chat_id):
@@ -120,11 +122,14 @@ async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
         except Exception as e:
             error_str = str(e)
-            print(f"限制成员 {user_id} 失败: {error_str}")
+            notice = report_error(
+                logging.getLogger(__name__), f"限制成员 {user_id} 失败", e
+            )
             if "httpx.ConnectError" in error_str or "Not enough rights" in error_str:
                 await context.bot.send_message(
                     chat_id,
-                    f"验证错误: 无法限制成员 {new_member.full_name}({user_id})：{error_str}"
+                    f"验证错误: 无法限制成员 {new_member.full_name}({user_id})，"
+                    f"请检查机器人的管理员权限与网络。\n{notice}"
                 )
             continue
 
@@ -237,10 +242,14 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             error_str = str(e)
+            notice = report_error(
+                logging.getLogger(__name__), f"解除成员 {user_id} 禁言失败", e
+            )
             if "httpx.ConnectError" in error_str or "Not enough rights" in error_str:
                 await context.bot.send_message(
                     update.effective_chat.id,
-                    f"验证错误: 无法解除禁言成员({user_id})：{error_str}"
+                    f"验证错误: 无法解除禁言成员({user_id})，"
+                    f"请检查机器人的管理员权限与网络。\n{notice}"
                 )
             await query.answer("验证时出现错误，请稍后再试。", show_alert=True)
     else:

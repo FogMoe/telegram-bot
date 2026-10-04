@@ -1,9 +1,7 @@
-import asyncio
 import logging
 import time
 from collections import deque
 
-from ..runtime import EXECUTOR
 from ..task_runner import run_ai_task
 
 
@@ -28,24 +26,19 @@ translate_limiter = APIRateLimiter(max_requests=10, time_window=60)
 
 
 async def translate_text(text: str) -> str:
-    """专门用于文本翻译的AI函数（异步版本）"""
+    """专门用于文本翻译的AI函数"""
     try:
         if not translate_limiter.can_make_request():
             return "请求过于频繁，请稍后再试。\nToo many requests, please try again later."
 
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            EXECUTOR,
-            lambda: _sync_translate_text(text),
-        )
+        return await _translate(text)
     except Exception as exc:
         logging.error("翻译过程中出错: %s", exc)
         return "翻译失败，请稍后重试。\nTranslation failed, please try again later."
 
 
-def _sync_translate_text(text: str) -> str:
-    """同步版本的翻译函数，供异步函数调用"""
-    response = run_ai_task(
+async def _translate(text: str) -> str:
+    response = await run_ai_task(
         "translate",
         messages=[
             {

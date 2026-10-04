@@ -1,34 +1,11 @@
+"""任务到 provider 与模型的解析。声明在 `core.ai_providers`，这里只按配置读取并整理顺序。"""
+
 from typing import Any, Dict, List
 
-from core import config
-from core.litellm_models import normalize_provider
+from core import ai_providers
 
+TASKS = set(ai_providers.TASK_SPECS)
 
-TASKS = {"chat", "recap", "summary", "translate", "vision", "classifier", "advisor"}
-
-TASK_PROVIDER_CONFIG_PREFIXES = {
-    "recap": "AI_RECAP",
-    "summary": "AI_SUMMARY",
-    "translate": "AI_TRANSLATE",
-    "vision": "AI_VISION",
-    "classifier": "AI_CLASSIFIER",
-    "advisor": "AI_ADVISOR",
-}
-
-PROVIDER_MODEL_CONFIG_PATTERNS = {
-    "openai": "OPENAI_{task}_MODEL",
-    "openrouter": "OPENROUTER_{task}_MODEL",
-    "fogmoe": "FOGMOE_{task}_MODEL",
-    "siliconflow": "SILICONFLOW_{task}_MODEL",
-    "gemini": "GEMINI_{task}_MODEL",
-    "zai": "ZHIPU_{task}_MODEL",
-    "azure": "AZURE_OPENAI_{task}_MODEL",
-}
-
-PROVIDER_FALLBACK_MODEL_CONFIGS = {
-    ("gemini", "chat"): "GEMINI_CHAT_FALLBACK_MODEL",
-    ("gemini", "summary"): "GEMINI_SUMMARY_FALLBACK_MODEL",
-}
 
 def _dedupe(values: List[str | None], *, lower: bool = False) -> List[str]:
     seen = set()
@@ -47,45 +24,56 @@ def _dedupe(values: List[str | None], *, lower: bool = False) -> List[str]:
     return result
 
 
-def get_provider_order_for_task(task: str) -> List[str]:
+def get_provider_order_for_task(task: str, settings: Any = None) -> List[str]:
     task_name = task.lower()
-    if task_name == "chat":
-        return list(config.AI_SERVICE_ORDER)
-    if task_name not in TASKS:
+    task_spec = ai_providers.TASK_SPECS.get(task_name)
+    if task_spec is None:
         raise RuntimeError(f"Unsupported AI task: {task}")
+    if task_spec.provider_config_prefix is None:
+        return list(ai_providers.read_setting(settings, "AI_SERVICE_ORDER") or [])
 
-    env_prefix = TASK_PROVIDER_CONFIG_PREFIXES[task_name]
-    primary = getattr(config, f"{env_prefix}_PROVIDER", None)
-    fallback = getattr(config, f"{env_prefix}_FALLBACK_PROVIDER", None)
+    prefix = task_spec.provider_config_prefix
+    primary = ai_providers.read_setting(settings, f"{prefix}_PROVIDER")
+    fallback = ai_providers.read_setting(settings, f"{prefix}_FALLBACK_PROVIDER")
     return _dedupe([primary, fallback], lower=True)
 
 
-def provider_model_for_task(provider: str, task: str) -> str | None:
-    provider_name = normalize_provider(provider)
-    task_name = task.lower()
-    task_suffix = task_name.upper()
-    config_pattern = PROVIDER_MODEL_CONFIG_PATTERNS.get(provider_name)
-    if not config_pattern:
-        return None
-    return getattr(config, config_pattern.format(task=task_suffix), None)
+def provider_model_for_task(provider: str, task: str, settings: Any = None) -> str | None:
+    spec = ai_providers.require(provider)
+    return ai_providers.configured_model(spec, task, settings)
 
 
-def provider_fallback_model_for_task(provider: str, task: str) -> str | None:
-    provider_name = normalize_provider(provider)
-    task_name = task.lower()
-    config_name = PROVIDER_FALLBACK_MODEL_CONFIGS.get((provider_name, task_name))
-    if not config_name:
-        return None
-    return getattr(config, config_name, None)
+def provider_fallback_model_for_task(
+    provider: str,
+    task: str,
+    settings: Any = None,
+) -> str | None:
+    spec = ai_providers.require(provider)
+    return ai_providers.configured_fallback_model(spec, task, settings)
 
 
-def get_models_for_task(provider: str, task: str) -> List[str]:
+def get_models_for_task(provider: str, task: str, settings: Any = None) -> List[str]:
     return _dedupe(
         [
-            provider_model_for_task(provider, task),
-            provider_fallback_model_for_task(provider, task),
+            provider_model_for_task(provider, task, settings),
+            provider_fallback_model_for_task(provider, task, settings),
         ]
     )
+
+
+def missing_capability_for_task(provider: str, task: str) -> str | None:
+    """已声明的 provider 缺少该任务要求的哪项能力（chat 要工具，vision 要视觉）；满足或未知返回 None。
+
+    未知 provider 不在这里处理：它们在取模型时按「不支持的 provider」报错。
+    """
+    spec = ai_providers.lookup(provider)
+    task_spec = ai_providers.TASK_SPECS.get(task.lower())
+    if spec is None or task_spec is None:
+        return None
+    for capability in task_spec.requires:
+        if not spec.supports(capability):
+            return capability
+    return None
 
 
 def completion_kwargs_for_task(provider: str, task: str) -> Dict[str, Any]:

@@ -8,7 +8,8 @@ from typing import Any, Optional
 
 import requests
 
-from core import config
+from core import config, http_sessions
+from core.redaction import describe_exception, log_exception, redact_text
 from .context import get_tool_request_context
 from .filename_utils import prompt_to_filename
 
@@ -159,7 +160,7 @@ def _cleanup_expired_generated_audio() -> None:
 def _get_session() -> requests.Session:
     session = getattr(_SESSION_LOCAL, "session", None)
     if session is None:
-        session = requests.Session()
+        session = http_sessions.track_session(requests.Session())
         _SESSION_LOCAL.session = session
     return session
 
@@ -278,7 +279,7 @@ def _request_and_save_generated_voice(
                 return {
                     "error": "Voice generation request failed",
                     "status_code": response.status_code,
-                    "details": detail,
+                    "details": redact_text(detail),
                 }
             audio = _save_audio(
                 audio_bytes=response_content,
@@ -286,20 +287,40 @@ def _request_and_save_generated_voice(
                 content_type=response.headers.get("Content-Type"),
             )
     except VoiceGenerationSizeError as exc:
-        return {"error": str(exc)}
+        return {"error": describe_exception(exc)}
     except requests.Timeout as exc:
-        logger.warning("Fish Audio request timed out after %s seconds: %s", timeout, exc)
+        log_exception(
+            logger,
+            f"Fish Audio request timed out after {timeout} seconds",
+            exc,
+            level=logging.WARNING,
+            include_traceback=False,
+        )
         return {
             "error": f"Fish Audio request timed out after {timeout} seconds",
         }
     except requests.RequestException as exc:
-        logger.warning("Fish Audio request failed: %s", exc)
+        error_ref = log_exception(
+            logger,
+            "Fish Audio request failed",
+            exc,
+            level=logging.WARNING,
+            include_traceback=False,
+        )
         return {
-            "error": f"Failed to contact Fish Audio API: {exc}",
+            "error": (
+                f"Failed to contact Fish Audio API: {describe_exception(exc)} "
+                f"(ref: {error_ref})"
+            ),
         }
     except Exception as exc:
-        logger.exception("Failed to save generated voice: %s", exc)
-        return {"error": f"Generated audio could not be saved: {exc}"}
+        error_ref = log_exception(logger, "Failed to save generated voice", exc)
+        return {
+            "error": (
+                f"Generated audio could not be saved: {describe_exception(exc)} "
+                f"(ref: {error_ref})"
+            )
+        }
 
     return {
         "status": "generated",

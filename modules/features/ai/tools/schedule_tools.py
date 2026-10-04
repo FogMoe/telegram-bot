@@ -113,7 +113,9 @@ async def _create_or_replace_schedule(
         schedule_id = None
         if total_count >= MAX_TOTAL_SCHEDULES:
             row = await mysql_connection.fetch_one(
-                "SELECT id FROM ai_schedules WHERE user_id = %s AND status != 'pending' "
+                # 正在执行的任务由 worker 持有 claim，不能被覆盖复用。
+                "SELECT id FROM ai_schedules WHERE user_id = %s "
+                "AND status NOT IN ('pending', 'executing') "
                 "ORDER BY created_at ASC, id ASC LIMIT 1",
                 (user_id,),
                 connection=connection,
@@ -125,7 +127,8 @@ async def _create_or_replace_schedule(
                     "SET run_at = %s, recurrence_unit = %s, recurrence_interval = %s, "
                     "trigger_reason = %s, context = %s, prompt = %s, "
                     "status = 'pending', created_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP(), "
-                    "executed_at = NULL, last_run_at = NULL, error = NULL "
+                    "executed_at = NULL, last_run_at = NULL, error = NULL, "
+                    "claim_token = NULL, claim_until = NULL, claim_attempts = 0, stage = 'idle' "
                     "WHERE id = %s",
                     (
                         run_at,
@@ -176,7 +179,7 @@ async def _create_or_replace_schedule(
     return schedule_id, created_at, replaced, None
 
 
-def schedule_ai_message_tool(
+async def schedule_ai_message_tool(
     action: Optional[str] = None,
     timestamp_utc: Optional[str] = None,
     recurrence_unit: Optional[str] = None,
@@ -218,14 +221,12 @@ def schedule_ai_message_tool(
         ):
             warnings.append("extra fields ignored for list action")
 
-        rows = mysql_connection.run_sync(
-            mysql_connection.fetch_all(
-                "SELECT id, run_at, recurrence_unit, recurrence_interval, created_at, "
-                "executed_at, last_run_at, status, trigger_reason, context, prompt, error "
-                "FROM ai_schedules WHERE user_id = %s "
-                "ORDER BY created_at DESC, id DESC LIMIT %s",
-                (user_id, MAX_TOTAL_SCHEDULES),
-            )
+        rows = await mysql_connection.fetch_all(
+            "SELECT id, run_at, recurrence_unit, recurrence_interval, created_at, "
+            "executed_at, last_run_at, status, trigger_reason, context, prompt, error "
+            "FROM ai_schedules WHERE user_id = %s "
+            "ORDER BY created_at DESC, id DESC LIMIT %s",
+            (user_id, MAX_TOTAL_SCHEDULES),
         )
         tasks = []
         pending_count = 0
@@ -286,12 +287,10 @@ def schedule_ai_message_tool(
         if any([timestamp_utc, recurrence_unit, recurrence_interval, trigger_reason, context, instruction]):
             warnings.append("extra fields ignored for cancel action")
 
-        rowcount = mysql_connection.run_sync(
-            mysql_connection.execute(
-                "UPDATE ai_schedules SET status = 'cancelled' "
-                "WHERE id = %s AND user_id = %s AND status = 'pending'",
-                (schedule_id_value, user_id),
-            )
+        rowcount = await mysql_connection.execute(
+            "UPDATE ai_schedules SET status = 'cancelled' "
+            "WHERE id = %s AND user_id = %s AND status = 'pending'",
+            (schedule_id_value, user_id),
         )
         if rowcount == 0:
             return {
@@ -362,16 +361,14 @@ def schedule_ai_message_tool(
         elif len(context_value) > 1000:
             return {"user_id": user_id, "error": "context exceeds 1000 characters"}
 
-    schedule_id, created_at, replaced, blocked_reason = mysql_connection.run_sync(
-        _create_or_replace_schedule(
-            user_id,
-            run_at,
-            trigger_reason_value,
-            context_value,
-            instruction_value,
-            recurrence_unit_value,
-            recurrence_interval_value,
-        )
+    schedule_id, created_at, replaced, blocked_reason = await _create_or_replace_schedule(
+        user_id,
+        run_at,
+        trigger_reason_value,
+        context_value,
+        instruction_value,
+        recurrence_unit_value,
+        recurrence_interval_value,
     )
     if schedule_id is None:
         if blocked_reason == "total_limit":

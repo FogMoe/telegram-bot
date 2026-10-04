@@ -1,10 +1,10 @@
-import asyncio
 import logging
 import re
 from typing import Any, Awaitable, Callable
 
 import telegram.error
 
+from core import blocking
 from core.telegram_utils import (
     PartialTelegramSendError,
     retry_telegram_send,
@@ -66,7 +66,7 @@ async def normalize_sticker_directives(
             for match in _STICKER_DIRECTIVE_RE.finditer(line):
                 normalized_parts.append(line[last_end:match.start()])
                 pack_name, emoji = _sticker_directive_from_match(match)
-                exists = await asyncio.to_thread(sticker_exists, pack_name, emoji)
+                exists = await blocking.io().run(sticker_exists, pack_name, emoji)
                 if exists:
                     normalized_parts.append(match.group(0))
                 else:
@@ -139,7 +139,7 @@ async def send_ai_reply_with_stickers(
         if sticker_count >= MAX_STICKERS_PER_REPLY:
             return
 
-        file_id = await asyncio.to_thread(choose_sticker_file_id, pack_name, emoji)
+        file_id = await blocking.io().run(choose_sticker_file_id, pack_name, emoji)
         if not file_id:
             await flush_text([emoji])
             return

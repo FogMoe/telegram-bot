@@ -8,7 +8,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     CommandHandler, CallbackQueryHandler, ContextTypes
 )
-from core import mysql_connection, process_user
+from core import balance, process_user
 from core.command_cooldown import cooldown
 
 # 设置日志
@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 # 定义游戏状态字典和锁
 active_games: Dict[int, Dict] = {}  # 储存活跃游戏: {user_id: game_state}
 game_locks: Dict[int, asyncio.Lock] = {}  # 用户游戏锁: {user_id: asyncio.Lock()}
+
+# 可选的下注金额
+BET_AMOUNTS = (1, 5, 10, 20, 50, 100)
 
 # 骰宝赔率表
 PAYOUT_RATES = {
@@ -46,36 +49,48 @@ def get_user_lock(user_id: int) -> asyncio.Lock:
         game_locks[user_id] = asyncio.Lock()
     return game_locks[user_id]
 
-# 安全更新用户金币
-async def update_user_coins_safely(user_id: int, amount: int) -> bool:
-    try:
-        async with mysql_connection.transaction() as connection:
-            row = await mysql_connection.fetch_one(
-                "SELECT id FROM user WHERE id = %s",
-                (user_id,),
-                connection=connection,
+class AlreadySettled(Exception):
+    """这一局的下注已经结算过（同一个面板消息的 op_key 已经记账），本次没有改动任何数据。"""
+
+
+def bet_op_key(chat_id: int, message_id: int) -> str:
+    """一局骰宝对应一个面板消息，下注扣款以它为幂等键。"""
+    return balance.make_op_key("sicbo", chat_id, message_id, "bet")
+
+
+def win_op_key(chat_id: int, message_id: int) -> str:
+    return balance.make_op_key("sicbo", chat_id, message_id, "win")
+
+
+async def settle_bet(
+    user_id: int, chat_id: int, message_id: int, bet_amount: int, winnings: int
+) -> int:
+    """扣下注、赢了就入账奖金，同一个事务：要么都生效，要么都不生效。返回结算后的总余额。
+
+    余额不足抛 `balance.InsufficientBalance`；这一局已经结算过抛 `AlreadySettled`。
+    """
+
+    async def work(connection):
+        result = await balance.debit(
+            connection,
+            user_id,
+            bet_amount,
+            op_key=bet_op_key(chat_id, message_id),
+            reason="sicbo_bet",
+        )
+        if not result.applied:
+            raise AlreadySettled()
+        if winnings > 0:
+            result = await balance.credit(
+                connection,
+                user_id,
+                winnings,
+                op_key=win_op_key(chat_id, message_id),
+                reason="sicbo_win",
             )
-            if not row:
-                logger.error(f"更新用户金币失败: 用户ID {user_id} 不存在")
-                return False
-            if amount < 0:
-                spent = await process_user.spend_user_coins(
-                    user_id,
-                    -amount,
-                    connection=connection,
-                )
-                if not spent:
-                    return False
-            elif amount > 0:
-                await process_user.add_free_coins(
-                    user_id,
-                    amount,
-                    connection=connection,
-                )
-        return True
-    except Exception as e:
-        logger.error(f"更新用户{user_id}金币时出错: {str(e)}")
-        return False
+        return result.balance_total
+
+    return await balance.run_in_transaction(work)
 
 # 定期清理过期游戏
 async def cleanup_expired_games(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -269,7 +284,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.answer("游戏已结束或已被取消")
         await query.edit_message_text("游戏已结束或已被取消。请使用 /sicbo 开始新游戏。")
         return
-    
+
+    # 面板必须是这局游戏发出的那一条：旧面板的按钮不会作用到当前这一局，
+    # 下注扣款的 op_key 也由这条消息的位置决定。
+    stored_message_id = active_games[user_id].get("message_id")
+    if stored_message_id is not None and stored_message_id != query.message.message_id:
+        await query.answer("这个面板已失效，请使用 /sicbo 开始新游戏", show_alert=True)
+        return
+
     user_lock = get_user_lock(user_id)
     if not user_lock.locked():
         async with user_lock:
@@ -309,29 +331,41 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             elif action.startswith("amount_"):
                 try:
                     bet_amount = int(action.replace("amount_", ""))
-                    user_coins = await process_user.async_get_user_coins(user_id)
-                    if user_coins < bet_amount:
-                        await query.edit_message_text(
-                            f"您的金币不足！您只有 {user_coins} 金币。\n请使用 /sicbo 重新开始游戏并选择较小的下注金额。"
-                        )
-                        end_game(user_id)
+                    bet_type = active_games[user_id]["bet_type"]
+                    if bet_amount not in BET_AMOUNTS or bet_type not in PAYOUT_RATES:
+                        await query.answer("请先选择下注类型", show_alert=True)
                         return
                     active_games[user_id]["bet_amount"] = bet_amount
-                    bet_type = active_games[user_id]["bet_type"]
                     bet_name = BET_TYPE_NAMES.get(bet_type, bet_type)
-                    if not await update_user_coins_safely(user_id, -bet_amount):
-                        await query.edit_message_text("处理您的下注时出现错误，请稍后再试。")
-                        end_game(user_id)
-                        return
                     dice, results = roll_dice()
                     dice_emojis = [get_dice_emoji(d) for d in dice]
                     dice_display = " ".join(dice_emojis)
                     win = results.get(bet_type, False)
                     payout_rate = PAYOUT_RATES.get(bet_type, 1)
                     winnings = bet_amount * (1 + payout_rate) if win else 0
-                    if win:
-                        if not await update_user_coins_safely(user_id, winnings):
-                            await query.answer("结算奖金时出错，请联系管理员", show_alert=True)
+                    # 扣下注与入账奖金在同一个事务里，余额不足时什么都不会发生。
+                    try:
+                        new_balance = await settle_bet(
+                            user_id,
+                            query.message.chat.id,
+                            query.message.message_id,
+                            bet_amount,
+                            winnings,
+                        )
+                    except balance.InsufficientBalance as exc:
+                        await query.edit_message_text(
+                            f"您的金币不足！您只有 {exc.balance_total} 金币。\n请使用 /sicbo 重新开始游戏并选择较小的下注金额。"
+                        )
+                        end_game(user_id)
+                        return
+                    except balance.UserNotFound:
+                        await query.edit_message_text("请先使用 /me 命令注册后再开始游戏。")
+                        end_game(user_id)
+                        return
+                    except AlreadySettled:
+                        await query.edit_message_text("这一局已经结算过了。请使用 /sicbo 开始新游戏。")
+                        end_game(user_id)
+                        return
                     dice_sum = results["total"]
                     result_description = []
                     if dice_sum >= 11 and dice_sum <= 17 and not results["any_triple"]:
@@ -358,7 +392,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     else:
                         result_message += f"您损失了 {bet_amount} 金币"
                         
-                    new_balance = await process_user.async_get_user_coins(user_id)
                     result_message += f"\n\n当前余额: {new_balance} 金币\n\n如需再玩一次，请使用 /sicbo 命令。"
                     await query.edit_message_text(result_message, parse_mode="Markdown")
                     end_game(user_id)

@@ -1,7 +1,10 @@
 import logging
 from typing import Dict, List, Tuple
 
-from core import mysql_connection
+from core import sql
+from core.redaction import report_error
+
+from ...repositories import rpg as rpg_repository
 
 # 道具栏容量上限
 INVENTORY_CAPACITY = 10
@@ -11,18 +14,7 @@ INVENTORY_CAPACITY = 10
 async def get_player_inventory(user_id: int) -> List[Dict]:
     """获取玩家的道具列表"""
     try:
-        results = await mysql_connection.fetch_all(
-            """
-            SELECT pi.id, pi.user_id, pi.item_id, pi.quantity, 
-                   i.name, i.type, i.effect, i.description, i.price
-            FROM rpg_player_inventory pi
-            JOIN rpg_items i ON pi.item_id = i.id
-            WHERE pi.user_id = %s
-            """,
-            (user_id,),
-            mapping=True,
-        )
-        return [dict(row) for row in results] if results else []
+        return await rpg_repository.get_inventory(user_id)
     except Exception as e:
         logging.error(f"获取玩家道具失败: {e}")
         return []
@@ -34,12 +26,7 @@ async def get_item_details(item_id: int) -> Dict:
         return None
 
     try:
-        result = await mysql_connection.fetch_one(
-            "SELECT * FROM rpg_items WHERE id = %s",
-            (item_id,),
-            mapping=True,
-        )
-        return dict(result) if result else None
+        return await rpg_repository.get_item(item_id)
     except Exception as e:
         logging.error(f"获取道具详情失败: {e}")
         return None
@@ -60,33 +47,20 @@ async def add_item_to_inventory(user_id: int, item_id: int, quantity: int = 1) -
         existing_item = next((i for i in inventory if i['item_id'] == item_id), None)
         
         if existing_item:
-            async with mysql_connection.transaction() as connection:
-                await connection.exec_driver_sql(
-                    """
-                    UPDATE rpg_player_inventory
-                    SET quantity = quantity + %s
-                    WHERE user_id = %s AND item_id = %s
-                    """,
-                    (quantity, user_id, item_id),
-                )
+            async with sql.transaction() as connection:
+                await rpg_repository.increase_item_quantity(connection, user_id, item_id, quantity)
             return True, f"成功获得 {quantity} 个 {item['name']}"
 
         # 检查道具栏是否已满
         if len(inventory) >= INVENTORY_CAPACITY:
             return False, f"道具栏已满（最多{INVENTORY_CAPACITY}个）"
 
-        async with mysql_connection.transaction() as connection:
-            await connection.exec_driver_sql(
-                """
-                INSERT INTO rpg_player_inventory (user_id, item_id, quantity)
-                VALUES (%s, %s, %s)
-                """,
-                (user_id, item_id, quantity),
-            )
+        async with sql.transaction() as connection:
+            await rpg_repository.insert_item(connection, user_id, item_id, quantity)
         return True, f"成功获得 {quantity} 个 {item['name']}"
     except Exception as e:
-        logging.error(f"添加道具过程中出错: {e}")
-        return False, f"添加道具出错: {str(e)}"
+        notice = report_error(logging.getLogger(__name__), "添加道具过程中出错", e)
+        return False, f"添加道具出错，请稍后再试。\n{notice}"
 
 
 async def remove_item_from_inventory(user_id: int, item_id: int, quantity: int = 1) -> Tuple[bool, str]:
@@ -105,29 +79,16 @@ async def remove_item_from_inventory(user_id: int, item_id: int, quantity: int =
             return False, f"道具数量不足（需要{quantity}个，但只有{existing_item['quantity']}个）"
             
         if existing_item['quantity'] == quantity:
-            async with mysql_connection.transaction() as connection:
-                await connection.exec_driver_sql(
-                    """
-                    DELETE FROM rpg_player_inventory
-                    WHERE user_id = %s AND item_id = %s
-                    """,
-                    (user_id, item_id),
-                )
+            async with sql.transaction() as connection:
+                await rpg_repository.delete_item(connection, user_id, item_id)
         else:
-            async with mysql_connection.transaction() as connection:
-                await connection.exec_driver_sql(
-                    """
-                    UPDATE rpg_player_inventory
-                    SET quantity = quantity - %s
-                    WHERE user_id = %s AND item_id = %s
-                    """,
-                    (quantity, user_id, item_id),
-                )
+            async with sql.transaction() as connection:
+                await rpg_repository.decrease_item_quantity(connection, user_id, item_id, quantity)
 
         return True, f"移除了 {quantity} 个 {existing_item['name']}"
     except Exception as e:
-        logging.error(f"移除道具过程中出错: {e}")
-        return False, f"移除道具出错: {str(e)}"
+        notice = report_error(logging.getLogger(__name__), "移除道具过程中出错", e)
+        return False, f"移除道具出错，请稍后再试。\n{notice}"
 
 
 async def use_item(user_id: int, item_id: int) -> Tuple[bool, str]:
@@ -162,8 +123,8 @@ async def use_item(user_id: int, item_id: int) -> Tuple[bool, str]:
             
         return True, result_message
     except Exception as e:
-        logging.error(f"使用道具过程中出错: {e}")
-        return False, f"使用道具出错: {str(e)}"
+        notice = report_error(logging.getLogger(__name__), "使用道具过程中出错", e)
+        return False, f"使用道具出错，请稍后再试。\n{notice}"
 
 
 def item_type_to_chinese(item_type: str) -> str:

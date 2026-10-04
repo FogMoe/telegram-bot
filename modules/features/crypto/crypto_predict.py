@@ -1,5 +1,5 @@
 import asyncio
-from core import mysql_connection, process_user
+from core import balance, blocking, process_user, user_records
 import logging
 from datetime import datetime, timedelta
 from binance.um_futures import UMFutures
@@ -8,6 +8,9 @@ from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
 from telegram.constants import ParseMode
 import time
 from core.command_cooldown import cooldown
+from core.redaction import log_exception, user_error_notice
+
+from .repositories import predictions as predictions_repository
 
 
 logger = logging.getLogger(__name__)
@@ -25,16 +28,20 @@ async def get_user_lock(user_id):
         user_locks[user_id] = asyncio.Lock()
     return user_locks[user_id]
 
+def _fetch_btc_mark_price() -> float:
+    """同步的 binance 请求（requests 实现）：只能在线程适配器里调用。"""
+    client = UMFutures()
+    return float(client.mark_price("BTCUSDT")['markPrice'])
+
+
 async def get_btc_price():
     """获取比特币当前价格"""
     try:
-        client = UMFutures()
-        btc_price = float(client.mark_price("BTCUSDT")['markPrice'])
+        btc_price = await blocking.io().run(_fetch_btc_mark_price)
         return btc_price, None
     except Exception as e:
-        error_msg = f"获取比特币价格失败: {str(e)}"
-        logger.error(error_msg)
-        return None, error_msg
+        error_ref = log_exception(logger, "获取比特币价格失败", e)
+        return None, f"获取比特币价格失败。{user_error_notice(error_ref)}"
 
 @cooldown
 async def btc_predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -58,17 +65,17 @@ async def btc_predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     # 检查用户是否已有活跃预测
     active_prediction = await get_user_active_prediction(user_id)
     if (active_prediction):
-        remaining_time = active_prediction['end_time'] - datetime.now()
+        remaining_time = active_prediction.end_time - datetime.now()
         minutes = int(remaining_time.total_seconds() // 60)
         seconds = int(remaining_time.total_seconds() % 60)
         
         # 显示用户当前预测状态
-        direction = "上涨" if active_prediction['predict_type'] == 'up' else "下跌"
+        direction = "上涨" if active_prediction.predict_type == 'up' else "下跌"
         await update.message.reply_text(
             f"⚠️ 您已经有一个正在进行的预测！\n\n"
             f"预测方向: {direction}\n"
-            f"投入金额: {active_prediction['amount']} 金币\n"
-            f"起始价格: ${active_prediction['start_price']:,.2f}\n"
+            f"投入金额: {active_prediction.amount} 金币\n"
+            f"起始价格: ${active_prediction.start_price:,.2f}\n"
             f"剩余时间: {minutes}分钟 {seconds}秒\n\n"
             f"请等待此次预测结束后再开始新预测。"
         )
@@ -376,128 +383,151 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_user_active_prediction(user_id):
     """获取用户当前活跃的预测"""
     try:
-        result = await mysql_connection.fetch_one(
-            "SELECT predict_type, amount, start_price, start_time, end_time FROM user_btc_predictions "
-            "WHERE user_id = %s AND is_completed = FALSE AND end_time > %s",
-            (user_id, datetime.now()),
-        )
-
-        if not result:
-            return None
-        
-        return {
-            'predict_type': result[0],
-            'amount': result[1],
-            'start_price': float(result[2]),
-            'start_time': result[3],
-            'end_time': result[4]
-        }
+        return await predictions_repository.get_running(user_id, datetime.now())
     except Exception as e:
         logger.error(f"获取用户活跃预测失败: {str(e)}")
         return None
 
-async def create_prediction(user_id, predict_type, amount, start_price):
-    """创建新的预测记录"""
+def prediction_op_key(user_id: int, start_time: datetime, step: str) -> str:
+    """预测的 op_key：一条预测由 (user_id, start_time) 标识。
+
+    `user_btc_predictions` 以 user_id 为主键、每人同一时间只有一条未结算的预测，
+    新预测只能在上一条结算或过期处理之后创建，所以 start_time（精确到秒，创建时已去掉
+    微秒）不会重复。`step` 区分下注（bet）、中奖结算（win）与过期退款的兜底（expired）。
+    """
+    return balance.make_op_key("btc", user_id, start_time.strftime("%Y%m%dT%H%M%S"), step)
+
+
+async def _settle_expired_prediction(
+    connection,
+    user_id: int,
+    start_time: datetime,
+    amount: int,
+) -> None:
+    """过期未结算的预测：把本金退回去（按下注时的免费/付费拆分原路退回）。
+
+    升级到账本之前创建的预测没有下注记录，`refund` 会被拒绝；这种预测按旧规则
+    原额返还免费金币，op_key 同样由预测身份派生，所以只会返还一次。
+    """
     try:
-        async with mysql_connection.transaction() as connection:
-            existing_prediction = await mysql_connection.fetch_one(
-                "SELECT user_id, predict_type, amount, start_price, end_time FROM user_btc_predictions WHERE user_id = %s AND is_completed = FALSE",
-                (user_id,),
-                connection=connection,
-            )
+        await balance.refund(
+            connection,
+            prediction_op_key(user_id, start_time, "bet"),
+            reason="btc_expired",
+        )
+    except balance.RefundRejected:
+        await balance.credit(
+            connection,
+            user_id,
+            amount,
+            op_key=prediction_op_key(user_id, start_time, "expired"),
+            reason="btc_expired",
+        )
+    await predictions_repository.mark_completed(connection, user_id)
 
-            if existing_prediction:
-                _, _, existing_amount, _, end_time = existing_prediction
-                if end_time < datetime.now():
-                    logger.warning(f"用户 {user_id} 有过期未结算的预测, 正在进行结算处理")
-                    await process_user.add_free_coins(
-                        user_id,
-                        existing_amount,
-                        connection=connection,
-                    )
-                    await connection.exec_driver_sql(
-                        "UPDATE user_btc_predictions SET is_completed = TRUE WHERE user_id = %s",
-                        (user_id,),
-                    )
-                    logger.info(f"检测到过期未结算的预测，已返还用户 {user_id} 的本金 {existing_amount} 金币")
-                else:
-                    return False, "您已经有一个正在进行的预测"
 
-            start_time = datetime.now()
-            end_time = start_time + timedelta(minutes=10)
+async def create_prediction(user_id, predict_type, amount, start_price):
+    """创建新的预测记录：下注扣款与预测记录在同一个事务里。
 
-            result = await mysql_connection.fetch_one(
-                "SELECT coins, coins_paid FROM user WHERE id = %s",
-                (user_id,),
-                connection=connection,
-            )
-            current_coins = (result[0] or 0) + (result[1] or 0) if result else 0
-            if not result or current_coins < amount:
-                return False, "金币不足"
+    余额不足时不会留下预测记录（扣款先于写入，失败即返回）。
+    """
+    # 去掉微秒：MySQL 的 DATETIME 会对微秒四舍五入，op_key 里的时间必须与库里读回的一致。
+    start_time = datetime.now().replace(microsecond=0)
+    end_time = start_time + timedelta(minutes=10)
 
-            await connection.exec_driver_sql(
-                "DELETE FROM user_btc_predictions WHERE user_id = %s",
-                (user_id,),
-            )
+    async def work(connection):
+        try:
+            await balance.lock_user(connection, user_id)
+        except balance.UserNotFound:
+            return False, "金币不足"
 
-            await connection.exec_driver_sql(
-                "INSERT INTO user_btc_predictions (user_id, predict_type, amount, start_price, start_time, end_time) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (user_id, predict_type, amount, start_price, start_time, end_time),
-            )
+        # 用户行已经锁住，这是事务里第一次一致性读，不会错过并发提交的预测。
+        existing_prediction = await predictions_repository.get_unsettled(
+            user_id, connection=connection
+        )
+        if existing_prediction:
+            if existing_prediction.end_time < datetime.now():
+                logger.warning(f"用户 {user_id} 有过期未结算的预测, 正在进行结算处理")
+                await _settle_expired_prediction(
+                    connection,
+                    user_id,
+                    existing_prediction.start_time,
+                    existing_prediction.amount,
+                )
+                logger.info(f"检测到过期未结算的预测，已返还用户 {user_id} 的本金 {existing_prediction.amount} 金币")
+            else:
+                return False, "您已经有一个正在进行的预测"
 
-            spent = await process_user.spend_user_coins(
+        try:
+            bet = await balance.debit(
+                connection,
                 user_id,
                 amount,
-                connection=connection,
+                op_key=prediction_op_key(user_id, start_time, "bet"),
+                reason="btc_bet",
             )
-            if not spent:
-                return False, "金币不足"
+        except balance.InsufficientBalance:
+            return False, "金币不足"
+        if not bet.applied:
+            return False, "您已经有一个正在进行的预测"
 
+        await predictions_repository.replace_prediction(
+            connection,
+            user_id,
+            predict_type=predict_type,
+            amount=amount,
+            start_price=start_price,
+            start_time=start_time,
+            end_time=end_time,
+        )
         return True, None
+
+    try:
+        return await balance.run_in_transaction(work)
     except Exception as e:
-        error_msg = f"创建预测时出错: {str(e)}"
-        logger.error(error_msg)
-        return False, error_msg
+        error_ref = log_exception(logger, "创建预测时出错", e)
+        return False, f"创建预测时出错。{user_error_notice(error_ref)}"
 
 async def check_prediction_result(user_id):
-    """检查预测结果并更新用户金币"""
+    """检查预测结果并更新用户金币：标记完成与中奖入账在同一个事务里，同一条预测只会结算一次。"""
     try:
-        async with mysql_connection.transaction() as connection:
-            result = await mysql_connection.fetch_one(
-                "SELECT predict_type, amount, start_price FROM user_btc_predictions "
-                "WHERE user_id = %s AND is_completed = FALSE",
-                (user_id,),
-                connection=connection,
-            )
-            if not result:
-                return None
+        pending = await predictions_repository.get_unsettled(user_id)
+        if not pending:
+            return None
 
-            predict_type = result[0]
-            amount = result[1]
-            start_price = float(result[2])
+        predict_type = pending.predict_type
+        amount = pending.amount
+        start_price = pending.start_price
+        start_time = pending.start_time
 
-            btc_price, error = await get_btc_price()
-            if error:
-                return None
+        # 取价是外部调用，放在事务之外。
+        btc_price, error = await get_btc_price()
+        if error:
+            return None
 
-            price_change = btc_price - start_price
-            is_up = price_change > 0
-            is_correct = (predict_type == 'up' and is_up) or (predict_type == 'down' and not is_up)
+        price_change = btc_price - start_price
+        is_up = price_change > 0
+        is_correct = (predict_type == 'up' and is_up) or (predict_type == 'down' and not is_up)
+        reward = int(amount * 1.8) if is_correct else 0
 
-            await connection.exec_driver_sql(
-                "UPDATE user_btc_predictions SET is_completed = TRUE WHERE user_id = %s AND is_completed = FALSE",
-                (user_id,),
-            )
-
-            reward = 0
-            if is_correct:
-                reward = int(amount * 1.8)
-                await process_user.add_free_coins(
+        async def work(connection):
+            await balance.lock_user(connection, user_id)
+            # 锁内重新确认这条预测还没被结算（并发的结算或过期退款已处理就不再处理）。
+            if not await predictions_repository.is_unsettled(connection, user_id, start_time):
+                return False
+            await predictions_repository.complete_unsettled(connection, user_id)
+            if reward > 0:
+                await balance.credit(
+                    connection,
                     user_id,
                     reward,
-                    connection=connection,
+                    op_key=prediction_op_key(user_id, start_time, "win"),
+                    reason="btc_win",
                 )
+            return True
+
+        if not await balance.run_in_transaction(work):
+            return None
 
         return {
             'predict_type': predict_type,
@@ -591,12 +621,9 @@ async def get_username_by_user_id(user_id, context):
     
     # 如果从Telegram获取失败，尝试从数据库获取
     try:
-        result = await mysql_connection.fetch_one(
-            "SELECT name FROM user WHERE id = %s",
-            (user_id,),
-        )
-        if result and result[0]:
-            return result[0]
+        name = await user_records.get_name(user_id)
+        if name:
+            return name
     except Exception as e:
         logger.error(f"从数据库获取用户名失败: {str(e)}")
     

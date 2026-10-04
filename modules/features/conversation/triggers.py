@@ -4,7 +4,6 @@
 保护，避免群聊高峰把额度打满。
 """
 
-import asyncio
 import logging
 import time
 from collections import deque
@@ -42,19 +41,11 @@ async def should_trigger_ai_response(message_text: str) -> bool:
     if not message_text:
         return False
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        None,
-        lambda: _sync_should_trigger_ai_response(message_text)
-    )
-
-
-def _sync_should_trigger_ai_response(message_text: str) -> bool:
     if not _classifier_allowance.consume():
         logging.debug("AI classifier rate limiter blocked a request.")
         return False
     try:
-        response = run_ai_task(
+        response = await run_ai_task(
             "classifier",
             messages=[
                 {

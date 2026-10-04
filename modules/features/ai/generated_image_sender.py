@@ -5,6 +5,7 @@ from typing import Any
 from core.telegram_utils import retry_telegram_send, telegram_error_summary
 
 from .tools.image_tools import pop_generated_image_file
+from .types import media_delivery_attempted
 
 MAX_GENERATED_IMAGES_PER_REPLY = 10
 
@@ -141,7 +142,7 @@ def _collect_generated_images_from_result(
 def _collect_generated_images(tool_logs: list[dict]) -> list[dict[str, Any]]:
     images: list[dict[str, Any]] = []
     for tool_log in tool_logs:
-        if tool_log.get("media_sent"):
+        if media_delivery_attempted(tool_log):
             continue
         if tool_log.get("type") != "tool_result":
             continue
@@ -256,7 +257,7 @@ async def send_generated_images_from_tool_logs(
         [
             tool_log
             for tool_log in tool_logs
-            if not tool_log.get("media_sent")
+            if not media_delivery_attempted(tool_log)
         ]
     )
     images = _collect_generated_images(tool_logs)

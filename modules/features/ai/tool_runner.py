@@ -1,4 +1,7 @@
+import asyncio
 import base64
+import contextlib
+import inspect
 import json
 import logging
 import time
@@ -6,21 +9,30 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Opt
 
 from pydantic import ValidationError
 
-from core import config
+from core import ai_providers, blocking, config, metrics
+from core.deadline import Deadline, DeadlineExceeded
+from core.redaction import describe_exception, log_exception, redact_text
 
 from .errors import is_retryable_completion_error
 from .tools import OPENAI_TOOLS, AI_TOOL_ARG_MODELS, AI_TOOL_HANDLERS
+from .tools.dispatch import is_inline_tool
 from .prompts import compose_system_prompt
 from .litellm_client import create_chat_completion
 from .types import (
+    MEDIA_DELIVERY_KEY,
+    MEDIA_DELIVERY_UNKNOWN,
     AIResponse,
     PartialAIResponseError,
     TOOL_CONTEXT_MESSAGES_KEY,
     ToolLog,
+    TurnDeadlineError,
     VisibleContentHandler,
+    raise_if_aborted,
 )
 
 POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS = (1.0, 3.0)
+
+logger = logging.getLogger(__name__)
 
 
 def _json_safe(value: Any) -> Any:
@@ -54,7 +66,7 @@ def _has_tool_result(tool_logs: List[ToolLog]) -> bool:
     return any(log.get("type") == "tool_result" for log in tool_logs)
 
 
-def _create_chat_completion_with_post_tool_retries(
+async def _create_chat_completion_with_post_tool_retries(
     provider: str,
     model: str,
     *,
@@ -80,7 +92,7 @@ def _create_chat_completion_with_post_tool_retries(
 
     while True:
         try:
-            return create_chat_completion(
+            return await create_chat_completion(
                 provider,
                 model,
                 messages=messages,
@@ -103,7 +115,7 @@ def _create_chat_completion_with_post_tool_retries(
                 len(retry_delays),
                 exc,
             )
-            time.sleep(delay)
+            await asyncio.sleep(delay)
 
 
 def _format_validation_errors(exc: ValidationError) -> list[dict[str, str]]:
@@ -288,7 +300,8 @@ def _resolve_assistant_message(
     choices = response.choices
     assistant_message = choices[0].message
     raw_tool_calls = getattr(assistant_message, "tool_calls", None)
-    if raw_tool_calls or provider.strip().casefold() != "fogmoe":
+    provider_spec = ai_providers.lookup(provider)
+    if raw_tool_calls or provider_spec is None or not provider_spec.merges_split_tool_call_choices:
         return assistant_message, raw_tool_calls
 
     # Temporary compatibility for BerriAI/litellm#35444. Remove after the
@@ -438,12 +451,18 @@ def _log_generate_voice_result(provider_name: str, tool_result: Dict[str, Any]) 
     )
 
 
-def _send_media_result_immediately(
+def _deadline_guard(deadline: Deadline | None) -> Any:
+    """没有截止时间时是空的异步上下文管理器。"""
+    return contextlib.nullcontext() if deadline is None else deadline.guard()
+
+
+async def _send_media_result_immediately(
     *,
     visible_content_handler: Optional[VisibleContentHandler],
     tool_name: str,
     tool_result: Dict[str, Any],
     provider_name: str,
+    deadline: Deadline | None = None,
 ) -> list[Any]:
     if visible_content_handler is None:
         return []
@@ -457,7 +476,10 @@ def _send_media_result_immediately(
         return []
 
     try:
-        sent_messages = send_tool_media(tool_name, tool_result)
+        async with _deadline_guard(deadline):
+            sent_messages = await send_tool_media(tool_name, tool_result)
+    except DeadlineExceeded:
+        raise
     except Exception as exc:
         logging.exception("%s failed to send %s result immediately: %s", provider_name, tool_name, exc)
         return []
@@ -497,18 +519,22 @@ def _last_visible_content(handler: VisibleContentHandler) -> str:
     return ""
 
 
-def _emit_visible_content(
+async def _emit_visible_content(
     handler: VisibleContentHandler,
     content: str,
     *,
     provider_name: str,
+    deadline: Deadline | None = None,
 ) -> _VisibleContentResult:
     """Send visible assistant content through the host app and return what was sent."""
     if not content.strip():
         return _VisibleContentResult("", True)
 
     try:
-        visible_content = handler(content)
+        async with _deadline_guard(deadline):
+            visible_content = await handler(content)
+    except DeadlineExceeded:
+        raise
     except Exception as exc:
         logging.exception("%s visible content handler failed: %s", provider_name, exc)
         partial_content = _last_visible_content(handler)
@@ -529,19 +555,21 @@ def _emit_visible_content(
     return _VisibleContentResult(normalized, True)
 
 
-def _return_final_text_response(
+async def _return_final_text_response(
     *,
     content_text: str,
     tool_logs: List[ToolLog],
     visible_content_handler: Optional[VisibleContentHandler],
     provider_name: str,
+    deadline: Deadline | None = None,
 ) -> AIResponse:
     if content_text.strip():
         if visible_content_handler:
-            visible_result = _emit_visible_content(
+            visible_result = await _emit_visible_content(
                 visible_content_handler,
                 content_text,
                 provider_name=provider_name,
+                deadline=deadline,
             )
             if visible_result.content:
                 tool_logs.append({
@@ -558,7 +586,144 @@ def _return_final_text_response(
     return content_text, tool_logs
 
 
-def run_tool_loop(
+_INTERRUPTED_TOOL_RESULT = {
+    "error": "interrupted",
+    "outcome": "unknown",
+    "message": (
+        "The turn was stopped while this tool was running. It may or may not have "
+        "completed; do not assume it failed and do not repeat it without checking."
+    ),
+}
+_NOT_EXECUTED_TOOL_RESULT = {
+    "error": "not_executed",
+    "message": "The turn was stopped before this tool call could run.",
+}
+
+
+def _handler_is_async(handler: Callable[..., Any]) -> bool:
+    return inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(
+        getattr(handler, "__call__", None)
+    )
+
+
+async def _call_tool(handler: Callable[..., Any], arguments: Dict[str, Any]) -> Any:
+    """async 工具直接 await；同步工具走有界的线程适配器（并发有上限，保留 contextvars）；
+    标记为内联的纯内存工具直接调用。见 `tools/dispatch.py`。"""
+    if _handler_is_async(handler):
+        return await handler(**arguments)
+    if is_inline_tool(handler):
+        result = handler(**arguments)
+        return await result if inspect.isawaitable(result) else result
+    result = await blocking.tools().run(handler, **arguments)
+    if inspect.isawaitable(result):
+        result = await result
+    return result
+
+
+def _tool_label(function_name: str, handlers: Mapping[str, Any]) -> str:
+    """指标标签只用注册过的工具名，模型编造的名字统一记为 unknown。"""
+    return function_name if function_name in handlers else "unknown"
+
+
+def _record_tool_metrics(label: str, started: float, result: Any) -> None:
+    metrics.counter("tool.calls", tool=label).inc()
+    metrics.histogram("tool.seconds", tool=label).observe(time.perf_counter() - started)
+    if isinstance(result, dict) and result.get("error"):
+        metrics.counter("tool.failures", tool=label).inc()
+
+
+def _close_interrupted_round(
+    tool_logs: List[ToolLog],
+    tool_calls: List[Dict[str, Any]],
+    interrupted_index: int,
+    skip_set: set[str],
+    reason: str,
+    round_context_messages: List[Dict[str, str]],
+    *,
+    running: bool = True,
+) -> None:
+    """截止时间在这一轮工具中途到期：给每个还没有结果的工具调用补一条结果。
+
+    正在运行的那个（`running`）标记为「结果未知」，后面没来得及运行的标记为「未执行」，
+    这样历史里 assistant 的 tool_calls 与 tool 结果仍然一一配对。`running=False` 表示
+    `interrupted_index` 那个调用还没开始（前一个工具已经有结果，是在投递它的媒体时到期的）。
+    这一轮已经完成的工具带回来的 Telegram 事件（例如代执行命令的回复）照常记进日志。
+    """
+    for index, tool_call in enumerate(tool_calls):
+        if index < interrupted_index:
+            continue
+        function_payload = tool_call.get("function") or {}
+        function_name = function_payload.get("name")
+        if not function_name or function_name in skip_set:
+            continue
+        if index == interrupted_index and running:
+            result = {**_INTERRUPTED_TOOL_RESULT, "reason": reason}
+        else:
+            result = dict(_NOT_EXECUTED_TOOL_RESULT)
+        tool_logs.append({
+            "type": "tool_result",
+            "tool_name": function_name,
+            "arguments": {},
+            "result": result,
+            "tool_call_id": tool_call.get("id"),
+        })
+    _log_round_context(tool_logs, round_context_messages)
+
+
+def _log_round_context(
+    tool_logs: List[ToolLog],
+    round_context_messages: List[Dict[str, str]],
+) -> None:
+    for context_message in round_context_messages:
+        tool_logs.append({
+            "type": "telegram_event",
+            "role": "user",
+            "content": context_message["content"],
+        })
+
+
+def _tool_result_log(
+    function_name: str,
+    function_args: Dict[str, Any],
+    tool_call_id: Any,
+    tool_result: Dict[str, Any],
+    internal_tool_result: Dict[str, Any],
+    *,
+    sent_media_messages: List[Any],
+    media_delivery_unknown: bool = False,
+) -> ToolLog:
+    tool_log_entry: ToolLog = {
+        "type": "tool_result",
+        "tool_name": function_name,
+        "arguments": function_args,
+        "result": tool_result,
+        "tool_call_id": tool_call_id,
+    }
+    if function_name in {"generate_image", "generate_voice"}:
+        tool_log_entry["internal_result"] = internal_tool_result
+        if sent_media_messages:
+            tool_log_entry["media_sent"] = True
+            tool_log_entry["sent_message_count"] = len(sent_media_messages)
+        if media_delivery_unknown:
+            tool_log_entry[MEDIA_DELIVERY_KEY] = MEDIA_DELIVERY_UNKNOWN
+    return tool_log_entry
+
+
+_MEDIA_DELIVERY_UNKNOWN_MESSAGES = {
+    "generate_image": (
+        "The image was generated, but the turn was stopped while it was being sent to "
+        "Telegram; it may or may not have arrived. Do not generate it again unless the "
+        "user asks."
+    ),
+    "generate_voice": (
+        "The audio was generated, but the turn was stopped while it was being sent to "
+        "Telegram; it may or may not have arrived. Do not generate it again unless the "
+        "user asks."
+    ),
+}
+
+
+async def run_tool_loop(
     provider: str,
     model: str,
     messages: List[Dict[str, Any]],
@@ -573,10 +738,15 @@ def run_tool_loop(
     completion_kwargs: Optional[Dict[str, Any]] = None,
     visible_content_handler: Optional[VisibleContentHandler] = None,
     tool_definitions: Optional[List[Dict[str, Any]]] = None,
-    tool_handlers: Optional[Mapping[str, Callable[..., dict]]] = None,
+    tool_handlers: Optional[Mapping[str, Callable[..., Any]]] = None,
     system_prompt_override: str | None = None,
+    deadline: Deadline | None = None,
 ) -> AIResponse:
-    """Run a tool loop, optionally replacing its advertised tools and handlers."""
+    """Run a tool loop, optionally replacing its advertised tools and handlers.
+
+    原生 async：模型调用 `await`，async 工具直接 `await`，同步工具走有界线程适配器。
+    `deadline` 到期时取消正在等待的步骤，抛 `TurnDeadlineError`（带着已有的工具日志）。
+    """
     tools = OPENAI_TOOLS if tool_definitions is None else list(tool_definitions)
     handlers = AI_TOOL_HANDLERS if tool_handlers is None else dict(tool_handlers)
     available_tool_names = {
@@ -600,249 +770,321 @@ def run_tool_loop(
 
     tool_logs: List[ToolLog] = []
     skip_set = set(skip_tools or [])
-    request_timeout = (
+    request_timeout: float | None = (
         config.AI_CHAT_COMPLETION_TIMEOUT_SECONDS
         if completion_timeout is None
         else completion_timeout
     )
 
-    for iteration in range(max_iterations):
-        request_tool_choice = tool_choice
+    async def complete(
+        *,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: str | Dict[str, object] | None = None,
+    ) -> Any:
+        """一次模型调用：整轮截止时间到期就取消，单次超时收紧到剩余时间之内。"""
+        call_timeout = request_timeout if deadline is None else deadline.clip(request_timeout)
+        request_kwargs = {
+            **(completion_kwargs or {}),
+            "context_hard_limit_ratio": context_hard_limit_ratio,
+            "timeout": call_timeout,
+        }
         try:
-            request_kwargs = {
-                **(completion_kwargs or {}),
-                "context_hard_limit_ratio": context_hard_limit_ratio,
-                "timeout": request_timeout,
-            }
-            response = _create_chat_completion_with_post_tool_retries(
-                provider,
-                model,
-                messages=filtered_messages,
-                request_kwargs=request_kwargs,
-                provider_name=provider_name,
-                tool_logs=tool_logs,
-                tools=tools,
-                tool_choice=request_tool_choice,
-            )
+            async with _deadline_guard(deadline):
+                return await _create_chat_completion_with_post_tool_retries(
+                    provider,
+                    model,
+                    messages=filtered_messages,
+                    request_kwargs=request_kwargs,
+                    provider_name=provider_name,
+                    tool_logs=tool_logs,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                )
+        except DeadlineExceeded:
+            raise
         except Exception as exc:
             if tool_logs:
                 raise PartialAIResponseError(str(exc), tool_logs) from exc
             raise
 
-        assistant_message, raw_tool_calls = _resolve_assistant_message(
-            response,
-            provider=provider,
-            provider_name=provider_name,
-        )
-        assistant_content = assistant_message.content or ""
-
-        if not raw_tool_calls:
-            logging.info("%s 第 %s 轮：无工具调用，直接返回答案", provider_name, iteration + 1)
-            return _return_final_text_response(
-                content_text=assistant_content,
-                tool_logs=tool_logs,
-                visible_content_handler=visible_content_handler,
-                provider_name=provider_name,
-            )
-
-        tool_calls = _normalise_tool_calls(raw_tool_calls)
-        logging.info("%s 第 %s 轮：检测到 %s 个工具调用", provider_name, iteration + 1, len(tool_calls))
-
-        assistant_content_for_model = assistant_content
-        if visible_content_handler and assistant_content.strip():
-            visible_result = _emit_visible_content(
-                visible_content_handler,
-                assistant_content,
-                provider_name=provider_name,
-            )
-            if visible_result.content:
-                assistant_content_for_model = visible_result.content
-                tool_logs.append({
-                    "type": "assistant_visible",
-                    "content": visible_result.content,
-                })
-                if not visible_result.completed:
-                    return "", tool_logs
-            elif not visible_result.completed:
-                return "", tool_logs
-
-        assistant_model_message = _assistant_message_to_plain(
-            assistant_message,
-            content=assistant_content_for_model,
-            tool_calls=tool_calls,
-        )
-        filtered_messages.append(assistant_model_message)
-
-        assistant_message_logged = False
-        round_context_messages: list[dict[str, str]] = []
-        for tool_call in tool_calls:
-            function_payload = tool_call.get("function") or {}
-            function_name = function_payload.get("name")
-            if not function_name:
-                logging.warning("%s 返回的工具调用缺少函数名: %s", provider_name, tool_call)
-                continue
-
-            if function_name in skip_set:
-                continue
-
-            raw_args = function_payload.get("arguments") or "{}"
-            try:
-                raw_function_args = json.loads(raw_args)
-            except json.JSONDecodeError as exc:
-                logging.error("%s 工具参数解析失败: %s", provider_name, exc)
-                raw_function_args = {}
-
-            function_args, validation_error = _validate_tool_args(
-                function_name,
-                raw_function_args,
-            )
-            logged_args = (
-                function_args
-                if validation_error is None
-                else _json_safe(raw_function_args)
-            )
-
-            tool_call_id = tool_call.get("id")
-            tool_log_entry = {
-                "type": "assistant_tool_call",
-                "tool_name": function_name,
-                "arguments": logged_args,
-                "tool_call_id": tool_call_id,
-            }
-            if validation_error is not None:
-                tool_log_entry["validation_error"] = validation_error
-            if not assistant_message_logged:
-                tool_log_entry["assistant_message"] = assistant_model_message
-                assistant_message_logged = True
-            tool_logs.append(tool_log_entry)
-
-            handler = handlers.get(function_name)
-            if validation_error is not None:
-                logging.warning(
-                    "%s 工具参数校验失败: %s, args=%s, error=%s",
-                    provider_name,
-                    function_name,
-                    json.dumps(_json_safe(raw_function_args), ensure_ascii=False),
-                    validation_error.get("details"),
-                )
-                internal_tool_result = validation_error
-            elif function_name not in available_tool_names:
-                logging.warning(
-                    "%s 拒绝未开放的工具调用: %s",
-                    provider_name,
-                    function_name,
-                )
-                internal_tool_result = {
-                    "error": f"Tool is not available in this agent: {function_name}"
-                }
-            elif handler:
-                try:
-                    internal_tool_result = handler(**function_args)
-                    if isinstance(internal_tool_result, dict) and internal_tool_result.get("error"):
-                        logging.warning(
-                            "%s 工具返回错误: %s, args=%s, error=%s",
-                            provider_name,
-                            function_name,
-                            json.dumps(function_args, ensure_ascii=False),
-                            internal_tool_result.get("error"),
-                        )
-                    else:
-                        logging.info(
-                            "%s 工具执行成功: %s, args=%s",
-                            provider_name,
-                            function_name,
-                            json.dumps(function_args, ensure_ascii=False),
-                        )
-                except TypeError as exc:
-                    logging.error("%s 工具参数错误: %s, %s", provider_name, function_name, exc)
-                    internal_tool_result = {"error": f"参数错误: {str(exc)}"}
-                except Exception as exc:
-                    logging.exception("%s 工具执行失败: %s, %s", provider_name, function_name, exc)
-                    internal_tool_result = {"error": f"执行失败: {str(exc)}"}
-            else:
-                logging.warning("%s 未知工具: %s", provider_name, function_name)
-                internal_tool_result = {"error": f"未知工具: {function_name}"}
-
-            if function_name == "generate_image":
-                _log_generate_image_result(provider_name, internal_tool_result)
-            elif function_name == "generate_voice":
-                _log_generate_voice_result(provider_name, internal_tool_result)
-
-            sent_media_messages = _send_media_result_immediately(
-                visible_content_handler=visible_content_handler,
-                tool_name=function_name,
-                tool_result=internal_tool_result,
-                provider_name=provider_name,
-            )
-            media_sent = bool(sent_media_messages)
-
-            tool_result = _public_tool_result(
-                function_name,
-                internal_tool_result,
-                media_sent=media_sent,
-            )
-
-            filtered_messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "name": function_name,
-                "content": json.dumps(tool_result, ensure_ascii=False),
-            })
-            tool_log_entry = {
-                "type": "tool_result",
-                "tool_name": function_name,
-                "arguments": function_args,
-                "result": tool_result,
-                "tool_call_id": tool_call_id,
-            }
-            if function_name in {"generate_image", "generate_voice"}:
-                tool_log_entry["internal_result"] = internal_tool_result
-                if media_sent:
-                    tool_log_entry["media_sent"] = True
-                    tool_log_entry["sent_message_count"] = len(sent_media_messages)
-            tool_logs.append(tool_log_entry)
-            round_context_messages.extend(
-                _context_messages_from_tool_result(internal_tool_result)
-            )
-
-        for context_message in round_context_messages:
-            filtered_messages.append(context_message)
-            tool_logs.append({
-                "type": "telegram_event",
-                "role": "user",
-                "content": context_message["content"],
-            })
-
-    logging.warning("%s 工具调用次数超限（%s轮）", provider_name, max_iterations)
+    # 到期时正在等待的步骤，决定提示和是否把这次计为 provider 失败。
+    phase = "model"
     try:
-        request_kwargs = {
-            **(completion_kwargs or {}),
-            "context_hard_limit_ratio": context_hard_limit_ratio,
-            "timeout": request_timeout,
-        }
-        response = _create_chat_completion_with_post_tool_retries(
-            provider,
-            model,
-            messages=filtered_messages,
-            request_kwargs=request_kwargs,
-            provider_name=provider_name,
-            tool_logs=tool_logs,
-        )
-    except Exception as exc:
-        if tool_logs:
-            raise PartialAIResponseError(str(exc), tool_logs) from exc
-        raise
+        for iteration in range(max_iterations):
+            raise_if_aborted(tool_context)
+            phase = "model"
+            if deadline is not None:
+                deadline.raise_if_expired()
+            response = await complete(tools=tools, tool_choice=tool_choice)
 
-    assistant_message = response.choices[0].message
-    raw_tool_calls = getattr(assistant_message, "tool_calls", None)
-    if raw_tool_calls:
-        logging.warning(
-            "%s 工具调用超限后的最终回复仍包含工具调用，忽略工具调用并使用文本内容。",
-            provider_name,
+            assistant_message, raw_tool_calls = _resolve_assistant_message(
+                response,
+                provider=provider,
+                provider_name=provider_name,
+            )
+            assistant_content = assistant_message.content or ""
+
+            if not raw_tool_calls:
+                logging.info("%s 第 %s 轮：无工具调用，直接返回答案", provider_name, iteration + 1)
+                phase = "delivery"
+                return await _return_final_text_response(
+                    content_text=assistant_content,
+                    tool_logs=tool_logs,
+                    visible_content_handler=visible_content_handler,
+                    provider_name=provider_name,
+                    deadline=deadline,
+                )
+
+            tool_calls = _normalise_tool_calls(raw_tool_calls)
+            logging.info("%s 第 %s 轮：检测到 %s 个工具调用", provider_name, iteration + 1, len(tool_calls))
+
+            assistant_content_for_model = assistant_content
+            if visible_content_handler and assistant_content.strip():
+                phase = "delivery"
+                visible_result = await _emit_visible_content(
+                    visible_content_handler,
+                    assistant_content,
+                    provider_name=provider_name,
+                    deadline=deadline,
+                )
+                if visible_result.content:
+                    assistant_content_for_model = visible_result.content
+                    tool_logs.append({
+                        "type": "assistant_visible",
+                        "content": visible_result.content,
+                    })
+                    if not visible_result.completed:
+                        return "", tool_logs
+                elif not visible_result.completed:
+                    return "", tool_logs
+
+            assistant_model_message = _assistant_message_to_plain(
+                assistant_message,
+                content=assistant_content_for_model,
+                tool_calls=tool_calls,
+            )
+            filtered_messages.append(assistant_model_message)
+
+            assistant_message_logged = False
+            round_context_messages: list[dict[str, str]] = []
+            for call_index, tool_call in enumerate(tool_calls):
+                function_payload = tool_call.get("function") or {}
+                function_name = function_payload.get("name")
+                if not function_name:
+                    logging.warning("%s 返回的工具调用缺少函数名: %s", provider_name, tool_call)
+                    continue
+
+                if function_name in skip_set:
+                    continue
+
+                # 后台任务被撤销后不再执行剩余的工具。
+                raise_if_aborted(tool_context)
+
+                raw_args = function_payload.get("arguments") or "{}"
+                try:
+                    raw_function_args = json.loads(raw_args)
+                except json.JSONDecodeError as exc:
+                    logging.error("%s 工具参数解析失败: %s", provider_name, exc)
+                    raw_function_args = {}
+
+                function_args, validation_error = _validate_tool_args(
+                    function_name,
+                    raw_function_args,
+                )
+                logged_args = (
+                    function_args
+                    if validation_error is None
+                    else _json_safe(raw_function_args)
+                )
+
+                tool_call_id = tool_call.get("id")
+                tool_log_entry = {
+                    "type": "assistant_tool_call",
+                    "tool_name": function_name,
+                    "arguments": logged_args,
+                    "tool_call_id": tool_call_id,
+                }
+                if validation_error is not None:
+                    tool_log_entry["validation_error"] = validation_error
+                if not assistant_message_logged:
+                    tool_log_entry["assistant_message"] = assistant_model_message
+                    assistant_message_logged = True
+                tool_logs.append(tool_log_entry)
+
+                handler = handlers.get(function_name)
+                if validation_error is not None:
+                    logging.warning(
+                        "%s 工具参数校验失败: %s, args=%s, error=%s",
+                        provider_name,
+                        function_name,
+                        redact_text(
+                            json.dumps(_json_safe(raw_function_args), ensure_ascii=False)
+                        ),
+                        validation_error.get("details"),
+                    )
+                    internal_tool_result = validation_error
+                elif function_name not in available_tool_names:
+                    logging.warning(
+                        "%s 拒绝未开放的工具调用: %s",
+                        provider_name,
+                        function_name,
+                    )
+                    internal_tool_result = {
+                        "error": f"Tool is not available in this agent: {function_name}"
+                    }
+                elif handler:
+                    phase = "tool"
+                    tool_started = time.perf_counter()
+                    tool_label = _tool_label(function_name, handlers)
+                    try:
+                        if deadline is not None:
+                            deadline.raise_if_expired()
+                        async with _deadline_guard(deadline):
+                            internal_tool_result = await _call_tool(handler, function_args)
+                        if isinstance(internal_tool_result, dict) and internal_tool_result.get("error"):
+                            logging.warning(
+                                "%s 工具返回错误: %s, args=%s, error=%s",
+                                provider_name,
+                                function_name,
+                                redact_text(json.dumps(function_args, ensure_ascii=False)),
+                                redact_text(internal_tool_result.get("error")),
+                            )
+                        else:
+                            logging.info(
+                                "%s 工具执行成功: %s, args=%s",
+                                provider_name,
+                                function_name,
+                                redact_text(json.dumps(function_args, ensure_ascii=False)),
+                            )
+                    except DeadlineExceeded as exc:
+                        _record_tool_metrics(tool_label, tool_started, {"error": "interrupted"})
+                        _close_interrupted_round(
+                            tool_logs,
+                            tool_calls,
+                            call_index,
+                            skip_set,
+                            exc.reason,
+                            round_context_messages,
+                        )
+                        raise
+                    except TypeError as exc:
+                        error_ref = log_exception(
+                            logger,
+                            f"{provider_name} 工具参数错误: {function_name}",
+                            exc,
+                        )
+                        internal_tool_result = {
+                            "error": f"参数错误: {describe_exception(exc)} (ref: {error_ref})"
+                        }
+                    except Exception as exc:
+                        error_ref = log_exception(
+                            logger,
+                            f"{provider_name} 工具执行失败: {function_name}",
+                            exc,
+                        )
+                        internal_tool_result = {
+                            "error": f"执行失败: {describe_exception(exc)} (ref: {error_ref})"
+                        }
+                    _record_tool_metrics(tool_label, tool_started, internal_tool_result)
+                else:
+                    logging.warning("%s 未知工具: %s", provider_name, function_name)
+                    internal_tool_result = {"error": f"未知工具: {function_name}"}
+
+                if function_name == "generate_image":
+                    _log_generate_image_result(provider_name, internal_tool_result)
+                elif function_name == "generate_voice":
+                    _log_generate_voice_result(provider_name, internal_tool_result)
+
+                phase = "delivery"
+                try:
+                    sent_media_messages = await _send_media_result_immediately(
+                        visible_content_handler=visible_content_handler,
+                        tool_name=function_name,
+                        tool_result=internal_tool_result,
+                        provider_name=provider_name,
+                        deadline=deadline,
+                    )
+                except DeadlineExceeded as exc:
+                    # 工具已经执行完，是投递它生成的媒体时到期：先记下这次的结果（是否送达未知，
+                    # 投递阶段也不会再发），再给后面没来得及运行的调用补「未执行」。下一轮因此知道
+                    # 媒体已经生成，历史也仍然配对。
+                    tool_logs.append(
+                        _tool_result_log(
+                            function_name,
+                            function_args,
+                            tool_call_id,
+                            {
+                                **_public_tool_result(function_name, internal_tool_result),
+                                "message": _MEDIA_DELIVERY_UNKNOWN_MESSAGES[function_name],
+                            },
+                            internal_tool_result,
+                            sent_media_messages=[],
+                            media_delivery_unknown=True,
+                        )
+                    )
+                    round_context_messages.extend(
+                        _context_messages_from_tool_result(internal_tool_result)
+                    )
+                    _close_interrupted_round(
+                        tool_logs,
+                        tool_calls,
+                        call_index + 1,
+                        skip_set,
+                        exc.reason,
+                        round_context_messages,
+                        running=False,
+                    )
+                    raise
+
+                tool_result = _public_tool_result(
+                    function_name,
+                    internal_tool_result,
+                    media_sent=bool(sent_media_messages),
+                )
+
+                filtered_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "name": function_name,
+                    "content": json.dumps(tool_result, ensure_ascii=False),
+                })
+                tool_logs.append(
+                    _tool_result_log(
+                        function_name,
+                        function_args,
+                        tool_call_id,
+                        tool_result,
+                        internal_tool_result,
+                        sent_media_messages=sent_media_messages,
+                    )
+                )
+                round_context_messages.extend(
+                    _context_messages_from_tool_result(internal_tool_result)
+                )
+
+            filtered_messages.extend(round_context_messages)
+            _log_round_context(tool_logs, round_context_messages)
+
+        logging.warning("%s 工具调用次数超限（%s轮）", provider_name, max_iterations)
+        phase = "model"
+        if deadline is not None:
+            deadline.raise_if_expired()
+        response = await complete()
+
+        assistant_message = response.choices[0].message
+        raw_tool_calls = getattr(assistant_message, "tool_calls", None)
+        if raw_tool_calls:
+            logging.warning(
+                "%s 工具调用超限后的最终回复仍包含工具调用，忽略工具调用并使用文本内容。",
+                provider_name,
+            )
+        phase = "delivery"
+        return await _return_final_text_response(
+            content_text=assistant_message.content or "",
+            tool_logs=tool_logs,
+            visible_content_handler=visible_content_handler,
+            provider_name=provider_name,
+            deadline=deadline,
         )
-    return _return_final_text_response(
-        content_text=assistant_message.content or "",
-        tool_logs=tool_logs,
-        visible_content_handler=visible_content_handler,
-        provider_name=provider_name,
-    )
+    except DeadlineExceeded as exc:
+        raise TurnDeadlineError(exc.reason, phase, tool_logs) from exc

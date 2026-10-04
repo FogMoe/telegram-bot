@@ -1,39 +1,27 @@
-import asyncio
 import logging
 import time
 from typing import Dict, Optional
 
-from core import config
+from core import ai_providers, metrics
+from core.deadline import REASON_SHUTDOWN, Deadline
 
 from .chat_capabilities import chat_model_for_service, chat_service_supports_vision
+from .chat_provider import run_chat_provider
 from .context_budget import ContextBudgetExceededError
 from .message_content import messages_have_images, strip_image_content
-from .tools import clear_tool_request_context, cleanup_linux_sandbox, set_tool_request_context
-from .errors import SafetyBlockError, is_timeout_error
-from .providers import (
-    azure,
-    fogmoe,
-    gemini,
-    openai,
-    openrouter,
-    siliconflow,
-    zhipu,
+from .provider_resolver import get_provider_order_for_task
+from .tools import (
+    clear_tool_request_context,
+    cleanup_linux_sandbox_async,
+    set_tool_request_context,
 )
-from .runtime import EXECUTOR
-from .types import AIResponse, PartialAIResponseError, VisibleContentHandler
-
-AI_SERVICE_MAP = {
-    "openai": openai.get_ai_response,
-    "openrouter": openrouter.get_ai_response,
-    "fogmoe": fogmoe.get_ai_response,
-    "gemini": gemini.get_ai_response,
-    "azure": azure.get_ai_response,
-    "siliconflow": siliconflow.get_ai_response,
-    "zhipu": zhipu.get_ai_response,
-    "zai": zhipu.get_ai_response,
-}
-
-AI_SERVICE_ORDER = config.AI_SERVICE_ORDER
+from .errors import SafetyBlockError, is_timeout_error
+from .types import (
+    AIResponse,
+    PartialAIResponseError,
+    TurnDeadlineError,
+    VisibleContentHandler,
+)
 
 AI_PROVIDER_CIRCUIT_FAILURE_THRESHOLD = 3
 AI_PROVIDER_CIRCUIT_WINDOW_SECONDS = 5 * 60
@@ -68,6 +56,19 @@ CONTEXT_BUDGET_ERROR_MESSAGE = (
     "Use /clear to start a new session and try again."
 )
 
+# 整轮截止时间到期：剩余工作已被取消。已经扣的硬币不退。
+TURN_DEADLINE_ERROR_MESSAGE = (
+    "这次处理花的时间太长，已经中止啦。请稍后再试一次吧～\n"
+    "This request took too long and was stopped. Please try again in a moment."
+)
+
+# 进程正在停止：在途的轮次被取消。
+TURN_SHUTDOWN_ERROR_MESSAGE = (
+    "雾萌娘正在重启，这次回复被中断了。请稍后重新发送一次～\n"
+    "The bot is restarting and this reply was interrupted. "
+    "Please send your message again shortly."
+)
+
 
 def _context_budget_error_message(_: ContextBudgetExceededError) -> str:
     return CONTEXT_BUDGET_ERROR_MESSAGE
@@ -91,6 +92,10 @@ def runtime_error_cause(message: str) -> str | None:
         return "all_ai_services_failed"
     if message == CONTEXT_BUDGET_ERROR_MESSAGE:
         return "context_budget_exceeded"
+    if message == TURN_DEADLINE_ERROR_MESSAGE:
+        return "turn_deadline_exceeded"
+    if message == TURN_SHUTDOWN_ERROR_MESSAGE:
+        return "turn_interrupted_by_shutdown"
     return None
 
 
@@ -136,26 +141,29 @@ def _record_provider_failure(service_name: str, now: float | None = None) -> Non
         )
 
 
-def _call_service_with_context(
+async def _call_service_with_context(
     service_name: str,
     messages,
     user_id: int,
     tool_context: Optional[Dict[str, object]],
     visible_content_handler: Optional[VisibleContentHandler],
+    deadline: Deadline | None = None,
 ) -> AIResponse:
     request_context = dict(tool_context or {})
     request_context.setdefault("user_id", user_id)
     set_tool_request_context(request_context)
     try:
-        return AI_SERVICE_MAP[service_name](
+        return await run_chat_provider(
+            service_name,
             messages,
             user_id,
             tool_context,
             visible_content_handler=visible_content_handler,
+            deadline=deadline,
         )
     finally:
         try:
-            cleanup_linux_sandbox()
+            await cleanup_linux_sandbox_async()
         finally:
             clear_tool_request_context()
 
@@ -241,17 +249,53 @@ def _messages_for_service(
     return strip_image_content(messages)
 
 
+def _deadline_response(
+    exc: TurnDeadlineError,
+    service_name: str,
+    visible_content_handler: Optional[VisibleContentHandler],
+) -> AIResponse:
+    """整轮截止时间到期（或进程停止）：保留已有的工具日志，回复固定的提示文案。
+
+    与 `PartialAIResponseError` 的区别：已经向用户发送过可见内容时仍然给提示，
+    因为这一轮没有正常结束，用户需要知道。
+    """
+    logging.warning(
+        "%s turn stopped during %s (%s); not retrying",
+        service_name,
+        exc.phase,
+        exc.reason,
+    )
+    metrics.counter("turn.deadline_hits", reason=exc.reason, phase=exc.phase).inc()
+    if exc.phase == "model" and exc.reason != REASON_SHUTDOWN:
+        # 正在等待模型响应时到期：对这个 provider 来说就是一次超时。
+        _record_provider_failure(service_name)
+    message = (
+        TURN_SHUTDOWN_ERROR_MESSAGE
+        if exc.reason == REASON_SHUTDOWN
+        else TURN_DEADLINE_ERROR_MESSAGE
+    )
+    return message, exc.tool_logs
+
+
 async def _try_ai_services(
     messages,
     user_id: int,
     tool_context: Optional[Dict[str, object]] = None,
     visible_content_handler: Optional[VisibleContentHandler] = None,
     text_fallback_messages=None,
+    deadline: Deadline | None = None,
 ) -> tuple[AIResponse | None, Exception | None]:
     last_error = None
-    loop = asyncio.get_running_loop()
 
-    for service_name in AI_SERVICE_ORDER:
+    for service_name in get_provider_order_for_task("chat"):
+        if deadline is not None and deadline.expired:
+            # 回退链走到一半时间已经用完：不再尝试后面的 provider。
+            return _deadline_response(
+                TurnDeadlineError(deadline.expiry_reason, "fallback", []),
+                service_name,
+                visible_content_handler,
+            ), None
+
         if _provider_circuit_is_open(service_name):
             logging.warning("%s 当前处于熔断冷却中，跳过调用", service_name)
             continue
@@ -262,18 +306,18 @@ async def _try_ai_services(
             text_fallback_messages,
         )
         try:
-            response = await loop.run_in_executor(
-                EXECUTOR,
-                lambda s=service_name, m=service_messages: _call_service_with_context(
-                    s,
-                    m.copy(),
-                    user_id,
-                    tool_context,
-                    visible_content_handler,
-                ),
+            response = await _call_service_with_context(
+                service_name,
+                service_messages.copy(),
+                user_id,
+                tool_context,
+                visible_content_handler,
+                deadline,
             )
             _record_provider_success(service_name)
             return response, None
+        except TurnDeadlineError as exc:
+            return _deadline_response(exc, service_name, visible_content_handler), None
         except SafetyBlockError:
             if _visible_content_was_sent(visible_content_handler):
                 logging.warning(
@@ -281,8 +325,12 @@ async def _try_ai_services(
                     service_name,
                 )
                 return ("", _visible_content_events(visible_content_handler)), None
-            if service_name == "gemini":
-                logging.warning("Gemini triggered safety block, trying next service")
+            provider_spec = ai_providers.lookup(service_name)
+            if provider_spec is not None and provider_spec.safety_blocks_fall_through:
+                logging.warning(
+                    "%s triggered safety block, trying next service",
+                    provider_spec.display_name,
+                )
                 last_error = SafetyBlockError("SafetyBlockError")
                 continue
             raise
@@ -339,9 +387,13 @@ async def get_ai_response(
     tool_context: Optional[Dict[str, object]] = None,
     text_fallback_messages=None,
     visible_content_handler: Optional[VisibleContentHandler] = None,
+    deadline: Deadline | None = None,
 ) -> AIResponse:
     """
     统一AI响应异步接口，根据配置的顺序依次尝试不同的AI服务
+
+    `deadline`（可选）覆盖 provider 回退、工具与可见内容投递；到期时取消剩余工作并返回
+    `TURN_DEADLINE_ERROR_MESSAGE`（进程停止时是 `TURN_SHUTDOWN_ERROR_MESSAGE`）与已有的工具日志。
     """
     response, last_error = await _try_ai_services(
         messages,
@@ -349,6 +401,7 @@ async def get_ai_response(
         tool_context,
         visible_content_handler,
         text_fallback_messages,
+        deadline,
     )
     if response is not None:
         return response
@@ -364,6 +417,8 @@ async def get_ai_response(
             user_id,
             tool_context,
             visible_content_handler,
+            None,
+            deadline,
         )
         if response is not None:
             return response

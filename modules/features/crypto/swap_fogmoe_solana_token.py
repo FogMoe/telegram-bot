@@ -1,16 +1,21 @@
-import asyncio
+import logging
 import re
-from core import mysql_connection, process_user
+from dataclasses import dataclass
+from enum import StrEnum
+
+from core import balance, process_user
+from core.command_identity import message_identity
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
 from telegram.constants import ParseMode
 from core.command_cooldown import cooldown
+from core.redaction import report_error
+
+from .repositories import swaps as swaps_repository
+from .repositories.swaps import PendingSwap
 
 # 定义最低兑换数量
 MIN_SWAP_AMOUNT = 10000
-
-# 全局锁，确保兑换操作的原子性
-lock = asyncio.Lock()
 
 # 验证Solana钱包地址格式
 def is_valid_solana_address(address):
@@ -21,31 +26,95 @@ def is_valid_solana_address(address):
 
 async def has_pending_swap_request(user_id):
     """检查用户是否有未完成的兑换请求"""
-    row = await mysql_connection.fetch_one(
-        "SELECT COUNT(*) FROM token_swap_requests WHERE user_id = %s AND status = 'pending'",
-        (user_id,),
-    )
-    return row[0] > 0 if row else False
+    return await swaps_repository.get_pending_swap(user_id) is not None
 
 async def get_pending_swap_request(user_id):
     """获取用户未完成的兑换请求详情"""
-    result = await mysql_connection.fetch_one(
-        """
-        SELECT amount, wallet_address, request_time 
-        FROM token_swap_requests 
-        WHERE user_id = %s AND status = 'pending'
-        ORDER BY request_time DESC
-        LIMIT 1
-        """,
-        (user_id,),
+    return await swaps_repository.get_pending_swap(user_id)
+
+class SwapStatus(StrEnum):
+    SUBMITTED = "submitted"
+    REPLAYED = "replayed"  # 同一条命令被重复投递，上一次已经扣款并登记了请求
+    PENDING_EXISTS = "pending_exists"
+    INSUFFICIENT = "insufficient"
+    NOT_REGISTERED = "not_registered"
+
+
+@dataclass(frozen=True)
+class SwapOutcome:
+    status: SwapStatus
+    pending: PendingSwap | None = None  # PENDING_EXISTS 时已有请求的详情
+
+
+def swap_op_key(chat_id: int, message_id: int) -> str:
+    """兑换扣款：以 /swap 命令消息为身份，同一条命令被重复投递不会再扣一次。"""
+    return balance.make_op_key("swap", *message_identity(chat_id, message_id))
+
+
+def _pending_request_message(pending_request: PendingSwap | None) -> str:
+    if not pending_request:
+        return (
+            "***您已有一个正在处理中的兑换请求。***\n"
+            "请等待该请求完成后再进行新的兑换操作。\n\n"
+            "***You already have a pending exchange request.***\n"
+            "Please wait for it to be processed before making a new exchange."
+        )
+    request_time_str = pending_request.request_time.strftime("%Y-%m-%d %H:%M:%S")
+    return (
+        f"***您已有一个正在处理中的兑换请求***\n\n"
+        f"金币数量: ***{pending_request.amount}***\n"
+        f"接收钱包: ***{pending_request.wallet_address}***\n"
+        f"申请时间: ***{request_time_str}***\n\n"
+        f"请等待该请求处理完成后再进行新的兑换操作。处理时间可能长达72小时。\n\n"
+        f"***You already have a pending exchange request***\n\n"
+        f"Amount: ***{pending_request.amount}*** coins\n"
+        f"Receiving wallet: ***{pending_request.wallet_address}***\n"
+        f"Request time: ***{request_time_str}***\n\n"
+        f"Please wait for it to be processed before making a new exchange. Processing may take up to 72 hours."
     )
-    if result:
-        return {
-            "amount": result[0],
-            "wallet_address": result[1],
-            "request_time": result[2],
-        }
-    return None
+
+
+async def submit_swap_request(
+    user_id: int,
+    username: str,
+    wallet_address: str,
+    amount: int,
+    *,
+    op_key: str,
+) -> SwapOutcome:
+    """兑换：扣款与兑换请求记录在同一个事务里。
+
+    先锁用户行，同一用户的并发兑换在这里串行；之后在锁内确认没有待处理请求、余额足够，
+    扣款失败（余额不足）不会留下请求记录。
+    """
+
+    async def work(connection) -> SwapOutcome:
+        try:
+            balances = await balance.lock_user(connection, user_id)
+        except balance.UserNotFound:
+            return SwapOutcome(SwapStatus.NOT_REGISTERED)
+
+        if await balance.get_operation(op_key, connection=connection) is not None:
+            return SwapOutcome(SwapStatus.REPLAYED)
+
+        pending = await swaps_repository.get_pending_swap(user_id, connection=connection)
+        if pending:
+            return SwapOutcome(SwapStatus.PENDING_EXISTS, pending=pending)
+        if balances.total < amount:
+            return SwapOutcome(SwapStatus.INSUFFICIENT)
+
+        try:
+            await balance.debit(connection, user_id, amount, op_key=op_key, reason="swap")
+        except balance.InsufficientBalance:
+            return SwapOutcome(SwapStatus.INSUFFICIENT)
+
+        await swaps_repository.insert_swap_request(
+            connection, user_id, username, wallet_address, amount
+        )
+        return SwapOutcome(SwapStatus.SUBMITTED)
+
+    return await balance.run_in_transaction(work)
+
 
 @cooldown
 async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -66,29 +135,10 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await has_pending_swap_request(user_id):
         # 获取现有请求的详细信息
         pending_request = await get_pending_swap_request(user_id)
-        if pending_request:
-            request_time_str = pending_request["request_time"].strftime("%Y-%m-%d %H:%M:%S")
-            await update.message.reply_text(
-                f"***您已有一个正在处理中的兑换请求***\n\n"
-                f"金币数量: ***{pending_request['amount']}***\n"
-                f"接收钱包: ***{pending_request['wallet_address']}***\n"
-                f"申请时间: ***{request_time_str}***\n\n"
-                f"请等待该请求处理完成后再进行新的兑换操作。处理时间可能长达72小时。\n\n"
-                f"***You already have a pending exchange request***\n\n"
-                f"Amount: ***{pending_request['amount']}*** coins\n"
-                f"Receiving wallet: ***{pending_request['wallet_address']}***\n"
-                f"Request time: ***{request_time_str}***\n\n"
-                f"Please wait for it to be processed before making a new exchange. Processing may take up to 72 hours.",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        else:
-            await update.message.reply_text(
-                "***您已有一个正在处理中的兑换请求。***\n"
-                "请等待该请求完成后再进行新的兑换操作。\n\n"
-                "***You already have a pending exchange request.***\n"
-                "Please wait for it to be processed before making a new exchange.",
-                parse_mode=ParseMode.MARKDOWN
-            )
+        await update.message.reply_text(
+            _pending_request_message(pending_request),
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
     
     # 如果没有参数或参数数量不正确，显示帮助信息
@@ -154,88 +204,63 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    async with lock:
-        # 再次检查是否有待处理的兑换请求
-        if await has_pending_swap_request(user_id):
-            # 获取现有请求的详细信息
-            pending_request = await get_pending_swap_request(user_id)
-            if pending_request:
-                request_time_str = pending_request["request_time"].strftime("%Y-%m-%d %H:%M:%S")
-                await update.message.reply_text(
-                    f"***您已有一个正在处理中的兑换请求***\n\n"
-                    f"金币数量: ***{pending_request['amount']}***\n"
-                    f"接收钱包: ***{pending_request['wallet_address']}***\n"
-                    f"申请时间: ***{request_time_str}***\n\n"
-                    f"请等待该请求处理完成后再进行新的兑换操作。处理时间可能长达72小时。\n\n"
-                    f"***You already have a pending exchange request***\n\n"
-                    f"Amount: ***{pending_request['amount']}*** coins\n"
-                    f"Receiving wallet: ***{pending_request['wallet_address']}***\n"
-                    f"Request time: ***{request_time_str}***\n\n"
-                    f"Please wait for it to be processed before making a new exchange. Processing may take up to 72 hours.",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-            return
-        
-        try:
-            async with mysql_connection.transaction() as connection:
-                result = await mysql_connection.fetch_one(
-                    "SELECT coins, coins_paid FROM user WHERE id = %s",
-                    (user_id,),
-                    connection=connection,
-                )
-                current_coins = (result[0] or 0) + (result[1] or 0) if result else 0
-                if not result or current_coins < amount:
-                    await update.message.reply_text(
-                        "***您的金币不足，无法完成兑换。***\n"
-                        "***You don't have enough coins to complete this exchange.***",
-                        parse_mode=ParseMode.MARKDOWN,
-                    )
-                    return
+    try:
+        outcome = await submit_swap_request(
+            user_id,
+            username,
+            wallet_address,
+            amount,
+            op_key=swap_op_key(update.effective_chat.id, update.message.message_id),
+        )
+    except Exception as e:
+        notice = report_error(logging.getLogger(__name__), "兑换过程中出现错误", e)
+        await update.message.reply_text(
+            f"***兑换过程中出现错误。***\n"
+            f"请稍后重试。\n\n"
+            f"***Error occurred during exchange.***\n"
+            f"Please try again later.\n\n{notice}",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
 
-                spent = await process_user.spend_user_coins(
-                    user_id,
-                    amount,
-                    connection=connection,
-                )
-                if not spent:
-                    await update.message.reply_text(
-                        "***您的金币不足，无法完成兑换。***\n"
-                        "***You don't have enough coins to complete this exchange.***",
-                        parse_mode=ParseMode.MARKDOWN,
-                    )
-                    return
+    if outcome.status is SwapStatus.NOT_REGISTERED:
+        await update.message.reply_text(
+            "***请先使用 /me 命令注册您的账户。***\n"
+            "Please register first using the /me command.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    if outcome.status is SwapStatus.PENDING_EXISTS:
+        # 事务里再次确认时发现已有待处理的请求（并发提交）
+        await update.message.reply_text(
+            _pending_request_message(outcome.pending),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    if outcome.status is SwapStatus.INSUFFICIENT:
+        await update.message.reply_text(
+            "***您的金币不足，无法完成兑换。***\n"
+            "***You don't have enough coins to complete this exchange.***",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
 
-                await connection.exec_driver_sql(
-                    """
-                    INSERT INTO token_swap_requests (user_id, username, wallet_address, amount) 
-                    VALUES (%s, %s, %s, %s)
-                    """,
-                    (user_id, username, wallet_address, amount),
-                )
-
-            await update.message.reply_text(
-                f"***您已成功提交兑换请求：***\n\n"
-                f"金币数量: ***{amount}***\n"
-                f"接收钱包: ***{wallet_address}***\n\n"
-                f"***当前兑换比例为1:1（1金币=1$FOGMOE），该比例可能随时调整，最终兑换比例以实际处理为准。***\n\n"
-                f"请耐心等待处理，兑换可能需要长达72小时。完成后，$FOGMOE代币将发送到您提供的钱包地址。\n\n"
-                f"访问 [token.fog.moe](https://token.fog.moe/) 了解关于$FOGMOE代币的详细信息。\n\n"
-                f"***You have successfully submitted an exchange request:***\n\n"
-                f"Amount: ***{amount}*** coins\n"
-                f"Receiving wallet: ***{wallet_address}***\n\n"
-                f"***Current exchange rate is 1:1 (1 coin = 1 $FOGMOE). This rate may change at any time, the final exchange rate will be determined at the time of processing.***\n\n"
-                f"Please be patient as processing may take up to 72 hours. Once completed, $FOGMOE tokens will be sent to the wallet address you provided.\n\n"
-                f"Visit [token.fog.moe](https://token.fog.moe/) to learn more about $FOGMOE tokens.",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-        except Exception as e:
-            await update.message.reply_text(
-                f"***兑换过程中出现错误:*** {str(e)}\n"
-                f"请稍后重试。\n\n"
-                f"***Error occurred during exchange:*** {str(e)}\n"
-                f"Please try again later.",
-                parse_mode=ParseMode.MARKDOWN,
-            )
+    # SUBMITTED，或同一条命令被重复投递（REPLAYED：上一次已经扣款并登记了请求）
+    await update.message.reply_text(
+        f"***您已成功提交兑换请求：***\n\n"
+        f"金币数量: ***{amount}***\n"
+        f"接收钱包: ***{wallet_address}***\n\n"
+        f"***当前兑换比例为1:1（1金币=1$FOGMOE），该比例可能随时调整，最终兑换比例以实际处理为准。***\n\n"
+        f"请耐心等待处理，兑换可能需要长达72小时。完成后，$FOGMOE代币将发送到您提供的钱包地址。\n\n"
+        f"访问 [token.fog.moe](https://token.fog.moe/) 了解关于$FOGMOE代币的详细信息。\n\n"
+        f"***You have successfully submitted an exchange request:***\n\n"
+        f"Amount: ***{amount}*** coins\n"
+        f"Receiving wallet: ***{wallet_address}***\n\n"
+        f"***Current exchange rate is 1:1 (1 coin = 1 $FOGMOE). This rate may change at any time, the final exchange rate will be determined at the time of processing.***\n\n"
+        f"Please be patient as processing may take up to 72 hours. Once completed, $FOGMOE tokens will be sent to the wallet address you provided.\n\n"
+        f"Visit [token.fog.moe](https://token.fog.moe/) to learn more about $FOGMOE tokens.",
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 def setup_swap_handler(application):
     """为代币兑换系统设置处理器"""

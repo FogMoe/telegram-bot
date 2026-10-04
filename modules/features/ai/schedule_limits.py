@@ -3,7 +3,12 @@ from core import mysql_connection
 DAILY_SCHEDULE_TRIGGER_LIMIT = 24
 
 
-async def reserve_daily_schedule_trigger(user_id: int) -> bool:
+async def reserve_daily_schedule_trigger(user_id: int, *, connection=None) -> bool:
+    """占用一次当日触发额度。
+
+    传入 `connection` 时在调用方的事务里执行，额度与同一事务里的阶段转换一起提交或回滚。
+    """
+    kwargs = {} if connection is None else {"connection": connection}
     updated_rows = await mysql_connection.execute(
         "UPDATE user SET "
         "ai_schedule_trigger_count = "
@@ -14,6 +19,7 @@ async def reserve_daily_schedule_trigger(user_id: int) -> bool:
         "OR ai_schedule_trigger_date <> UTC_DATE() "
         "OR ai_schedule_trigger_count < %s) ",
         (user_id, DAILY_SCHEDULE_TRIGGER_LIMIT),
+        **kwargs,
     )
     return updated_rows > 0
 

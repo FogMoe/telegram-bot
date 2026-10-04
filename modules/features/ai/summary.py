@@ -1,13 +1,16 @@
-"""Background conversation summarization using LiteLLM providers."""
+"""Background conversation summarization using LiteLLM providers.
+
+摘要生成是原生 async：后台任务经 `core.background` 登记（关停时被取消），同时运行的生成数
+受 `SUMMARY_CONCURRENCY` 限制；模型调用与摘要工具都在事件循环里 `await`，没有专用线程池。
+"""
 
 import asyncio
 import json
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple
 
-from core import config, mysql_connection
+from core import background, config, mysql_connection
 from core.token_estimator import estimate_tokens
 
 from .provider_resolver import (
@@ -27,7 +30,21 @@ SUMMARY_TOOL_MAX_ITERATIONS = 4
 SUMMARY_TOOLS = [SUMMARY_SEARCH_PRIOR_CONTEXT_TOOL]
 SUMMARY_TOOL_HANDLERS = {"search_prior_context": search_prior_context_tool}
 
-_SUMMARY_EXECUTOR = ThreadPoolExecutor(max_workers=2)
+# 同时生成的摘要数（后台排队与历史溢出时的即时生成共用）。
+SUMMARY_CONCURRENCY = 2
+# 历史溢出时，一轮对话最多等多久的即时摘要；超时退回后台排队，不拖住这一轮。
+SUMMARY_IMMEDIATE_TIMEOUT_SECONDS = 120.0
+
+_slot_state: tuple[asyncio.AbstractEventLoop, asyncio.Semaphore] | None = None
+
+
+def _summary_slot() -> asyncio.Semaphore:
+    """当前事件循环对应的并发信号量（信号量绑定创建它的循环，所以按循环各建一个）。"""
+    global _slot_state
+    loop = asyncio.get_running_loop()
+    if _slot_state is None or _slot_state[0] is not loop:
+        _slot_state = (loop, asyncio.Semaphore(SUMMARY_CONCURRENCY))
+    return _slot_state[1]
 
 
 def schedule_summary_generation(user_id: int) -> None:
@@ -35,17 +52,17 @@ def schedule_summary_generation(user_id: int) -> None:
 
     if user_id is None:
         return
-    _SUMMARY_EXECUTOR.submit(_process_summary_for_user, user_id)
+    background.spawn(_process_summary_for_user(user_id), name=f"summary-{user_id}")
 
 
-def _generate_and_store_summary(user_id: int) -> Optional[str]:
-    record = _fetch_pending_snapshot(user_id)
+async def _generate_and_store_summary(user_id: int) -> Optional[str]:
+    record = await _fetch_pending_snapshot(user_id)
     if not record:
         return None
 
     record_id, snapshot_text = record
-    previous_summary = _fetch_previous_summary(user_id, record_id)
-    summary_text = _generate_summary(
+    previous_summary = await _fetch_previous_summary(user_id, record_id)
+    summary_text = await _generate_summary(
         user_id,
         record_id,
         snapshot_text,
@@ -55,42 +72,45 @@ def _generate_and_store_summary(user_id: int) -> Optional[str]:
         logging.warning("Conversation summary generation failed for user %s after retries.", user_id)
         return None
 
-    _store_summary(record_id, summary_text)
+    await _store_summary(record_id, summary_text)
     return summary_text
 
 
 async def generate_summary_immediately(user_id: int) -> Optional[str]:
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        _SUMMARY_EXECUTOR,
-        _generate_and_store_summary,
-        user_id,
-    )
-
-
-def _process_summary_for_user(user_id: int) -> None:
+    """立即生成并保存摘要；超过 `SUMMARY_IMMEDIATE_TIMEOUT_SECONDS` 返回 None，由调用方退回后台排队。"""
     try:
-        summary_text = _generate_and_store_summary(user_id)
-        if summary_text is None:
-            return
-        mysql_connection.run_sync(
-            mysql_connection.async_update_latest_history_state_summary(
+        async with asyncio.timeout(SUMMARY_IMMEDIATE_TIMEOUT_SECONDS):
+            async with _summary_slot():
+                return await _generate_and_store_summary(user_id)
+    except TimeoutError:
+        logging.warning(
+            "Immediate summary for user %s exceeded %ss; falling back to background generation",
+            user_id,
+            SUMMARY_IMMEDIATE_TIMEOUT_SECONDS,
+        )
+        return None
+
+
+async def _process_summary_for_user(user_id: int) -> None:
+    try:
+        async with _summary_slot():
+            summary_text = await _generate_and_store_summary(user_id)
+            if summary_text is None:
+                return
+            await mysql_connection.async_update_latest_history_state_summary(
                 user_id,
                 summary_text,
             )
-        )
     except Exception as exc:  # pragma: no cover - defensive logging
         logging.exception("Unexpected error while processing summary for user %s: %s", user_id, exc)
 
 
-def _fetch_pending_snapshot(user_id: int) -> Optional[Tuple[int, str]]:
-    row = mysql_connection.run_sync(
-        mysql_connection.fetch_one(
-            "SELECT id, conversation_snapshot FROM permanent_chat_records "
-            "WHERE user_id = %s AND (summary IS NULL OR summary = '') "
-            "ORDER BY created_at DESC, id DESC LIMIT 1",
-            (user_id,),
-        )
+async def _fetch_pending_snapshot(user_id: int) -> Optional[Tuple[int, str]]:
+    row = await mysql_connection.fetch_one(
+        "SELECT id, conversation_snapshot FROM permanent_chat_records "
+        "WHERE user_id = %s AND (summary IS NULL OR summary = '') "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (user_id,),
     )
     if not row:
         return None
@@ -104,15 +124,13 @@ def _fetch_pending_snapshot(user_id: int) -> Optional[Tuple[int, str]]:
     return row[0], snapshot
 
 
-def _fetch_previous_summary(user_id: int, record_id: int) -> str:
-    row = mysql_connection.run_sync(
-        mysql_connection.fetch_one(
-            "SELECT summary FROM permanent_chat_records "
-            "WHERE user_id = %s AND id < %s "
-            "AND summary IS NOT NULL AND summary <> '' "
-            "ORDER BY created_at DESC, id DESC LIMIT 1",
-            (user_id, record_id),
-        )
+async def _fetch_previous_summary(user_id: int, record_id: int) -> str:
+    row = await mysql_connection.fetch_one(
+        "SELECT summary FROM permanent_chat_records "
+        "WHERE user_id = %s AND id < %s "
+        "AND summary IS NOT NULL AND summary <> '' "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (user_id, record_id),
     )
     if not row or row[0] is None:
         return ""
@@ -321,7 +339,7 @@ def _trim_summary_to_tokens(
     return summary[: max(low - 1, 0)].rstrip()
 
 
-def _run_summary_agent(
+async def _run_summary_agent(
     messages: list[dict],
     user_id: int,
     record_id: int,
@@ -347,7 +365,7 @@ def _run_summary_agent(
 
             for model in models:
                 try:
-                    content, _tool_logs = run_tool_loop(
+                    content, _tool_logs = await run_tool_loop(
                         provider,
                         model,
                         messages,
@@ -381,7 +399,7 @@ def _run_summary_agent(
     raise RuntimeError("All providers failed for summary generation") from last_error
 
 
-def _generate_summary(
+async def _generate_summary(
     user_id: int,
     record_id: int,
     snapshot_text: str,
@@ -398,7 +416,7 @@ def _generate_summary(
 
     for attempt in range(1, SUMMARY_RETRY_LIMIT + 1):
         try:
-            summary, response_model = _run_summary_agent(
+            summary, response_model = await _run_summary_agent(
                 messages,
                 user_id,
                 record_id,
@@ -428,10 +446,8 @@ def _generate_summary(
     return None
 
 
-def _store_summary(record_id: int, summary_text: str) -> None:
-    mysql_connection.run_sync(
-        mysql_connection.execute(
-            "UPDATE permanent_chat_records SET summary = %s WHERE id = %s",
-            (summary_text, record_id),
-        )
+async def _store_summary(record_id: int, summary_text: str) -> None:
+    await mysql_connection.execute(
+        "UPDATE permanent_chat_records SET summary = %s WHERE id = %s",
+        (summary_text, record_id),
     )
