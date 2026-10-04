@@ -9,7 +9,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute("""CREATE TABLE `user_give_daily` (
+    op.execute("""CREATE TABLE IF NOT EXISTS `user_give_daily` (
   `user_id` BIGINT NOT NULL,
   `give_date` DATE NOT NULL,
   `give_count` INT NOT NULL DEFAULT 0,

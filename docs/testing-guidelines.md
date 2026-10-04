@@ -72,6 +72,11 @@ $env:ENV_API_CONNECTIVITY_PROVIDERS = "gemini"
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 ```
 
+## MySQL 集成测试
+
+迁移和 schema 契约需要真实的 MySQL，放在 `tests/integration/`，只有设置了 `TEST_MYSQL_URL` 才会运行，未设置时整个目录 skip。
+夹具、运行方式和约定见 [database-migrations.md](database-migrations.md) 的「运行集成测试」。
+
 ## 静态检查
 
 用 ruff 做静态检查，配置在仓库根的 `ruff.toml`：

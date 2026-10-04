@@ -2,6 +2,8 @@
 
 from alembic import op
 
+from modules.core.migration_support import add_columns_if_missing
+
 # revision identifiers, used by Alembic.
 revision = "0002_add_chat_records_last_rotated_at"
 down_revision = "0001_initial"
@@ -10,9 +12,9 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute(
-        "ALTER TABLE `chat_records` "
-        "ADD COLUMN `last_rotated_at` TIMESTAMP NULL DEFAULT NULL"
+    add_columns_if_missing(
+        "chat_records",
+        [("last_rotated_at", "TIMESTAMP NULL DEFAULT NULL")],
     )
 
 
