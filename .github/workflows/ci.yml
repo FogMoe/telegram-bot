@@ -150,6 +150,9 @@ jobs:
       - name: Startup smoke check
         run: docker run --rm fogmoe-telegram-bot:ci python -u modules/main.py --check
 
+      - name: Migrations ship with the image
+        run: docker run --rm fogmoe-telegram-bot:ci python -m alembic heads
+
       # 日志同时进入 stdout（docker logs）和挂载的 ./logs（跨重启保留）
       - name: Logs reach stdout and the mounted log directory
         run: |

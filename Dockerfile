@@ -30,6 +30,9 @@ COPY --from=builder /opt/venv /opt/venv
 # Copy application code
 COPY modules ./modules
 COPY resources ./resources
+# 迁移脚本随镜像发布，便于在容器内执行 alembic upgrade head
+COPY alembic.ini ./alembic.ini
+COPY alembic ./alembic
 COPY .env.example ./.env.example
 
 # Expose no ports; the bot connects out to Telegram

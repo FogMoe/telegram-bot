@@ -217,7 +217,13 @@ chmod +x runBot.sh
 
 ## 🐳 Docker 部署
 
-当前 Docker 镜像只运行机器人，**不包含 MySQL，也不会自动执行数据库迁移**。请先准备外部 MySQL、填写 `.env`，并在宿主机完成 Alembic 迁移。镜像按 `uv.lock` 安装依赖，基础镜像与 `requires-python` 使用同一个 Python 版本。
+当前 Docker 镜像只运行机器人，**不包含 MySQL，也不会自动执行数据库迁移**。请先准备外部 MySQL、填写 `.env`，再执行 Alembic 迁移（宿主机或容器内均可，镜像包含迁移脚本）。镜像按 `uv.lock` 安装依赖，基础镜像与 `requires-python` 使用同一个 Python 版本。
+
+在容器内执行迁移：
+
+```bash
+docker compose run --rm bot python -m alembic upgrade head
+```
 
 ```bash
 docker compose build bot
