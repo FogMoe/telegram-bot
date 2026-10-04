@@ -290,6 +290,15 @@ def alembic_config(url: str) -> Config:
     return cfg
 
 
+def head_revision() -> str:
+    """迁移图当前唯一的 head；测试用它断言「已升级到最新」，新增 revision 时无需改测试。"""
+    from alembic.script import ScriptDirectory
+
+    heads = ScriptDirectory.from_config(alembic_config("mysql+asyncmy://unused/unused")).get_heads()
+    assert len(heads) == 1, heads
+    return heads[0]
+
+
 def upgrade(url: str, revision: str = "head") -> None:
     command.upgrade(alembic_config(url), revision)
 

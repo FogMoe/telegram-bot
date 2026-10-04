@@ -53,7 +53,7 @@ app → core
 | 目录 | 职责 |
 |---|---|
 | `conversation/` | AI 对话主路径，见下表 |
-| `ai/` | provider、task runner、tools、summary、idle followup、翻译 handler、出站发送 |
+| `ai/` | provider、task runner、tools、summary、定时任务与 idle followup（claim 所有权、租约与崩溃恢复见 [job-recovery.md](job-recovery.md)）、翻译 handler、出站发送 |
 | `profile/` | `/start` `/me` `/help` `/github` `/setmyinfo` 与入群欢迎 |
 | `economy/` | 金币相关：`/lottery` `/give` `/rich`、商店、签到、质押、充值 |
 | `crypto/` | 行情、图表、预测、swap，以及管理员的行情监控命令 |

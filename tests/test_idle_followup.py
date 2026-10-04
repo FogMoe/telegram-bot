@@ -415,6 +415,14 @@ def test_process_claim_keeps_main_ai_tools_enabled(monkeypatch):
     async def fake_send(*args):
         captured["send_args"] = args
 
+    async def fake_enter_stage(run, stage):
+        captured.setdefault("stages", []).append(stage)
+
+    async def fake_mark_fired(claim, **kwargs):
+        captured["fired"] = claim
+
+    monkeypatch.setattr(idle_followup, "_enter_stage", fake_enter_stage)
+    monkeypatch.setattr(idle_followup, "_mark_claim_fired", fake_mark_fired)
     monkeypatch.setattr(idle_followup, "_claim_is_current", always_current)
     monkeypatch.setattr(
         idle_followup,
@@ -449,6 +457,9 @@ def test_process_claim_keeps_main_ai_tools_enabled(monkeypatch):
     assert "<memory_suggestion>" in captured["persist_args"][1]
     assert captured["persist_args"][3] == tool_logs
     assert captured["send_args"][2] == tool_logs
+    # 主模型执行之前进入 generating，投递之前进入 delivering，投递之后才终结 claim。
+    assert captured["stages"] == ["generating", "delivering"]
+    assert captured["fired"] == claim
 
 
 def test_process_claim_pauses_before_recap_when_coins_are_exhausted(monkeypatch):

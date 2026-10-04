@@ -6,7 +6,25 @@ from types import SimpleNamespace
 from features.ai import schedule_limits, scheduler
 
 
-def test_claim_due_schedules_skips_registered_users_without_coins(monkeypatch):
+def _claim(schedule_id, **overrides):
+    values = dict(
+        schedule_id=schedule_id,
+        user_id=123,
+        run_at=datetime(2026, 7, 29, 12, 0, 0),
+        created_at=datetime(2026, 7, 29, 11, 0, 0),
+        trigger_reason="scheduled reminder",
+        context_text="",
+        instruction="send reminder",
+        recurrence_unit="none",
+        recurrence_interval=1,
+        token="a" * 32,
+        attempt=1,
+    )
+    values.update(overrides)
+    return scheduler.ScheduleClaim(**values)
+
+
+def test_claim_next_schedule_skips_registered_users_without_coins(monkeypatch):
     captured_queries = []
 
     @asynccontextmanager
@@ -20,7 +38,7 @@ def test_claim_due_schedules_skips_registered_users_without_coins(monkeypatch):
     monkeypatch.setattr(scheduler.mysql_connection, "transaction", fake_transaction)
     monkeypatch.setattr(scheduler.mysql_connection, "fetch_all", fake_fetch_all)
 
-    assert asyncio.run(scheduler._claim_due_schedules()) == []
+    assert asyncio.run(scheduler._claim_next_schedule()) is None
 
     query, params = captured_queries[0]
     query = " ".join(query.split())
@@ -28,7 +46,9 @@ def test_claim_due_schedules_skips_registered_users_without_coins(monkeypatch):
     assert "COALESCE(u.coins, 0) + COALESCE(u.coins_paid, 0) > 0" in query
     assert "u.ai_schedule_trigger_date <> UTC_DATE()" in query
     assert "u.ai_schedule_trigger_count < %s" in query
-    assert params == (24, scheduler.SCHEDULE_BATCH_SIZE)
+    # 一次只 claim 一个：崩溃最多卡住当前这一个。
+    assert "LIMIT 1" in query
+    assert params == (24,)
 
 
 def test_daily_schedule_trigger_reservation_uses_atomic_database_update(monkeypatch):
@@ -60,7 +80,7 @@ def test_daily_schedule_trigger_reservation_rejects_reached_limit(monkeypatch):
 
 
 def test_claimed_schedule_returns_to_pending_if_coins_are_exhausted(monkeypatch):
-    status_updates = []
+    released = []
 
     async def fake_user_state_prompt(user_id):
         assert user_id == 123
@@ -70,8 +90,8 @@ def test_claimed_schedule_returns_to_pending_if_coins_are_exhausted(monkeypatch)
         assert user_id == 123
         return 0
 
-    async def fake_mark_schedule_status(schedule_id, status, *, error=None):
-        status_updates.append((schedule_id, status, error))
+    async def fake_release_claim(run, outcome, *, attempts_expr, error=None):
+        released.append((run.claim.schedule_id, outcome))
 
     async def fail_if_called(*args, **kwargs):
         raise AssertionError("zero-coin schedule must not call AI or write history")
@@ -82,8 +102,8 @@ def test_claimed_schedule_returns_to_pending_if_coins_are_exhausted(monkeypatch)
         "async_get_user_coins",
         fake_user_coins,
     )
-    monkeypatch.setattr(scheduler, "_mark_schedule_status", fake_mark_schedule_status)
-    monkeypatch.setattr(scheduler, "reserve_daily_schedule_trigger", fail_if_called)
+    monkeypatch.setattr(scheduler, "_release_claim", fake_release_claim)
+    monkeypatch.setattr(scheduler, "_begin_generation", fail_if_called)
     monkeypatch.setattr(
         scheduler.mysql_connection,
         "async_insert_chat_record",
@@ -91,30 +111,15 @@ def test_claimed_schedule_returns_to_pending_if_coins_are_exhausted(monkeypatch)
     )
     monkeypatch.setattr(scheduler.ai_chat, "get_ai_response", fail_if_called)
 
-    task_row = (
-        7,
-        123,
-        datetime(2026, 7, 29, 12, 0, 0),
-        datetime(2026, 7, 29, 11, 0, 0),
-        "scheduled reminder",
-        "",
-        "send reminder",
-        "none",
-        1,
-    )
+    run = scheduler._ScheduleRun(_claim(7))
 
-    asyncio.run(
-        scheduler._process_schedule_task_locked(
-            task_row,
-            SimpleNamespace(),
-        )
-    )
+    asyncio.run(scheduler._process_schedule_task_locked(run, SimpleNamespace()))
 
-    assert status_updates == [(7, "pending", None)]
+    assert released == [(7, "paused")]
 
 
-def test_claimed_schedule_returns_to_pending_at_daily_trigger_limit(monkeypatch):
-    status_updates = []
+def test_claimed_schedule_stops_at_daily_trigger_limit(monkeypatch):
+    begun = []
 
     async def fake_user_state_prompt(user_id):
         assert user_id == 123
@@ -124,12 +129,10 @@ def test_claimed_schedule_returns_to_pending_at_daily_trigger_limit(monkeypatch)
         assert user_id == 123
         return 1
 
-    async def fake_reserve_daily_trigger(user_id):
-        assert user_id == 123
+    async def fake_begin_generation(run):
+        # 每日额度已满：事务里已经把任务放回 pending，这里返回 False。
+        begun.append(run.claim.schedule_id)
         return False
-
-    async def fake_mark_schedule_status(schedule_id, status, *, error=None):
-        status_updates.append((schedule_id, status, error))
 
     async def fail_if_called(*args, **kwargs):
         raise AssertionError("daily-limited schedule must not call AI or write history")
@@ -140,12 +143,7 @@ def test_claimed_schedule_returns_to_pending_at_daily_trigger_limit(monkeypatch)
         "async_get_user_coins",
         fake_user_coins,
     )
-    monkeypatch.setattr(
-        scheduler,
-        "reserve_daily_schedule_trigger",
-        fake_reserve_daily_trigger,
-    )
-    monkeypatch.setattr(scheduler, "_mark_schedule_status", fake_mark_schedule_status)
+    monkeypatch.setattr(scheduler, "_begin_generation", fake_begin_generation)
     monkeypatch.setattr(
         scheduler.mysql_connection,
         "async_insert_chat_record",
@@ -153,23 +151,8 @@ def test_claimed_schedule_returns_to_pending_at_daily_trigger_limit(monkeypatch)
     )
     monkeypatch.setattr(scheduler.ai_chat, "get_ai_response", fail_if_called)
 
-    task_row = (
-        8,
-        123,
-        datetime(2026, 7, 29, 12, 0, 0),
-        datetime(2026, 7, 29, 11, 0, 0),
-        "scheduled reminder",
-        "",
-        "send reminder",
-        "none",
-        1,
-    )
+    run = scheduler._ScheduleRun(_claim(8))
 
-    asyncio.run(
-        scheduler._process_schedule_task_locked(
-            task_row,
-            SimpleNamespace(),
-        )
-    )
+    asyncio.run(scheduler._process_schedule_task_locked(run, SimpleNamespace()))
 
-    assert status_updates == [(8, "pending", None)]
+    assert begun == [8]
