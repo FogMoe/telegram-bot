@@ -114,6 +114,7 @@ PTB handler（concurrent_updates 有界）
 | 排队（等会话锁、等全局槽位） | 拒绝，`BUSY_TEXT`，**没有扣费** |
 | `prepare`（下载并识别媒体） | 回复超时提示，状态 `TurnStatus.DEADLINE_EXCEEDED`，这一轮已扣费，不退 |
 | `model`：等待模型响应 | 取消请求，不再换下一个 provider，回复 `TURN_DEADLINE_ERROR_MESSAGE`；这个 provider 计一次熔断失败 |
+| `model`：provider 回退链走到下一个 provider 时时间已用完 | 不再调用任何 provider，回复 `TURN_DEADLINE_ERROR_MESSAGE`，不给没被调用过的 provider 记失败（`phase=fallback`） |
 | `model`：运行工具 | 取消工具（线程里的同步工具只是不再等它）；回复 `TURN_DEADLINE_ERROR_MESSAGE` |
 | `model`：即时发送可见内容或媒体 | 取消发送，同上 |
 | `delivery`（最终回复与媒体） | 受截止时间加 30 秒宽限约束，宽限让超时提示本身还能发出去；到期后放弃剩余投递，`finalize` 照常执行 |
@@ -221,7 +222,7 @@ runtime metrics (last 300s): admission.admitted=118 admission.rejected{reason=qu
 | 排队深度 | 仪表 `admission.queued`（当前）、`admission.running`；直方图 `admission.queue_depth`（每个请求到达时看到的深度，单位是个数）；同步工具线程池的 `blocking.queued{pool}` |
 | 排队延迟 | `admission.queue_seconds`（等全局槽位）、`turn.queue_seconds`（等会话锁 + 等槽位，也是 `TurnTimings.queue_seconds`）、`blocking.wait_seconds{pool}` |
 | 整轮耗时 | `turn.run_seconds`（不含排队）、`turn.total_seconds`（含排队）、`provider.call_seconds{provider}`、`tool.seconds{tool}`、`blocking.run_seconds{pool}` |
-| 超时次数 | `turn.deadline_hits{reason=deadline\|shutdown, phase=prepare\|model\|tool\|delivery}`、`provider.timeouts{provider}`（单次调用超时） |
+| 超时次数 | `turn.deadline_hits{reason=deadline\|shutdown, phase=prepare\|model\|fallback\|tool\|delivery}`、`provider.timeouts{provider}`（单次调用超时） |
 | 过载 | `admission.rejected{reason=...}`、`admission.admitted` |
 | provider 失败 | `provider.failures{provider}`、`provider.calls{provider}` |
 | 工具失败 | `tool.failures{tool}`（执行异常，或返回了 `error`）、`tool.calls{tool}` |
