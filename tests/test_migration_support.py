@@ -81,6 +81,15 @@ def test_offline_sql_contains_the_schema_contract_ddl():
     assert "ADD PRIMARY KEY (`user_id`)" in sql
 
 
+def test_offline_sql_contains_the_ledger_tables():
+    sql = _offline_sql("0018_privacy_retention:head")
+
+    assert "CREATE TABLE IF NOT EXISTS `coin_ledger`" in sql
+    assert "UNIQUE KEY `uq_coin_ledger_op_key` (`op_key`)" in sql
+    assert "CREATE TABLE IF NOT EXISTS `stake_pool_ledger`" in sql
+    assert "CREATE TABLE IF NOT EXISTS `topup_requests`" in sql
+
+
 class TestResolveDatabaseUrl:
     @staticmethod
     def _resolve(*, attributes=None, x_args=None, app_url=lambda: "app://url", ini_url="ini://url"):

@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from threading import RLock
 import re
@@ -6,7 +7,7 @@ import uuid  # 添加uuid模块导入
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
-from core import config, mysql_connection, process_user
+from core import balance, config, mysql_connection, process_user
 from core.command_cooldown import cooldown
 from core.command_privacy import private_chat_only
 from core.redaction import log_exception, mask_secret, user_error_notice
@@ -110,19 +111,26 @@ async def verify_and_use_code(user_id: int, code: str) -> tuple:
                     used_msg = f"此卡密已被其他用户在 {used_time} 使用"
                 return False, used_msg
 
+            # 卡密行已被 FOR UPDATE 锁住，op_key 以卡密行 id 为身份：同一张卡密最多入账一次。
+            # 先入账再标记已使用：用户不存在时在这里得到明确的 UserNotFound，而不是外键错误。
+            await balance.credit(
+                connection,
+                user_id,
+                amount,
+                op_key=balance.make_op_key("redeem", code_id),
+                reason="redeem_code",
+                kind=balance.CoinKind.PAID,
+            )
+
             current_time = datetime.now()
             await connection.exec_driver_sql(
                 "UPDATE redemption_codes SET is_used = TRUE, used_by = %s, used_at = %s WHERE id = %s",
                 (user_id, current_time, code_id),
             )
 
-            await process_user.add_paid_coins(
-                user_id,
-                amount,
-                connection=connection,
-            )
-
         return True, amount
+    except balance.UserNotFound:
+        return False, "请先使用 /me 命令注册个人信息后再使用充值功能"
     except Exception as e:
         error_ref = log_exception(logger, "充值卡密处理错误", e, extra_secrets=(code,))
         return False, f"充值处理过程中出现错误，请联系管理员\n{user_error_notice(error_ref)}"
@@ -252,6 +260,178 @@ async def recharge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
 
+TOPUP_STATUS_PENDING = "pending"
+# 管理员按钮动作 -> 请求的目标状态
+TOPUP_ACTION_STATUS = {
+    "approve": "approved",
+    "reject": "rejected",
+    "block": "blocked",
+}
+TOPUP_STATUS_LABELS = {
+    "pending": "待处理",
+    "approved": "已发放",
+    "rejected": "已拒绝",
+    "blocked": "已拒绝并禁用",
+}
+_TOPUP_ADMIN_CALLBACK = re.compile(r"^topup_admin_(approve|reject|block)_(\d{1,18})$")
+# 旧版回调把用户、金币数、价格写进按钮：topup_admin_<action>_<uid>_<coins>_<cents>
+_LEGACY_TOPUP_ADMIN_CALLBACK = re.compile(r"^topup_admin_[a-z]+_-?\d+_-?\d+_-?\d+$")
+
+
+@dataclass(frozen=True)
+class TopupRequest:
+    id: int
+    user_id: int
+    coins: int
+    price_cents: int
+    status: str
+
+
+@dataclass(frozen=True)
+class TopupDecision:
+    """`decide_topup_request` 的结果。
+
+    outcome:
+      applied          这次调用完成了 pending -> 目标状态的转换（approve 同时已入账）
+      already_decided  请求已被处理过，`request.status` 是当前状态，没有任何改动
+      not_found        没有这个请求
+      user_missing     approve 时用户已不存在，整个事务回滚，请求仍是 pending
+    """
+
+    outcome: str
+    request: TopupRequest | None = None
+    credit: balance.BalanceResult | None = None
+    blocked_until: datetime | None = None
+
+
+def topup_op_key(request_id: int) -> str:
+    return balance.make_op_key("topup", request_id)
+
+
+def topup_admin_callback_data(action: str, request_id: int) -> str:
+    return f"topup_admin_{action}_{request_id}"
+
+
+def parse_topup_admin_callback(data: str) -> tuple[str, int] | None:
+    """新格式 `topup_admin_<action>_<request_id>` -> (action, request_id)，其他一律 None。"""
+    match = _TOPUP_ADMIN_CALLBACK.fullmatch(data or "")
+    if not match:
+        return None
+    return match.group(1), int(match.group(2))
+
+
+def is_legacy_topup_admin_callback(data: str) -> bool:
+    return bool(_LEGACY_TOPUP_ADMIN_CALLBACK.fullmatch(data or ""))
+
+
+def _topup_request_from_row(row) -> TopupRequest:
+    return TopupRequest(
+        id=int(row[0]),
+        user_id=int(row[1]),
+        coins=int(row[2]),
+        price_cents=int(row[3]),
+        status=str(row[4]),
+    )
+
+
+async def create_topup_request(user_id: int, coins: int, price_cents: int) -> int:
+    """记录一条 pending 的充值请求并返回它的 id；管理员按钮只携带这个 id。"""
+    async with mysql_connection.transaction() as connection:
+        result = await connection.exec_driver_sql(
+            "INSERT INTO topup_requests (user_id, coins, price_cents) VALUES (%s, %s, %s)",
+            (user_id, coins, price_cents),
+        )
+        return int(result.lastrowid)
+
+
+async def get_topup_request(request_id: int, *, connection=None) -> TopupRequest | None:
+    row = await mysql_connection.fetch_one(
+        "SELECT id, user_id, coins, price_cents, status FROM topup_requests WHERE id = %s",
+        (request_id,),
+        connection=connection,
+    )
+    return _topup_request_from_row(row) if row else None
+
+
+async def discard_pending_topup_request(request_id: int) -> None:
+    """请求没能送达管理员时撤销它；已经被处理过的请求不受影响。"""
+    await mysql_connection.execute(
+        "DELETE FROM topup_requests WHERE id = %s AND status = 'pending'",
+        (request_id,),
+    )
+
+
+async def decide_topup_request(
+    request_id: int,
+    action: str,
+    decided_by: int,
+    *,
+    now: datetime | None = None,
+) -> TopupDecision:
+    """管理员对充值请求做出决定：pending 只能转换一次。
+
+    先用 `UPDATE ... WHERE id = %s AND status = 'pending'` 占住转换，影响行数为 1 才继续
+    （approve 以 `topup:<id>` 入账付费金币，block 写入禁用截止时间），整个过程一个事务：
+    入账失败时状态保持 pending。两个并发的 approve 只有一个能占住转换。
+    """
+    new_status = TOPUP_ACTION_STATUS[action]
+    now = now or datetime.now()
+    request = await get_topup_request(request_id)
+    if request is None:
+        return TopupDecision("not_found")
+
+    try:
+        async with mysql_connection.transaction() as connection:
+            changed = await mysql_connection.execute(
+                "UPDATE topup_requests SET status = %s, decided_at = %s, decided_by = %s "
+                "WHERE id = %s AND status = 'pending'",
+                (new_status, now, decided_by, request_id),
+                connection=connection,
+            )
+            if changed != 1:
+                # 锁定读取到的是最新状态；事务里更早的普通读可能停留在旧快照。
+                row = await mysql_connection.fetch_one(
+                    "SELECT status FROM topup_requests WHERE id = %s FOR UPDATE",
+                    (request_id,),
+                    connection=connection,
+                )
+                current = str(row[0]) if row else "unknown"
+                return TopupDecision(
+                    "already_decided",
+                    TopupRequest(
+                        request.id, request.user_id, request.coins, request.price_cents, current
+                    ),
+                )
+
+            credit = None
+            blocked_until = None
+            if action == "approve":
+                credit = await balance.credit(
+                    connection,
+                    request.user_id,
+                    request.coins,
+                    op_key=topup_op_key(request.id),
+                    reason="topup",
+                    kind=balance.CoinKind.PAID,
+                )
+            elif action == "block":
+                blocked_until = now + timedelta(days=1)
+                await mysql_connection.execute(
+                    "UPDATE user SET recharge_blocked_until = %s WHERE id = %s",
+                    (blocked_until, request.user_id),
+                    connection=connection,
+                )
+    except balance.UserNotFound:
+        return TopupDecision("user_missing", request)
+
+    return TopupDecision(
+        "applied",
+        TopupRequest(request.id, request.user_id, request.coins, request.price_cents, new_status),
+        credit,
+        blocked_until,
+    )
+
+
 async def topup_request_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -274,18 +454,23 @@ async def topup_request_callback(update: Update, context: ContextTypes.DEFAULT_T
     except ValueError:
         await query.edit_message_text("充值请求数据无效，请重新发起。")
         return
+    if coins <= 0 or price_cents < 0:
+        await query.edit_message_text("充值请求数据无效，请重新发起。")
+        return
 
     price_label = _format_price(price_cents)
+    request_id = await create_topup_request(user_id, coins, price_cents)
     admin_text = (
         "收到充值请求：\n"
+        f"请求编号: #{request_id}\n"
         f"用户: @{user_name} (ID: {user_id})\n"
         f"套餐: {price_label} -> {coins}金币\n"
         "请核对付款后点击下方按钮处理。"
     )
     admin_keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("确认发放", callback_data=f"topup_admin_approve_{user_id}_{coins}_{price_cents}")],
-        [InlineKeyboardButton("拒绝", callback_data=f"topup_admin_reject_{user_id}_{coins}_{price_cents}")],
-        [InlineKeyboardButton("禁用1天", callback_data=f"topup_admin_block_{user_id}_{coins}_{price_cents}")],
+        [InlineKeyboardButton("确认发放", callback_data=topup_admin_callback_data("approve", request_id))],
+        [InlineKeyboardButton("拒绝", callback_data=topup_admin_callback_data("reject", request_id))],
+        [InlineKeyboardButton("禁用1天", callback_data=topup_admin_callback_data("block", request_id))],
     ])
 
     try:
@@ -296,6 +481,10 @@ async def topup_request_callback(update: Update, context: ContextTypes.DEFAULT_T
         )
     except Exception as send_error:
         logging.error("发送充值请求给管理员失败: %s", send_error)
+        try:
+            await discard_pending_topup_request(request_id)
+        except Exception as discard_error:
+            logging.error("撤销未送达的充值请求失败: %s", discard_error)
         await query.edit_message_text("联系管理员失败，请稍后再试。")
         return
 
@@ -311,21 +500,27 @@ async def topup_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     await query.answer()
 
-    parts = query.data.split("_")
-    if len(parts) != 6:
-        await query.edit_message_text("请求数据无效。")
+    parsed = parse_topup_admin_callback(query.data)
+    if parsed is None:
+        if is_legacy_topup_admin_callback(query.data):
+            # 旧按钮没有持久的请求身份，无法保证只处理一次：一律拒绝，绝不入账。
+            await query.edit_message_text(
+                "这是旧版本发出的充值按钮，已失效，不会发放金币。\n"
+                "请让用户重新发起 /recharge。"
+            )
+        else:
+            await query.edit_message_text("请求数据无效。")
         return
+    action, request_id = parsed
 
-    action = parts[2]
-    try:
-        target_user_id = int(parts[3])
-        coins = int(parts[4])
-        price_cents = int(parts[5])
-    except ValueError:
-        await query.edit_message_text("请求数据无效。")
+    request = await get_topup_request(request_id)
+    if request is None:
+        await query.edit_message_text(f"充值请求不存在（编号: #{request_id}）。")
         return
+    target_user_id = request.user_id
+    coins = request.coins
+    price_label = _format_price(request.price_cents)
 
-    price_label = _format_price(price_cents)
     user_row = await mysql_connection.fetch_one(
         "SELECT name FROM user WHERE id = %s",
         (target_user_id,),
@@ -337,11 +532,25 @@ async def topup_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     user_name = user_row[0]
 
+    decision = await decide_topup_request(request_id, action, query.from_user.id)
+    if decision.outcome == "user_missing":
+        await query.edit_message_text(
+            f"用户不存在，无法处理充值请求（ID: {target_user_id}）。"
+        )
+        return
+    if decision.outcome == "not_found":
+        await query.edit_message_text(f"充值请求不存在（编号: #{request_id}）。")
+        return
+    if decision.outcome == "already_decided":
+        status = decision.request.status if decision.request else "unknown"
+        await query.edit_message_text(
+            f"该充值请求已处理，不会重复发放（编号: #{request_id}，"
+            f"当前状态: {TOPUP_STATUS_LABELS.get(status, status)}）。\n"
+            f"用户: {user_name} (ID: {target_user_id})"
+        )
+        return
+
     if action == "approve":
-        if coins <= 0:
-            await query.edit_message_text("金币数量无效，无法发放。")
-            return
-        await process_user.add_paid_coins(target_user_id, coins)
         await query.edit_message_text(
             f"已发放充值：{price_label} -> {coins}金币\n用户: {user_name} (ID: {target_user_id})"
         )
@@ -367,27 +576,20 @@ async def topup_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             logging.error("通知用户充值失败: %s", notify_error)
         return
 
-    if action == "block":
-        blocked_until = datetime.now() + timedelta(days=1)
-        await mysql_connection.execute(
-            "UPDATE user SET recharge_blocked_until = %s WHERE id = %s",
-            (blocked_until, target_user_id),
+    # action == "block"
+    blocked_until = decision.blocked_until
+    await query.edit_message_text(
+        f"已禁止用户 1 天内使用 /recharge。\n"
+        f"用户: {user_name} (ID: {target_user_id})\n"
+        f"截止时间: {blocked_until.strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=target_user_id,
+            text=_format_recharge_block_message(blocked_until),
         )
-        await query.edit_message_text(
-            f"已禁止用户 1 天内使用 /recharge。\n"
-            f"用户: {user_name} (ID: {target_user_id})\n"
-            f"截止时间: {blocked_until.strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-        try:
-            await context.bot.send_message(
-                chat_id=target_user_id,
-                text=_format_recharge_block_message(blocked_until),
-            )
-        except Exception as notify_error:
-            logging.error("通知用户禁用失败: %s", notify_error)
-        return
-
-    await query.edit_message_text("未知操作。")
+    except Exception as notify_error:
+        logging.error("通知用户禁用失败: %s", notify_error)
 
 
 @private_chat_only("create_code")

@@ -6,8 +6,9 @@ from telegram import InlineQueryResultArticle, InputTextMessageContent, Update
 from telegram.constants import ParseMode
 from telegram.ext import CommandHandler, ContextTypes
 
-from core import mysql_connection, process_user, stake_reward_pool
+from core import balance, mysql_connection, stake_reward_pool
 from core.command_cooldown import cooldown
+from core.redaction import log_exception
 from features.ai import ai_chat
 
 logger = logging.getLogger(__name__)
@@ -142,7 +143,7 @@ async def tl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
 
-    # 检查硬币是否足够（基于长度收费）
+    # 按长度收费；500 字以内免费
     coin_cost = 0
     if len(text_to_translate) > 500:
         coin_cost = 1
@@ -151,45 +152,73 @@ async def tl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if len(text_to_translate) > 2000:
         coin_cost = 3
 
-    # 获取用户硬币数
-    user_coins = await process_user.async_get_user_coins(user_id)
-    if user_coins < coin_cost:
-        await update.message.reply_text(
-            f"您的硬币不足，需要 {coin_cost} 枚硬币进行翻译。试试通过 /lottery 抽奖获取硬币吧！\n"
-            f"You don't have enough coins (need {coin_cost}). Try using /lottery to get some coins!"
-        )
-        return
-
-    spent = await process_user.spend_user_coins(user_id, coin_cost)
-    if not spent:
-        await update.message.reply_text(
-            f"您的硬币不足，需要 {coin_cost} 枚硬币进行翻译。试试通过 /lottery 抽奖获取硬币吧！\n"
-            f"You don't have enough coins (need {coin_cost}). Try using /lottery to get some coins!"
-        )
-        return
+    # 先扣费再翻译。op_key 取命令消息的身份：同一条 /tl 被重复投递不会再扣一次。
+    debit_key = None
+    if coin_cost > 0:
+        candidate_key = _translation_op_key(update)
+        try:
+            await balance.debit_standalone(
+                user_id,
+                coin_cost,
+                op_key=candidate_key,
+                reason="translate",
+            )
+        except (balance.InsufficientBalance, balance.UserNotFound):
+            await update.message.reply_text(
+                f"您的硬币不足，需要 {coin_cost} 枚硬币进行翻译。试试通过 /lottery 抽奖获取硬币吧！\n"
+                f"You don't have enough coins (need {coin_cost}). Try using /lottery to get some coins!"
+            )
+            return
+        debit_key = candidate_key
 
     # 不发送正在翻译状态
     # await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
-    # 调用翻译函数
+    # 调用翻译函数，交付成功后才贡献奖池；交付失败退回这次扣费
     try:
         translation = await ai_chat.translate_text(text_to_translate)
         await update.message.reply_text(
             f"{translation}"
         )
-        try:
-            pool_add = stake_reward_pool.calculate_pool_add(coin_cost)
-            if pool_add > 0:
-                await stake_reward_pool.add_to_pool(pool_add)
-        except Exception as pool_error:
-            logger.error("更新奖励池失败: %s", pool_error)
     except Exception as e:
         logging.error(f"翻译出错: {str(e)}")
+        refunded = await _refund_translation(debit_key)
         await update.message.reply_text(
             "翻译服务暂时不可用，请稍后重试。\n"
-            "Translation service is temporarily unavailable, please try again later. Your coins have been refunded."
+            "Translation service is temporarily unavailable, please try again later."
+            + (" Your coins have been refunded." if refunded else "")
         )
-        await process_user.add_free_coins(user_id, coin_cost)
+        return
+
+    if debit_key is not None:
+        try:
+            await stake_reward_pool.credit_share_of_spend_standalone(
+                coin_cost,
+                spend_op_key=debit_key,
+            )
+        except Exception as pool_error:
+            logger.error("更新奖励池失败: %s", pool_error)
+
+
+def _translation_op_key(update: Update) -> str:
+    message = update.message
+    chat_id = getattr(update.effective_chat, "id", None)
+    message_id = getattr(message, "message_id", None)
+    if chat_id is None or message_id is None:
+        return balance.new_op_key("tl:adhoc")
+    return balance.make_op_key("tl", chat_id, message_id)
+
+
+async def _refund_translation(debit_key: str | None) -> bool:
+    """退回翻译的扣费；没有扣过费（免费翻译）返回 False，退款失败只记日志。"""
+    if debit_key is None:
+        return False
+    try:
+        await balance.refund_standalone(debit_key, reason="translate_failed")
+    except Exception as refund_error:
+        log_exception(logger, "翻译退款失败", refund_error)
+        return False
+    return True
 
 
 def setup_translation_handlers(application) -> None:

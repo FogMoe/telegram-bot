@@ -1,12 +1,12 @@
 import html
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import CommandHandler, ContextTypes
 
-from core import mysql_connection, process_user
+from core import balance, mysql_connection
 from core.command_cooldown import cooldown
 
 
@@ -26,16 +26,17 @@ def calculate_checkin_reward(consecutive_days):
     return 7
 
 
-async def get_user_checkin_info(user_id):
+async def get_user_checkin_info(user_id, *, connection=None):
     row = await mysql_connection.fetch_one(
         "SELECT last_checkin_date, consecutive_days FROM user_checkin WHERE user_id = %s",
         (user_id,),
+        connection=connection,
     )
     return row
 
 
-async def update_user_checkin(user_id, consecutive_days):
-    today = datetime.now().date()
+async def update_user_checkin(user_id, consecutive_days, *, connection=None, today=None):
+    today = today or datetime.now().date()
     await mysql_connection.execute(
         """
         INSERT INTO user_checkin (user_id, last_checkin_date, consecutive_days)
@@ -43,29 +44,51 @@ async def update_user_checkin(user_id, consecutive_days):
         ON DUPLICATE KEY UPDATE last_checkin_date = VALUES(last_checkin_date), consecutive_days = VALUES(consecutive_days)
         """,
         (user_id, today, consecutive_days),
+        connection=connection,
     )
 
 
-async def process_checkin(user_id):
-    today = datetime.now().date()
-    checkin_info = await get_user_checkin_info(user_id)
+def checkin_op_key(user_id: int, day: date) -> str:
+    """每个用户每天只有一个签到身份，奖励入账以它为幂等键。"""
+    return balance.make_op_key("checkin", user_id, day.isoformat())
 
-    if checkin_info and checkin_info[0] == today:
-        return {
-            "success": False,
-            "message": "您今天已经签到过了！请明天再来。",
-            "consecutive_days": checkin_info[1],
-        }
 
-    consecutive_days = 1
-    if checkin_info:
-        last_checkin_date = checkin_info[0]
-        if last_checkin_date == today - timedelta(days=1):
-            consecutive_days = checkin_info[1] + 1
+async def process_checkin(user_id, *, today=None):
+    """签到：资格判断、签到日期写入、奖励入账在同一个事务里。
 
-    reward_coins = calculate_checkin_reward(consecutive_days)
-    await update_user_checkin(user_id, consecutive_days)
-    await process_user.async_update_user_coins(user_id, reward_coins)
+    入账失败（异常）时整个事务回滚，日期不会落库，重试仍然可以签到。用户不存在抛
+    `balance.UserNotFound`。
+    """
+    today = today or datetime.now().date()
+    async with mysql_connection.transaction() as connection:
+        # 先锁用户行，同一用户的并发签到在这里串行；之后第一次一致性读能看到上一个持锁者提交的日期。
+        await balance.lock_user(connection, user_id)
+        checkin_info = await get_user_checkin_info(user_id, connection=connection)
+
+        if checkin_info and checkin_info[0] == today:
+            return {
+                "success": False,
+                "message": "您今天已经签到过了！请明天再来。",
+                "consecutive_days": checkin_info[1],
+            }
+
+        consecutive_days = 1
+        if checkin_info:
+            last_checkin_date = checkin_info[0]
+            if last_checkin_date == today - timedelta(days=1):
+                consecutive_days = checkin_info[1] + 1
+
+        reward_coins = calculate_checkin_reward(consecutive_days)
+        await update_user_checkin(
+            user_id, consecutive_days, connection=connection, today=today
+        )
+        await balance.credit(
+            connection,
+            user_id,
+            reward_coins,
+            op_key=checkin_op_key(user_id, today),
+            reason="checkin",
+        )
 
     return {
         "success": True,

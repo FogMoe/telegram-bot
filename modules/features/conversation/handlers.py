@@ -11,7 +11,6 @@ from core import (
     group_chat_history,
     mysql_connection,
     process_user,
-    stake_reward_pool,
 )
 from core.archive_utils import send_permanent_records_archive
 from core.prompt_utils import format_user_state_prompt
@@ -39,7 +38,7 @@ from features.ai.tool_history import (
     tool_logs_to_record_entries,
 )
 
-from . import batching, lifecycle, messages, triggers
+from . import batching, billing, lifecycle, messages, triggers
 from .history_hooks import handle_history_overflow
 
 logger = logging.getLogger(__name__)
@@ -322,6 +321,7 @@ async def _reply_batch_unlocked(batch_items: list[batching._QueuedUpdate]) -> No
                 "coin_cost": coin_cost,
                 "is_media": is_media,
                 "is_edited": item.update.edited_message is message,
+                "update_id": getattr(item.update, "update_id", None),
             }
         )
         total_coin_cost += coin_cost
@@ -332,48 +332,36 @@ async def _reply_batch_unlocked(batch_items: list[batching._QueuedUpdate]) -> No
     # 在扣费前写完上一项操作，避免余额恰好归零时把旧事件误判为收尾记录。
     await flush_pending_events(conversation_id)
 
-    async with mysql_connection.transaction() as connection:
-        row = await mysql_connection.fetch_one(
-            "SELECT permission, coins, coins_paid, info FROM user WHERE id = %s",
-            (user_id,),
-            connection=connection,
-        )
-        if not row:
-            await effective_message.reply_text(
-                "请先使用 /me 命令注册个人信息后再聊天。\n"
-                "Please register first using the /me command before chatting."
+    # 每条消息按持久身份各记一笔账，整轮同一个事务；余额不足整轮不扣、不进入本轮、不贡献奖池。
+    turn_charge = await billing.charge_turn(
+        user_id,
+        [
+            billing.TurnMessage.from_message(
+                job["message"],
+                chat_id=update.effective_chat.id,
+                cost=job["coin_cost"],
+                edited=bool(job["is_edited"]),
+                update_id=job["update_id"],
             )
-            return
-        user_permission = row[0]
-        user_coins_free = row[1] or 0
-        user_coins_paid = row[2] or 0
-        user_info_raw = row[3] if len(row) > 3 else ""
-        user_coins = user_coins_free + user_coins_paid
-
-        if user_coins < total_coin_cost:
-            await effective_message.reply_text(
-                f"您的硬币不足，无法与雾萌娘连接，需要{total_coin_cost}个硬币。试试通过 /lottery 抽奖吧！\n"
-                f"You don't have enough coins (need {total_coin_cost}), I don't want to talk to you. "
-                f"Try using /lottery to get some coins!")
-            return
-
-        await process_user.spend_user_coins(
-            user_id,
-            total_coin_cost,
-            connection=connection,
+            for job in message_jobs
+        ],
+    )
+    if turn_charge.status is billing.TurnChargeStatus.UNREGISTERED:
+        await effective_message.reply_text(
+            "请先使用 /me 命令注册个人信息后再聊天。\n"
+            "Please register first using the /me command before chatting."
         )
-        pool_add = stake_reward_pool.calculate_pool_add(total_coin_cost)
-        if pool_add > 0:
-            await stake_reward_pool.add_to_pool(pool_add, connection=connection)
-        if user_coins_free >= total_coin_cost:
-            new_free = user_coins_free - total_coin_cost
-            new_paid = user_coins_paid
-        else:
-            remaining = total_coin_cost - user_coins_free
-            new_free = 0
-            new_paid = max(user_coins_paid - remaining, 0)
-        user_coins = new_free + new_paid
-        user_plan = process_user.resolve_user_plan(user_id, new_paid)
+        return
+    if turn_charge.status is billing.TurnChargeStatus.INSUFFICIENT:
+        await effective_message.reply_text(
+            f"您的硬币不足，无法与雾萌娘连接，需要{total_coin_cost}个硬币。试试通过 /lottery 抽奖吧！\n"
+            f"You don't have enough coins (need {total_coin_cost}), I don't want to talk to you. "
+            f"Try using /lottery to get some coins!")
+        return
+    user_permission = turn_charge.permission
+    user_info_raw = turn_charge.info
+    user_coins = turn_charge.balance_total
+    user_plan = process_user.resolve_user_plan(user_id, turn_charge.balance_paid)
 
     user_impression_raw = await process_user.async_get_user_impression(user_id)
     impression_display = (user_impression_raw or "").strip()

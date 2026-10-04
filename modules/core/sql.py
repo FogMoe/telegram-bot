@@ -16,6 +16,27 @@ connect = db.connect
 transaction = db.transaction
 run_sync = db.run_sync
 
+MYSQL_ERROR_DUPLICATE_KEY = 1062
+MYSQL_ERROR_DEADLOCK = 1213
+
+
+def mysql_error_code(exc: BaseException) -> int | None:
+    """从驱动异常（或 SQLAlchemy 包装后的异常）里取出 MySQL 错误码，取不到返回 None。"""
+    original = getattr(exc, "orig", None) or exc
+    args = getattr(original, "args", ())
+    if args and isinstance(args[0], int):
+        return args[0]
+    return None
+
+
+def is_duplicate_key_error(exc: BaseException) -> bool:
+    return mysql_error_code(exc) == MYSQL_ERROR_DUPLICATE_KEY
+
+
+def is_deadlock_error(exc: BaseException) -> bool:
+    """死锁时 MySQL 已回滚整个事务，调用方只能重跑整个事务。"""
+    return mysql_error_code(exc) == MYSQL_ERROR_DEADLOCK
+
 
 @overload
 async def fetch_one(

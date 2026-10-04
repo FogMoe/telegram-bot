@@ -15,7 +15,7 @@ from alembic import op
 from modules.core.migration_support import add_columns_if_missing, index_exists
 
 revision = "0020_job_claims"
-down_revision = "0018_privacy_retention"
+down_revision = "0019_coin_ledger"
 branch_labels = None
 depends_on = None
 

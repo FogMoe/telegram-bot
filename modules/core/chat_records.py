@@ -4,15 +4,44 @@
 彼此互调紧密，拆得更细只会让调用链更难跟。
 """
 
+import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
 from . import config
 from .litellm_models import litellm_model_name
 from .prompt_utils import format_metadata_attrs, xml_escape
-from .sql import execute, fetch_all, fetch_one, transaction
+from .sql import (
+    execute,
+    fetch_all,
+    fetch_one,
+    is_deadlock_error,
+    is_duplicate_key_error,
+    transaction,
+)
 from .token_estimator import estimate_conversation_tokens
+
+# 同一会话的并发首次写入：两个事务都 `SELECT ... FOR UPDATE` 读到「没有这一行」（间隙锁彼此兼容），
+# 再各自 INSERT，其中一个会撞上唯一键（1062）或被判为死锁牺牲者（1213，整个事务已回滚）。
+# 重跑整个事务时那一行已经存在，走的是 UPDATE 分支。
+FIRST_WRITE_ATTEMPTS = 4
+FIRST_WRITE_BACKOFF_SECONDS = 0.05
+
+
+async def _retry_first_write[T](operation: Callable[[], Awaitable[T]]) -> T:
+    """`operation` 是一个完整的事务；首次写入竞争（死锁或唯一键冲突）时有限次重跑。"""
+    attempt = 1
+    while True:
+        try:
+            return await operation()
+        except Exception as exc:
+            retryable = is_deadlock_error(exc) or is_duplicate_key_error(exc)
+            if attempt >= FIRST_WRITE_ATTEMPTS or not retryable:
+                raise
+            await asyncio.sleep(FIRST_WRITE_BACKOFF_SECONDS * attempt)
+            attempt += 1
 
 PERMANENT_RECORDS_KEEP = 100
 COIN_SERVICE_STATE_SUSPENDED = "suspended"
@@ -452,6 +481,25 @@ async def insert_chat_records(
     allow_zero_balance: bool = False,
     suspend_if_zero: bool = False,
 ):
+    return await _retry_first_write(
+        lambda: _insert_chat_records_once(
+            conversation_id,
+            records,
+            system_prompt_extra=system_prompt_extra,
+            allow_zero_balance=allow_zero_balance,
+            suspend_if_zero=suspend_if_zero,
+        )
+    )
+
+
+async def _insert_chat_records_once(
+    conversation_id,
+    records: list[tuple[str, Any]],
+    *,
+    system_prompt_extra: str | None = None,
+    allow_zero_balance: bool = False,
+    suspend_if_zero: bool = False,
+):
     snapshot_created = False
     warning_level = None
     archived_records: list[dict] = []
@@ -654,6 +702,15 @@ async def archive_chat_and_start_new_session(
     records: list[tuple[str, Any]],
 ) -> tuple[int, list[dict]]:
     """把当前会话及收尾记录整体归档，并把活跃历史重置为 new_session。"""
+    return await _retry_first_write(
+        lambda: _archive_chat_and_start_new_session_once(conversation_id, records)
+    )
+
+
+async def _archive_chat_and_start_new_session_once(
+    conversation_id: int,
+    records: list[tuple[str, Any]],
+) -> tuple[int, list[dict]]:
     final_entries = [_coerce_message_entry(role, content) for role, content in records]
 
     async with transaction() as connection:
