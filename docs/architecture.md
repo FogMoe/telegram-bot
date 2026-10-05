@@ -117,7 +117,8 @@ app → core
 `TurnServices` 的其余字段是历史读写、投递与媒体识别；测试用 `dataclasses.replace(default_services(), ...)`
 替换需要的部分，不起 bot、不连数据库，见 `tests/test_conversation_turn.py`。
 
-提前结束的状态里，`MEDIA_TOO_LARGE`、`MEDIA_FAILED` 与 `DEADLINE_EXCEEDED`（准备阶段截止时间到期）发生在扣费之后，这一轮不退款。
+提前结束的状态里，`MEDIA_TOO_LARGE`、`MEDIA_FAILED` 与 `DEADLINE_EXCEEDED`（模型之前的阶段截止时间到期）发生在扣费之后，这一轮不退款。
+这是已确认的产品规则：扣费之后的失败与超时都不退款。
 模型阶段与投递阶段到期不是提前结束：回复固定的超时提示，历史与收尾照常进行，同样不退款。
 
 ## 经济与游戏的分层

@@ -126,7 +126,7 @@ PTB handler（concurrent_updates 有界）
 要点：
 
 - **扣费规则不变。** 扣费发生在 `charge` 阶段，截止时间不触发退款，也没有补偿式回滚；扣费、历史写入的顺序与语义都与改造前一致。
-  是否对「扣费之后超时」的轮次退款是产品决定，本次没有实现，见文末「建议」。
+  这是已确认的产品规则（2026-10）：扣费之后失败或超时的轮次不退款。
 - **历史保持配对。** 工具阶段到期时，`tool_runner` 给这一轮里每个还没有结果的 `tool_call` 补一条结果：
   正在运行的那个是 `{"error": "interrupted", "outcome": "unknown", ...}`（可能已经完成，不要假定失败、不要重复执行），
   后面没来得及运行的是 `{"error": "not_executed", ...}`。这样 assistant 的 `tool_calls` 与 `tool` 结果一一配对，
@@ -290,8 +290,5 @@ python scripts/bench_runtime.py --max-concurrent 256 --max-queued 1024 --queue-w
 
 ## 建议（未实现）
 
-- **扣费之后超时是否退款。** 当前规则是不退（与媒体识别失败一致）。如果产品希望退，需要在 `charge` 的 `op_key` 体系下增加按轮次的退款操作
-  （`balance.refund` 引用本轮的 `op_key`），并区分「模型阶段还没有任何可见输出就超时」与「已经发出部分内容再超时」；
-  改动面在 `conversation/billing.py` 与 `turn.py`，需要单独确认规则。
 - **后台任务的容量。** 定时任务、空闲跟进与摘要目前各自限流、不经过全局槽位。如果它们在高峰时与用户对话争用 provider 额度，
   再考虑给它们一个低优先级的共享槽位。先用 `provider.calls` 与 `turn.run_seconds` 的指标确认是否真的有争用。

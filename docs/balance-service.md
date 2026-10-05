@@ -137,7 +137,7 @@ await balance.credit(connection, user_id, 50, op_key=balance.make_op_key("topup"
 | 商店：刮刮乐、欢乐彩 | 扣款 `shop:<scratch\|huanle>:<callback query id>`，开奖 `…:win`，保底 `…:bonus` | `shop_<item>` / `shop_<item>_win` / `shop_<item>_bonus` |
 | 质押 | `stake:<chat_id>:<message_id>` | `stake` |
 | 质押领奖（用户入账与奖池扣减共用同一个 op_key，分属两张账本） | `stake_collect:<uid>:<stake_time>:<领奖窗口起点>` | `stake_reward` |
-| 质押赎回：本金 / 顺带结算的回报（回报同样两张账本共用） | `stake_withdraw:<uid>:<stake_time>` / `stake_withdraw_reward:<uid>:<stake_time>` | `stake_withdraw` / `stake_reward` |
+| 质押赎回：本金（一律按免费币返还）/ 顺带结算的回报（回报同样两张账本共用） | `stake_withdraw:<uid>:<stake_time>` / `stake_withdraw_reward:<uid>:<stake_time>` | `stake_withdraw` / `stake_reward` |
 | `/give`：发送者扣款（本金加手续费）/ 收款人入账 | `give:<chat_id>:<message_id>` / `give:<chat_id>:<message_id>:recv` | `give` / `give_received` |
 | `/bribe` | `bribe:<chat_id>:<message_id>` | `bribe` |
 | BTC 预测：下注 / 中奖 / 过期退款 | `btc:<uid>:<开始时间>:bet` / `:win` / `:expired`（见下） | `btc_bet` / `btc_win` / `btc_expired`，退款 op_key 为 `refund:btc:<uid>:<开始时间>:bet` |

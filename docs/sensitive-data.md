@@ -62,6 +62,8 @@ Web 密码用 Argon2id（`argon2-cffi` 的 `PasswordHasher` 默认参数）哈�
 `hash_password`、`verify_password` 和 `password_needs_rehash`。无盐 SHA-256 的旧哈希不再被识别，
 `verify_password` 对它们一律返回 `False`。
 
+Web 登录系统已经废弃，但 `/webpassword` 命令保留（已确认的产品决定），只在私聊里可用。
+
 ## 运维注意事项
 
 - 脱敏只作用于新写入的内容。升级前产生的日志文件（`logs/` 下的当前文件与轮转备份）
