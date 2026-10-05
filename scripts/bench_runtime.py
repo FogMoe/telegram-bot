@@ -70,9 +70,15 @@ class Bench:
         self.args = args
 
         import litellm
+
         from fogmoe_telegram_bot.core import config
         from fogmoe_telegram_bot.features.ai import litellm_client, router, tool_runner
-        from fogmoe_telegram_bot.features.conversation import handlers, lifecycle, turn, turn_services
+        from fogmoe_telegram_bot.features.conversation import (
+            handlers,
+            lifecycle,
+            turn,
+            turn_services,
+        )
 
         self.litellm = litellm
         self.config = config
@@ -160,7 +166,10 @@ class Bench:
             return None
 
         from fogmoe_telegram_bot.features.conversation import billing
-        from fogmoe_telegram_bot.features.conversation.turn_types import HistoryInsert, UserStateRecord
+        from fogmoe_telegram_bot.features.conversation.turn_types import (
+            HistoryInsert,
+            UserStateRecord,
+        )
 
         async def charge(user_id, messages):
             await asyncio.sleep(db_s)

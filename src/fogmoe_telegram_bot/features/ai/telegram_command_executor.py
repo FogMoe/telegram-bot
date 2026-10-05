@@ -8,7 +8,7 @@ import hashlib
 import itertools
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from threading import Lock
 from typing import Any
 
@@ -106,7 +106,7 @@ def _build_synthetic_update(
             "message": {
                 # 复用真实请求的消息 ID，群聊中的 reply_text 才能引用存在的消息。
                 "message_id": source_message_id,
-                "date": int(datetime.now(timezone.utc).timestamp()),
+                "date": int(datetime.now(UTC).timestamp()),
                 "chat": chat_data,
                 "from": user_data,
                 "text": command_text,
@@ -131,7 +131,7 @@ def delegated_operation_id(command_text: str, request_context: dict[str, object]
     """
     edit_stamp = request_context.get("message_edit_stamp") or ""
     normalized = " ".join(command_text.split())
-    return hashlib.sha256(f"{edit_stamp}|{normalized}".encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(f"{edit_stamp}|{normalized}".encode()).hexdigest()[:16]
 
 
 def _execution_error(command: str, *, already_visible: bool = False) -> str:
@@ -171,7 +171,7 @@ async def _execute_on_telegram_loop(
                     application.process_update(update),
                     timeout=COMMAND_EXECUTION_TIMEOUT_SECONDS,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return TelegramCommandOutcome(
                     success=False,
                     context_messages=tuple(events),

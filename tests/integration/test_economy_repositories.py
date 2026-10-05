@@ -19,7 +19,9 @@ from fogmoe_telegram_bot.features.economy.repositories import lottery as lottery
 from fogmoe_telegram_bot.features.economy.repositories import shop as shop_repository
 from fogmoe_telegram_bot.features.economy.repositories import stake as stake_repository
 from fogmoe_telegram_bot.features.economy.repositories import tasks as tasks_repository
-from fogmoe_telegram_bot.features.economy.repositories import web_passwords as web_password_repository
+from fogmoe_telegram_bot.features.economy.repositories import (
+    web_passwords as web_password_repository,
+)
 
 
 def in_transaction(work):

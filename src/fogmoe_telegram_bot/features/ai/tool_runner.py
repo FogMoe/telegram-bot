@@ -5,7 +5,8 @@ import inspect
 import json
 import logging
 import time
-from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Optional
+from collections.abc import Callable, Iterable, Mapping
+from typing import Any, NamedTuple
 
 from pydantic import ValidationError
 
@@ -14,16 +15,16 @@ from fogmoe_telegram_bot.core.deadline import Deadline, DeadlineExceeded
 from fogmoe_telegram_bot.core.redaction import describe_exception, log_exception, redact_text
 
 from .errors import is_retryable_completion_error
-from .tools import OPENAI_TOOLS, AI_TOOL_ARG_MODELS, AI_TOOL_HANDLERS
-from .tools.dispatch import is_inline_tool
-from .prompts import compose_system_prompt
 from .litellm_client import create_chat_completion
+from .prompts import compose_system_prompt
+from .tools import AI_TOOL_ARG_MODELS, AI_TOOL_HANDLERS, OPENAI_TOOLS
+from .tools.dispatch import is_inline_tool
 from .types import (
     MEDIA_DELIVERY_KEY,
     MEDIA_DELIVERY_UNKNOWN,
+    TOOL_CONTEXT_MESSAGES_KEY,
     AIResponse,
     PartialAIResponseError,
-    TOOL_CONTEXT_MESSAGES_KEY,
     ToolLog,
     TurnDeadlineError,
     VisibleContentHandler,
@@ -58,11 +59,11 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
-def _drop_none_items(value: Dict[str, Any]) -> Dict[str, Any]:
+def _drop_none_items(value: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item is not None}
 
 
-def _has_tool_result(tool_logs: List[ToolLog]) -> bool:
+def _has_tool_result(tool_logs: list[ToolLog]) -> bool:
     return any(log.get("type") == "tool_result" for log in tool_logs)
 
 
@@ -70,12 +71,12 @@ async def _create_chat_completion_with_post_tool_retries(
     provider: str,
     model: str,
     *,
-    messages: List[Dict[str, Any]],
-    request_kwargs: Dict[str, Any],
+    messages: list[dict[str, Any]],
+    request_kwargs: dict[str, Any],
     provider_name: str,
-    tool_logs: List[ToolLog],
-    tools: Optional[List[Dict[str, Any]]] = None,
-    tool_choice: str | Dict[str, object] | None = None,
+    tool_logs: list[ToolLog],
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, object] | None = None,
 ):
     call_kwargs = dict(request_kwargs)
     if tools is not None:
@@ -133,7 +134,7 @@ def _format_validation_errors(exc: ValidationError) -> list[dict[str, str]]:
 def _validate_tool_args(
     function_name: str,
     raw_args: Any,
-) -> tuple[Dict[str, Any], Dict[str, Any] | None]:
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     model = AI_TOOL_ARG_MODELS.get(function_name)
     if model is None:
         if isinstance(raw_args, dict):
@@ -155,7 +156,7 @@ def _validate_tool_args(
     ), None
 
 
-def _tool_call_to_plain(tool_call: Any) -> Dict[str, Any]:
+def _tool_call_to_plain(tool_call: Any) -> dict[str, Any]:
     """Normalize a tool call object into a plain JSON-serializable dict."""
     if isinstance(tool_call, dict):
         plain_call = _json_safe(dict(tool_call))
@@ -169,7 +170,7 @@ def _tool_call_to_plain(tool_call: Any) -> Dict[str, Any]:
                 plain_function["arguments"] = "{}"
             plain_call["function"] = plain_function
         return _drop_none_items(plain_call)
-    plain_call: Dict[str, Any] | None = None
+    plain_call: dict[str, Any] | None = None
 
     for attr in ("model_dump", "dict"):
         if hasattr(tool_call, attr):
@@ -237,7 +238,7 @@ def _tool_call_to_plain(tool_call: Any) -> Dict[str, Any]:
     return _drop_none_items(plain_call)
 
 
-def _message_to_plain_dict(message: Any) -> Dict[str, Any]:
+def _message_to_plain_dict(message: Any) -> dict[str, Any]:
     if isinstance(message, dict):
         return _drop_none_items(_json_safe(dict(message)))
 
@@ -254,7 +255,7 @@ def _message_to_plain_dict(message: Any) -> Dict[str, Any]:
                 if isinstance(dumped, dict):
                     return _drop_none_items(_json_safe(dumped))
 
-    result: Dict[str, Any] = {}
+    result: dict[str, Any] = {}
     for key in (
         "role",
         "content",
@@ -273,8 +274,8 @@ def _assistant_message_to_plain(
     assistant_message: Any,
     *,
     content: str,
-    tool_calls: List[Dict[str, Any]],
-) -> Dict[str, Any]:
+    tool_calls: list[dict[str, Any]],
+) -> dict[str, Any]:
     message = _message_to_plain_dict(assistant_message)
     message["role"] = "assistant"
     message["content"] = content
@@ -285,7 +286,7 @@ def _assistant_message_to_plain(
     return message
 
 
-def _normalise_tool_calls(tool_calls: Optional[List[Any]]) -> List[Dict[str, Any]]:
+def _normalise_tool_calls(tool_calls: list[Any] | None) -> list[dict[str, Any]]:
     if not tool_calls:
         return []
     return [_tool_call_to_plain(call) for call in tool_calls]
@@ -296,7 +297,7 @@ def _resolve_assistant_message(
     *,
     provider: str,
     provider_name: str,
-) -> tuple[Any, Optional[List[Any]]]:
+) -> tuple[Any, list[Any] | None]:
     choices = response.choices
     assistant_message = choices[0].message
     raw_tool_calls = getattr(assistant_message, "tool_calls", None)
@@ -322,10 +323,10 @@ def _resolve_assistant_message(
 
 def _public_tool_result(
     tool_name: str,
-    tool_result: Dict[str, Any],
+    tool_result: dict[str, Any],
     *,
     media_sent: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if isinstance(tool_result, dict) and TOOL_CONTEXT_MESSAGES_KEY in tool_result:
         tool_result = dict(tool_result)
         tool_result.pop(TOOL_CONTEXT_MESSAGES_KEY, None)
@@ -381,7 +382,7 @@ def _context_messages_from_tool_result(tool_result: Any) -> list[dict[str, str]]
     ]
 
 
-def _log_generate_image_result(provider_name: str, tool_result: Dict[str, Any]) -> None:
+def _log_generate_image_result(provider_name: str, tool_result: dict[str, Any]) -> None:
     if not isinstance(tool_result, dict):
         logging.warning("%s generate_image returned non-dict result: %s", provider_name, type(tool_result).__name__)
         return
@@ -417,7 +418,7 @@ def _log_generate_image_result(provider_name: str, tool_result: Dict[str, Any]) 
     )
 
 
-def _log_generate_voice_result(provider_name: str, tool_result: Dict[str, Any]) -> None:
+def _log_generate_voice_result(provider_name: str, tool_result: dict[str, Any]) -> None:
     if not isinstance(tool_result, dict):
         logging.warning("%s generate_voice returned non-dict result: %s", provider_name, type(tool_result).__name__)
         return
@@ -458,9 +459,9 @@ def _deadline_guard(deadline: Deadline | None) -> Any:
 
 async def _send_media_result_immediately(
     *,
-    visible_content_handler: Optional[VisibleContentHandler],
+    visible_content_handler: VisibleContentHandler | None,
     tool_name: str,
-    tool_result: Dict[str, Any],
+    tool_result: dict[str, Any],
     provider_name: str,
     deadline: Deadline | None = None,
 ) -> list[Any]:
@@ -558,8 +559,8 @@ async def _emit_visible_content(
 async def _return_final_text_response(
     *,
     content_text: str,
-    tool_logs: List[ToolLog],
-    visible_content_handler: Optional[VisibleContentHandler],
+    tool_logs: list[ToolLog],
+    visible_content_handler: VisibleContentHandler | None,
     provider_name: str,
     deadline: Deadline | None = None,
 ) -> AIResponse:
@@ -606,7 +607,7 @@ def _handler_is_async(handler: Callable[..., Any]) -> bool:
     )
 
 
-async def _call_tool(handler: Callable[..., Any], arguments: Dict[str, Any]) -> Any:
+async def _call_tool(handler: Callable[..., Any], arguments: dict[str, Any]) -> Any:
     """async 工具直接 await；同步工具走有界的线程适配器（并发有上限，保留 contextvars）；
     标记为内联的纯内存工具直接调用。见 `tools/dispatch.py`。"""
     if _handler_is_async(handler):
@@ -633,12 +634,12 @@ def _record_tool_metrics(label: str, started: float, result: Any) -> None:
 
 
 def _close_interrupted_round(
-    tool_logs: List[ToolLog],
-    tool_calls: List[Dict[str, Any]],
+    tool_logs: list[ToolLog],
+    tool_calls: list[dict[str, Any]],
     interrupted_index: int,
     skip_set: set[str],
     reason: str,
-    round_context_messages: List[Dict[str, str]],
+    round_context_messages: list[dict[str, str]],
     *,
     running: bool = True,
 ) -> None:
@@ -671,8 +672,8 @@ def _close_interrupted_round(
 
 
 def _log_round_context(
-    tool_logs: List[ToolLog],
-    round_context_messages: List[Dict[str, str]],
+    tool_logs: list[ToolLog],
+    round_context_messages: list[dict[str, str]],
 ) -> None:
     for context_message in round_context_messages:
         tool_logs.append({
@@ -684,12 +685,12 @@ def _log_round_context(
 
 def _tool_result_log(
     function_name: str,
-    function_args: Dict[str, Any],
+    function_args: dict[str, Any],
     tool_call_id: Any,
-    tool_result: Dict[str, Any],
-    internal_tool_result: Dict[str, Any],
+    tool_result: dict[str, Any],
+    internal_tool_result: dict[str, Any],
     *,
-    sent_media_messages: List[Any],
+    sent_media_messages: list[Any],
     media_delivery_unknown: bool = False,
 ) -> ToolLog:
     tool_log_entry: ToolLog = {
@@ -726,19 +727,19 @@ _MEDIA_DELIVERY_UNKNOWN_MESSAGES = {
 async def run_tool_loop(
     provider: str,
     model: str,
-    messages: List[Dict[str, Any]],
-    tool_context: Optional[Dict[str, object]] = None,
+    messages: list[dict[str, Any]],
+    tool_context: dict[str, object] | None = None,
     *,
     provider_name: str = "AI",
-    tool_choice: str | Dict[str, object] = "auto",
+    tool_choice: str | dict[str, object] = "auto",
     context_hard_limit_ratio: float | None = None,
     max_iterations: int = 10,
     completion_timeout: int | None = None,
-    skip_tools: Optional[Iterable[str]] = None,
-    completion_kwargs: Optional[Dict[str, Any]] = None,
-    visible_content_handler: Optional[VisibleContentHandler] = None,
-    tool_definitions: Optional[List[Dict[str, Any]]] = None,
-    tool_handlers: Optional[Mapping[str, Callable[..., Any]]] = None,
+    skip_tools: Iterable[str] | None = None,
+    completion_kwargs: dict[str, Any] | None = None,
+    visible_content_handler: VisibleContentHandler | None = None,
+    tool_definitions: list[dict[str, Any]] | None = None,
+    tool_handlers: Mapping[str, Callable[..., Any]] | None = None,
     system_prompt_override: str | None = None,
     deadline: Deadline | None = None,
 ) -> AIResponse:
@@ -768,7 +769,7 @@ async def run_tool_loop(
     ]
     filtered_messages.insert(0, system_message)
 
-    tool_logs: List[ToolLog] = []
+    tool_logs: list[ToolLog] = []
     skip_set = set(skip_tools or [])
     request_timeout: float | None = (
         config.AI_CHAT_COMPLETION_TIMEOUT_SECONDS
@@ -778,8 +779,8 @@ async def run_tool_loop(
 
     async def complete(
         *,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: str | Dict[str, object] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, object] | None = None,
     ) -> Any:
         """一次模型调用：整轮截止时间到期就取消，单次超时收紧到剩余时间之内。"""
         call_timeout = request_timeout if deadline is None else deadline.clip(request_timeout)

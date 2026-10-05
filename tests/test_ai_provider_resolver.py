@@ -1,4 +1,5 @@
 import asyncio
+
 import pytest
 
 from fogmoe_telegram_bot.core import config

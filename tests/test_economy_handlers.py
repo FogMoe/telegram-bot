@@ -10,7 +10,16 @@ from types import SimpleNamespace
 import pytest
 
 from fogmoe_telegram_bot.core import user_records
-from fogmoe_telegram_bot.features.economy import bribe, charge_coin, checkin, coins, ref, stake_coin, task, web_password
+from fogmoe_telegram_bot.features.economy import (
+    bribe,
+    charge_coin,
+    checkin,
+    coins,
+    ref,
+    stake_coin,
+    task,
+    web_password,
+)
 from fogmoe_telegram_bot.features.economy.operations import bribe as bribe_operations
 from fogmoe_telegram_bot.features.economy.operations import charge as charge_operations
 from fogmoe_telegram_bot.features.economy.operations import checkin as checkin_operations

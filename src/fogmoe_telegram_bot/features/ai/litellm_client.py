@@ -1,19 +1,20 @@
 import logging
 import time
-from typing import Any, Dict, List
+from typing import Any
 
 import litellm
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 
 from fogmoe_telegram_bot.core import ai_providers, blocking, config, metrics
 from fogmoe_telegram_bot.core.litellm_models import litellm_model_name, normalize_provider
+
 from .context_budget import enforce_messages_context_budget
 from .errors import is_timeout_error
 from .litellm_message_sanitizer import sanitize_messages_for_provider
 from .litellm_provider_config import provider_params
 
 
-def _provider_params(provider: str) -> Dict[str, Any]:
+def _provider_params(provider: str) -> dict[str, Any]:
     return provider_params(provider)
 
 
@@ -31,7 +32,7 @@ class _GeminiNativeAsyncHTTPHandler(AsyncHTTPHandler):
 def _needs_native_http_compat(
     spec: ai_providers.ProviderSpec,
     wire: ai_providers.WireProtocol,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
 ) -> bool:
     """自定义的原生端点只认 `systemInstruction`，请求里带 system 消息时需要改名的 HTTP 客户端。"""
     api_base_key = spec.credentials.api_base
@@ -45,7 +46,7 @@ def _needs_native_http_compat(
 async def create_chat_completion(
     provider: str,
     model: str,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     *,
     context_hard_limit_ratio: float | None = None,
     **kwargs: Any,
@@ -71,7 +72,7 @@ async def create_chat_completion(
     spec = ai_providers.require(litellm_provider)
     wire = spec.wire_protocol_for()
 
-    def prepare_messages() -> List[Dict[str, Any]]:
+    def prepare_messages() -> list[dict[str, Any]]:
         # token 计数是 CPU 密集的同步计算（长历史可达上百毫秒），放在适配器线程里，不占事件循环。
         budget_result = enforce_messages_context_budget(
             messages,

@@ -4,12 +4,13 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
 from fogmoe_telegram_bot.core import config, http_sessions
 from fogmoe_telegram_bot.core.redaction import describe_exception, log_exception, redact_text
+
 from .context import get_tool_request_context
 from .filename_utils import prompt_to_filename
 
@@ -40,7 +41,7 @@ class VoiceGenerationSizeError(ValueError):
     pass
 
 
-def _get_request_user_id() -> Optional[int]:
+def _get_request_user_id() -> int | None:
     context = get_tool_request_context()
     user_id = context.get("user_id")
     try:
@@ -59,7 +60,7 @@ def _prune_voice_rate_limits(now: float) -> None:
             _VOICE_RATE_LIMITS.pop(user_id, None)
 
 
-def _reserve_voice_generation(user_id: int) -> tuple[bool, Optional[float], Optional[int]]:
+def _reserve_voice_generation(user_id: int) -> tuple[bool, float | None, int | None]:
     now = time.time()
     cutoff = now - VOICE_RATE_LIMIT_WINDOW_SECONDS
 
@@ -83,7 +84,7 @@ def _reserve_voice_generation(user_id: int) -> tuple[bool, Optional[float], Opti
         return True, now, None
 
 
-def _release_voice_generation(user_id: int, reservation_timestamp: Optional[float]) -> None:
+def _release_voice_generation(user_id: int, reservation_timestamp: float | None) -> None:
     if reservation_timestamp is None:
         return
 
@@ -331,7 +332,7 @@ def _request_and_save_generated_voice(
 
 
 def generate_voice_tool(
-    text: Optional[str] = None,
+    text: str | None = None,
     **kwargs,
 ) -> dict[str, Any]:
     """Generate one spoken audio clip and return a temporary audio reference."""
@@ -401,7 +402,7 @@ def generate_voice_tool(
             _release_voice_generation(user_id, reservation_timestamp)
 
 
-def pop_generated_audio_file(audio_id: str) -> Optional[str]:
+def pop_generated_audio_file(audio_id: str) -> str | None:
     if not audio_id:
         return None
     with _GENERATED_AUDIO_LOCK:

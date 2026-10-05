@@ -1,9 +1,11 @@
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
-from telegram.constants import ChatMemberStatus
-from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler, MessageHandler, filters
-from fogmoe_telegram_bot.core import mysql_connection
 from datetime import datetime, timedelta
+
+from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ChatMemberStatus
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+
+from fogmoe_telegram_bot.core import mysql_connection
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.redaction import report_error
 
@@ -51,20 +53,20 @@ async def check_bot_permissions(bot, chat_id):
     bot_member = await bot.get_chat_member(chat_id, bot.id)
     if (bot_member.status not in ["administrator", "creator"]):
         return False, "机器人需要管理员权限"
-    
+
     # 检查具体权限
     required_permissions = {
         "can_restrict_members": "限制成员",
     }
-    
+
     missing_permissions = []
     for perm, desc in required_permissions.items():
         if not getattr(bot_member, perm, False):
             missing_permissions.append(desc)
-    
+
     if missing_permissions:
         return False, f"机器人缺少以下权限: {', '.join(missing_permissions)}"
-    
+
     return True, "权限检查通过"
 
 # /verify 命令：开启新成员验证功能
@@ -115,29 +117,29 @@ async def verify_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 新成员加入事件处理
 async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    
+
     # 从数据库直接查询群组是否开启了验证功能
     record = await mysql_connection.fetch_one(
         "SELECT group_id FROM group_verification WHERE group_id = %s",
         (chat_id,),
     )
     verification_enabled = record is not None
-    
+
     # 若未开启验证功能，则直接返回
     if not verification_enabled:
         return
-    
+
     # 同步内存状态变量（可选，为了保持一致性）
     context.chat_data["enable_verify"] = True
-    
+
     for new_member in update.message.new_chat_members:
         user_id = new_member.id
-        
+
         # 跳过机器人验证
         if new_member.is_bot:
             print(f"跳过机器人 {new_member.full_name}({user_id}) 的验证")
             continue
-            
+
         try:
             # 禁言新成员（禁止发送消息）
             await context.bot.restrict_chat_member(

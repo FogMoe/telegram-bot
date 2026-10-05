@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -41,7 +41,7 @@ def _message(**changes):
         "contact": None,
         "dice": None,
         "reply_to_message": None,
-        "date": datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc),
+        "date": datetime(2026, 7, 29, 12, 0, tzinfo=UTC),
         "message_id": 88,
     }
     values.update(changes)

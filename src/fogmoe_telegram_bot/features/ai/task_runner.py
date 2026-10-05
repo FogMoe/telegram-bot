@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List
+from typing import Any
 
 from .context_budget import ContextBudgetExceededError
 from .litellm_client import create_chat_completion
@@ -21,13 +21,13 @@ def _provider_fallback_model(provider: str, task: str) -> str | None:
     return provider_fallback_model_for_task(provider, task)
 
 
-def _provider_completion_kwargs(provider: str, task: str) -> Dict[str, Any]:
+def _provider_completion_kwargs(provider: str, task: str) -> dict[str, Any]:
     return completion_kwargs_for_task(provider, task)
 
 
 async def run_ai_task(
     task: str,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     **kwargs: Any,
 ) -> Any:
     last_error: Exception | None = None

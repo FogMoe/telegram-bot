@@ -1,6 +1,6 @@
 """由 provider 声明表构造 LiteLLM 的认证与端点参数。"""
 
-from typing import Any, Dict
+from typing import Any
 
 from fogmoe_telegram_bot.core import ai_providers
 from fogmoe_telegram_bot.core.ai_providers import BaseUrlStyle
@@ -71,7 +71,7 @@ def _api_base(
     return raw or None
 
 
-def provider_params(provider: str, settings: Any = None) -> Dict[str, Any]:
+def provider_params(provider: str, settings: Any = None) -> dict[str, Any]:
     spec = ai_providers.require(provider)
     credentials = spec.credentials
     read = ai_providers.read_setting
@@ -89,7 +89,7 @@ def provider_params(provider: str, settings: Any = None) -> Dict[str, Any]:
     ):
         raise RuntimeError(f"{spec.openai_compatible_flag} requires {credentials.api_base}.")
 
-    params: Dict[str, Any] = {"api_key": api_key}
+    params: dict[str, Any] = {"api_key": api_key}
     api_base = _api_base(spec, settings)
     if credentials.base_required and not api_base:
         raise _missing(credentials.api_base or "api_base")

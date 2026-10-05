@@ -7,7 +7,15 @@ import pytest
 from telegram.ext import Application
 
 from fogmoe_telegram_bot.app import bot_app, runtime_lifecycle
-from fogmoe_telegram_bot.core import admission, background, blocking, config, db, http_sessions, metrics
+from fogmoe_telegram_bot.core import (
+    admission,
+    background,
+    blocking,
+    config,
+    db,
+    http_sessions,
+    metrics,
+)
 from fogmoe_telegram_bot.core.admission import AdmissionSettings, Overloaded, OverloadReason
 from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline, DeadlineExceeded
 from fogmoe_telegram_bot.core.telegram_history import HistoryTrackingExtBot

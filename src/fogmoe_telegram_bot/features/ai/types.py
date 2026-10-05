@@ -1,7 +1,8 @@
-from typing import Any, Awaitable, Callable, Dict, List, Tuple
+from collections.abc import Awaitable, Callable
+from typing import Any
 
-ToolLog = Dict[str, Any]
-AIResponse = Tuple[str, List[ToolLog]]
+ToolLog = dict[str, Any]
+AIResponse = tuple[str, list[ToolLog]]
 # 向用户即时发送一段可见内容；在事件循环里直接 await，返回实际发出的文本。
 VisibleContentHandler = Callable[[str], Awaitable[str | None]]
 
@@ -20,7 +21,7 @@ MEDIA_DELIVERY_KEY = "media_delivery"
 MEDIA_DELIVERY_UNKNOWN = "unknown"
 
 
-def media_delivery_attempted(tool_log: Dict[str, Any]) -> bool:
+def media_delivery_attempted(tool_log: dict[str, Any]) -> bool:
     """这条工具结果的媒体已经即时发送过，或发送时被打断（是否送达未知）：投递阶段都不能再发一次。"""
     return bool(tool_log.get("media_sent")) or (
         tool_log.get(MEDIA_DELIVERY_KEY) == MEDIA_DELIVERY_UNKNOWN
@@ -35,7 +36,7 @@ class JobAbortedError(BaseException):
     """
 
 
-def raise_if_aborted(tool_context: Dict[str, Any] | None) -> None:
+def raise_if_aborted(tool_context: dict[str, Any] | None) -> None:
     event = (tool_context or {}).get(ABORT_EVENT_KEY)
     is_set = getattr(event, "is_set", None)
     if callable(is_set) and is_set():
@@ -43,7 +44,7 @@ def raise_if_aborted(tool_context: Dict[str, Any] | None) -> None:
 
 
 class PartialAIResponseError(Exception):
-    def __init__(self, message: str, tool_logs: List[ToolLog]) -> None:
+    def __init__(self, message: str, tool_logs: list[ToolLog]) -> None:
         super().__init__(message)
         self.tool_logs = list(tool_logs)
 
@@ -56,7 +57,7 @@ class TurnDeadlineError(PartialAIResponseError):
     `phase` 是到期时正在等待的步骤：`model`、`tool`、`delivery`。
     """
 
-    def __init__(self, reason: str, phase: str, tool_logs: List[ToolLog]) -> None:
+    def __init__(self, reason: str, phase: str, tool_logs: list[ToolLog]) -> None:
         super().__init__(f"turn deadline reached during {phase} ({reason})", tool_logs)
         self.reason = reason
         self.phase = phase

@@ -5,10 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from fogmoe_telegram_bot.core.deadline import Deadline
 from fogmoe_telegram_bot.features.ai import chat_provider
 from fogmoe_telegram_bot.features.ai.context_budget import ContextBudgetExceededError
 from fogmoe_telegram_bot.features.ai.errors import SafetyBlockError
-from fogmoe_telegram_bot.core.deadline import Deadline
 from fogmoe_telegram_bot.features.ai.types import PartialAIResponseError, TurnDeadlineError
 
 

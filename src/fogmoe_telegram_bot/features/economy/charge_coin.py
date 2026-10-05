@@ -7,9 +7,11 @@
 import logging
 import re
 from datetime import datetime
-from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
+
 from fogmoe_telegram_bot.core import config, process_user, user_records
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.command_privacy import private_chat_only
@@ -90,7 +92,7 @@ async def charge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """处理充值命令: /charge <卡密>"""
     user_id = update.effective_user.id
     user_name = update.effective_user.username or str(user_id)
-    
+
     # 检查用户是否已注册
     if not await process_user.async_user_exists(user_id):
         await update.message.reply_text(
@@ -98,7 +100,7 @@ async def charge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "Please register first using the /me command before charging."
         )
         return
-    
+
     # 检查是否提供了卡密参数
     if not context.args or len(context.args) != 1:
         await update.message.reply_text(
@@ -109,10 +111,10 @@ async def charge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "Usage: /charge <code>"
         )
         return
-    
+
     # 获取卡密
     redemption_code = context.args[0].strip()
-    
+
     # UUID格式预检查，避免明显错误的格式直接提交数据库
     if not is_valid_uuid(redemption_code):
         await update.message.reply_text(
@@ -123,17 +125,17 @@ async def charge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
         )
         return
-    
+
     # 记录充值尝试
     masked_code = mask_secret(redemption_code)
     logging.info(f"用户 {user_name}(ID:{user_id}) 尝试使用卡密: {masked_code}")
-    
+
     # 发送处理中消息
     processing_msg = await update.message.reply_text(
         "⏳ 正在处理您的充值请求，请稍候...\n"
         "Processing your charge request, please wait..."
     )
-    
+
     # 验证并使用卡密
     redeemed = await charge_operations.redeem_code(user_id, redemption_code)
 
@@ -395,12 +397,12 @@ async def topup_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 async def admin_create_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """管理员命令：创建充值卡密 /create_code <数量> <金币>"""
     user_id = update.effective_user.id
-    
+
     # 验证管理员权限 - 使用ADMIN_USER_ID常量
     if user_id != config.ADMIN_USER_ID:
         await update.message.reply_text("❌ 您没有足够的权限执行此操作\n您不是管理员")
         return
-    
+
     # 检查参数格式
     if not context.args or len(context.args) != 2:
         await update.message.reply_text(
@@ -408,23 +410,23 @@ async def admin_create_code(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             "例如: /create_code 5 100"
         )
         return
-    
+
     try:
         count = int(context.args[0])
         amount = int(context.args[1])
-        
+
         if count <= 0 or count > 20:
             await update.message.reply_text("⚠️ 生成数量必须在1-20之间")
             return
-        
+
         if amount <= 0 or amount > 10000:
             await update.message.reply_text("⚠️ 金币数量必须在1-10000之间")
             return
-        
+
     except ValueError:
         await update.message.reply_text("⚠️ 参数必须为整数数字")
         return
-    
+
     try:
         generated = await charge_operations.generate_codes(count, amount)
         codes = generated.codes
@@ -438,19 +440,19 @@ async def admin_create_code(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if not codes:
             await update.message.reply_text("❌ 未能生成任何卡密，请稍后再试")
             return
-            
+
         # 生成卡密列表文本
         codes_text = "\n\n".join([f"{i+1}. `{code}` - {amount}金币" for i, code in enumerate(codes)])
-        
+
         await update.message.reply_text(
             f"✅ 成功生成 {len(codes)} 个充值卡密，每个价值 {amount} 金币：\n\n"
             f"{codes_text}\n\n"
             f"💡 提示：请保存这些卡密，它们只会显示一次！"
         )
-        
+
         # 记录操作日志
         logging.info(f"管理员 {update.effective_user.username or user_id} 生成了 {len(codes)} 个价值 {amount} 金币的卡密")
-        
+
     except Exception as e:
         error_ref = log_exception(logger, "生成卡密出错", e)
         await update.message.reply_text(

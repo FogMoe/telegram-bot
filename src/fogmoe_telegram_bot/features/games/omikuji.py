@@ -1,11 +1,13 @@
-import random
 import hashlib
-import time
 import logging
+import random
+import time
 from datetime import date, datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+
 import telegram
-from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
+
 from fogmoe_telegram_bot.core import balance, user_records
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 
@@ -267,24 +269,24 @@ def get_daily_fortune(user_id: int, today: date | None = None) -> str:
     """
     # 获取当前日期（年月日）
     today = (today or datetime.now().date()).strftime("%Y-%m-%d")
-    
+
     # 组合用户ID和日期作为随机种子
     seed = f"{user_id}_{today}"
-    
+
     # 使用哈希函数生成一个确定性的数值
     hash_value = int(hashlib.md5(seed.encode()).hexdigest(), 16)
     random.seed(hash_value)
-    
+
     # 根据权重选择运势
     fortunes = list(FORTUNE_WEIGHTS.keys())
     weights = list(FORTUNE_WEIGHTS.values())
-    
+
     # 选择运势
     fortune = random.choices(fortunes, weights=weights, k=1)[0]
-    
+
     # 重置随机种子
     random.seed()
-    
+
     return fortune
 
 
@@ -374,12 +376,12 @@ async def omikuji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     try:
         user_id = update.effective_user.id
         user_name = update.effective_user.username or update.effective_user.first_name
-        
+
         logger.info(f"用户 {user_id} ({user_name}) 请求抽签")
-        
+
         # 检查用户是否注册
         is_registered = await check_user_registered(user_id)
-        
+
         if not is_registered:
             await update.message.reply_text(
                 "您需要先注册个人信息才能使用御神签功能。\n"
@@ -388,7 +390,7 @@ async def omikuji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 "Please use the /me command to register and then try again!"
             )
             return
-        
+
         # 检查是否存在锁定状态（防止快速多次点击）
         current_time = time.time()
         if user_id in omikuji_locks and omikuji_locks[user_id] > current_time:
@@ -397,10 +399,10 @@ async def omikuji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 "Please don't draw omikuji too frequently, the gods need rest... Try again in a moment."
             )
             return
-        
+
         # 设置3秒锁定
         omikuji_locks[user_id] = current_time + 3
-        
+
         # 检查用户今天是否已经抽过签
         has_drawn, existing_fortune = await get_user_daily_fortune(user_id)
 
@@ -428,13 +430,13 @@ async def omikuji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     "Sorry, there was an error with your fortune record. Please contact admin or try again tomorrow."
                 )
                 return
-                
+
             fortune_info = OMIKUJI_FORTUNES[fortune]
-            
+
             # 准备消息内容 - 使用相同的随机数生成器以确保展示与第一次相同
             seed_value = int(hashlib.md5(f"{user_id}_{datetime.now().strftime('%Y-%m-%d')}".encode()).hexdigest(), 16)
             random_gen = random.Random(seed_value)
-            
+
             # 修改消息格式，避免特殊字符问题
             message = (
                 f"🔮 {user_name}的今日运势 🔮\n\n"
@@ -447,7 +449,7 @@ async def omikuji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 f"您今天已经抽过御神签了。每人每天只能抽取一次，明天再来吧！\n"
                 f"You have already drawn an omikuji today. One draw per person per day, come back tomorrow!"
             )
-            
+
             # 尝试使用Markdown，如果失败则回退到纯文本
             try:
                 await update.message.reply_text(
@@ -458,7 +460,7 @@ async def omikuji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 logger.warning(f"Markdown格式发送失败，切换到纯文本: {e}")
                 await update.message.reply_text(message)
             return
-        
+
         # 今天的运势（已经随扣费一起登记）
         fortune = drawn_fortune
         fortune_info = OMIKUJI_FORTUNES[fortune]
@@ -466,7 +468,7 @@ async def omikuji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # 创建基于用户ID和日期的随机数生成器以确保相同的描述文本
         seed_value = int(hashlib.md5(f"{user_id}_{datetime.now().strftime('%Y-%m-%d')}".encode()).hexdigest(), 16)
         random_gen = random.Random(seed_value)
-        
+
         # 修改新抽签消息格式，避免特殊字符问题
         message = (
             f"🔮 {user_name}的今日运势 🔮\n\n"
@@ -477,19 +479,19 @@ async def omikuji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"事业/学业: {random_gen.choice(fortune_info['career'])}\n\n"
             f"建议: {random_gen.choice(fortune_info['advice'])}"
         )
-        
+
         # 准备按钮
         # 好运势和坏运势的按钮文字不同
         if fortune in ["大吉", "中吉", "小吉"]:
             button_text = "✨ 接受好运 ✨"
         else:
             button_text = "🙏 祈求平安 🙏"
-        
+
         keyboard = [
             [InlineKeyboardButton(button_text, callback_data=f"omikuji_{fortune}_{user_id}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         # 尝试使用Markdown，如果失败则回退到纯文本
         try:
             await update.message.reply_text(
@@ -503,7 +505,7 @@ async def omikuji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 message,
                 reply_markup=reply_markup
             )
-        
+
         logger.info(f"用户 {user_id} 抽签成功，结果: {fortune}")
     except Exception as e:
         logger.error(f"抽签过程中出错: {str(e)}")
@@ -519,25 +521,25 @@ async def omikuji_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     """
     try:
         query = update.callback_query
-        
+
         # 解析回调数据
         try:
             parts = query.data.split("_")
             if len(parts) != 3:
                 raise ValueError("Invalid callback data format")
-                
+
             _, fortune, user_id = parts
             user_id = int(user_id)
         except (ValueError, IndexError) as e:
             logger.error(f"解析回调数据时出错: {str(e)}")
             await query.answer("按钮数据无效，请尝试重新抽签", show_alert=True)
             return
-        
+
         # 检查是否是抽签的用户在点击按钮
         if query.from_user.id != user_id:
             await query.answer("这不是您的御神签，无法进行互动。", show_alert=True)
             return
-        
+
         # 根据运势类型提供不同的回应，修改消息格式
         if fortune in ["大吉", "中吉", "小吉"]:
             await query.answer("好运已经接受，愿它伴随着您！", show_alert=True)

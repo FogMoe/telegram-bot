@@ -1,6 +1,7 @@
 import logging
 import re
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import telegram.error
 
@@ -12,6 +13,7 @@ from fogmoe_telegram_bot.core.telegram_utils import (
     split_ai_reply,
     telegram_error_summary,
 )
+
 from .tools.sticker_tools import choose_sticker_file_id, sticker_exists
 
 AsyncSendFunc = Callable[..., Awaitable[Any]]

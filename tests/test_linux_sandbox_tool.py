@@ -4,7 +4,10 @@ import types
 import pytest
 
 from fogmoe_telegram_bot.features.ai.tools import sandbox_tools
-from fogmoe_telegram_bot.features.ai.tools.context import clear_tool_request_context, set_tool_request_context
+from fogmoe_telegram_bot.features.ai.tools.context import (
+    clear_tool_request_context,
+    set_tool_request_context,
+)
 
 
 class _FakeCommandResult:

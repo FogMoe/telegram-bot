@@ -2,10 +2,11 @@
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
-from io import BytesIO
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from functools import partial
-from typing import Any, Awaitable, Callable, Optional
+from io import BytesIO
+from typing import Any
 
 import telegram.error
 from telegram.constants import ParseMode
@@ -128,7 +129,7 @@ def _context_timestamp(value: Any) -> str | None:
     if isinstance(value, datetime):
         return value.strftime("%Y-%m-%d %H:%M:%S")
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value, timezone.utc).strftime(
+        return datetime.fromtimestamp(value, UTC).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
     return _optional_text(value)
@@ -429,7 +430,7 @@ async def safe_send_markdown(
     *,
     parse_mode: str = ParseMode.MARKDOWN,
     logger: logging.Logger = logging.getLogger(__name__),
-    fallback_send: Optional[AsyncSendFunc] = None,
+    fallback_send: AsyncSendFunc | None = None,
     **kwargs: Any,
 ) -> list[Any]:
     """Send text using Telegram Markdown with graceful fallbacks.

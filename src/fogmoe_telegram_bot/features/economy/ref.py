@@ -4,7 +4,7 @@ import logging
 
 from telegram import Update
 from telegram.constants import ParseMode
-from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from fogmoe_telegram_bot.core import config
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
@@ -22,17 +22,17 @@ async def process_start_with_args(update: Update, context: ContextTypes.DEFAULT_
     """处理带参数的/start命令，用于推广系统的邀请链接"""
     user_id = update.effective_user.id
     user_name = update.effective_user.full_name
-    
+
     # 获取启动参数（邀请人ID）
     try:
         referrer_id = int(context.args[0])
     except (ValueError, IndexError):
         return False
-    
+
     # 检查是否是自己邀请自己
     if user_id == referrer_id:
         return False
-    
+
     # 添加邀请记录，并给双方发放奖励
     outcome = await invitation_operations.add_invitation_record(
         user_id,
@@ -51,7 +51,7 @@ async def process_start_with_args(update: Update, context: ContextTypes.DEFAULT_
         try:
             # 获取邀请人的用户名
             referrer_name = await invitation_operations.get_user_name(referrer_id)
-            
+
             # 获取邀请人的Telegram用户名（如果可能）
             try:
                 # 尝试直接获取用户信息
@@ -69,7 +69,7 @@ async def process_start_with_args(update: Update, context: ContextTypes.DEFAULT_
                     referrer_display = f"{referrer_name} (`{referrer_id}`)"
                 else:
                     referrer_display = f"`{referrer_id}`"
-            
+
             # 向被邀请用户发送欢迎消息，使用Markdown格式
             await update.message.reply_text(
                 f"{reward_message}\n"
@@ -100,11 +100,11 @@ async def ref_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # 获取当前用户的邀请人信息
             referrer = await invitation_operations.get_referrer(user_id)
-            
+
             # 生成邀请链接
             bot_username = (await context.bot.get_me()).username
             invite_link = f"https://t.me/{bot_username}?start={user_id}"
-            
+
             # 准备回复消息，使用Markdown格式
             message = (
                 f"🎉 *您的邀请信息* 🎉\n\n"
@@ -115,7 +115,7 @@ async def ref_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # 如果有邀请人，显示邀请人信息
             if referrer:
                 message += f"👤 您的邀请人：*{referrer.name}* (`{referrer.user_id}`)\n\n"
-            
+
             message += (
                 f"您的邀请码：`{user_id}`\n\n"  # 使用代码块格式，方便用户点击复制
                 f"🔗 您的专属邀请链接：\n`{invite_link}`\n\n"  # 使用代码块格式，方便用户点击复制
@@ -129,32 +129,32 @@ async def ref_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"如需手动绑定邀请人，请使用命令：`/ref <邀请码>`\n"
                 f"例如：`/ref {user_id}`"  # 使用用户自己的ID作为示例
             )
-            
+
             # 如果有邀请的用户，列出前10个
             if summary.invited:
                 message += "\n\n🙋‍♂️ *最近邀请的用户（最多显示10个）：*\n"
                 for idx, invited in enumerate(summary.invited[:10], 1):
                     message += f"{idx}. {invited.name} (`{invited.user_id}`) - {invited.invited_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            
+
             await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
         except Exception as e:
             logger.error(f"Error in ref_command (show info): {e}")
             await update.message.reply_text("获取邀请信息时出错，请稍后再试。")
         return
-    
+
     # 有参数，执行绑定邀请人功能
     try:
         referrer_id = int(context.args[0])
     except ValueError:
         await update.message.reply_text("邀请码必须是数字！")
         return
-    
+
     try:
         # 检查是否是自己邀请自己
         if update.effective_user.id == referrer_id:
             await update.message.reply_text("您不能邀请自己哦！")
             return
-        
+
         # 检查用户是否已经被邀请过
         user_id = update.effective_user.id
         current_referrer = await invitation_operations.get_referrer(user_id)
@@ -195,7 +195,7 @@ async def ref_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理推广系统的按钮回调"""
     query = update.callback_query
     await query.answer()
-    
+
     # 因为移除了复制邀请链接按钮，此函数可以保留以备将来扩展，但目前不做任何操作
     pass
 
@@ -204,6 +204,6 @@ def setup_ref_handlers(application):
     """设置推广系统的命令处理器"""
     # 只添加ref命令，移除myref命令
     application.add_handler(CommandHandler("ref", ref_command))
-    
+
     # 保留回调处理器以备将来扩展
     application.add_handler(CallbackQueryHandler(ref_callback, pattern=r"^ref_"))

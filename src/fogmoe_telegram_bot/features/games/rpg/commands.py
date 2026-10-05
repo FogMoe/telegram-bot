@@ -1,27 +1,30 @@
 import logging
-from telegram import Update
-from telegram.ext import CommandHandler, ContextTypes
-from telegram.constants import ParseMode
 
+from telegram import Update
+from telegram.constants import ParseMode
+from telegram.ext import CommandHandler, ContextTypes
+
+from fogmoe_telegram_bot.core import process_user
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 
-# 导入自定义模块
-from .utils import get_exp_for_level, get_level_from_exp, RPG_HELP_TEXT
-from .characters import get_character, create_character, set_battle_allowance, heal_character
 from .battles import initiate_battle
-from .monsters import show_monsters, initiate_monster_battle
+from .characters import create_character, get_character, heal_character, set_battle_allowance
 from .equipment import (
-    get_player_equipment, 
-    equip_item, 
-    unequip_item, 
+    INVENTORY_CAPACITY,
+    equip_item,
     equipment_type_to_chinese,
-    get_player_inventory,
     get_item_details,
-    use_item,
+    get_player_equipment,
+    get_player_inventory,
     item_type_to_chinese,
-    INVENTORY_CAPACITY
+    unequip_item,
+    use_item,
 )
-from fogmoe_telegram_bot.core import process_user
+from .monsters import initiate_monster_battle, show_monsters
+
+# 导入自定义模块
+from .utils import RPG_HELP_TEXT, get_exp_for_level, get_level_from_exp
+
 
 # --- 主命令处理 ---
 @cooldown  # 应用命令冷却
@@ -35,20 +38,20 @@ async def rpg_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     username = user.username or user.first_name
     args = context.args
 
-    # --- 处理子命令 --- 
+    # --- 处理子命令 ---
     if args:
         command = args[0].lower()
-        
+
         # 帮助命令
         if command == "help":
             await update.message.reply_text(RPG_HELP_TEXT, parse_mode=ParseMode.MARKDOWN)
             return
-        
+
         # 怪物列表命令
         elif command == "monsters":
             await show_monsters(update, context)
             return
-            
+
         # 战斗命令
         elif command == "battle":
             if len(args) > 1:
@@ -75,7 +78,7 @@ async def rpg_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                     "`/rpg battle on|off` - 开启/关闭被挑战功能"
                 , parse_mode=ParseMode.MARKDOWN)
                 return
-                
+
         # 治疗命令
         elif command == "heal":
             await heal_character(update, context)
@@ -85,8 +88,8 @@ async def rpg_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         elif command == "equipment" or command == "equip":
             await handle_equipment_command(update, context)
             return
-            
-        # 道具命令 
+
+        # 道具命令
         elif command == "inventory" or command == "item":
             await handle_inventory_command(update, context)
             return
@@ -96,7 +99,7 @@ async def rpg_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text(f"未知命令: {command}\n请使用 `/rpg help` 查看可用命令。", parse_mode=ParseMode.MARKDOWN)
             return
 
-    # --- 默认行为: 显示角色状态 --- 
+    # --- 默认行为: 显示角色状态 ---
     character_data = await get_character(user_id)
 
     if not character_data:
@@ -141,7 +144,7 @@ async def rpg_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         # 2.2 如果有角色，显示当前状态
         current_level = get_level_from_exp(character_data['experience'])
-        
+
         exp_next_level = get_exp_for_level(current_level)
         exp_prev_level = get_exp_for_level(current_level - 1)
         exp_current_in_level = character_data['experience'] - exp_prev_level
@@ -161,7 +164,7 @@ async def rpg_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"🤺 允许被挑战: {'✅' if character_data['allow_battle'] else '❌'}\n\n"
             f"**📝 常用指令**\n"
             f"`/rpg help` - 查看所有指令"
-        ,parse_mode=ParseMode.MARKDOWN) 
+        ,parse_mode=ParseMode.MARKDOWN)
 
 # --- 装备系统命令处理 ---
 async def handle_equipment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -169,27 +172,27 @@ async def handle_equipment_command(update: Update, context: ContextTypes.DEFAULT
     user = update.effective_user
     user_id = user.id
     args = context.args[1:] if len(context.args) > 1 else []
-    
+
     # 检查玩家是否有角色
     character = await get_character(user_id)
     if not character:
         await update.message.reply_text("你还没有创建角色，请先使用 `/rpg` 创建。", parse_mode=ParseMode.MARKDOWN)
         return
-        
+
     # 无参数时显示当前装备状态
     if not args:
         equipment = await get_player_equipment(user_id)
         if not equipment:
             await update.message.reply_text("获取装备信息失败，请稍后再试。")
             return
-            
+
         # 构建装备信息文本
         equipped_text = []
         for slot in ['weapon', 'offhand', 'armor', 'treasure1', 'treasure2']:
             slot_name = equipment_type_to_chinese(slot)
             item_name = equipment[f"{slot}_name"] or "无"
             equipped_text.append(f"{slot_name}: {item_name}")
-            
+
         message = (
             f"**📦 {user.username or user.first_name} 的装备**\n\n" +
             "\n".join(equipped_text) +
@@ -198,14 +201,14 @@ async def handle_equipment_command(update: Update, context: ContextTypes.DEFAULT
         )
         await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
         return
-        
+
     # 装备物品
     if len(args) == 1 and args[0].isdigit():
         equipment_id = int(args[0])
         success, message = await equip_item(user_id, equipment_id)
         await update.message.reply_text(message)
         return
-        
+
     # 卸下装备
     if len(args) >= 1 and args[0] == "unequip":
         if len(args) < 2:
@@ -218,16 +221,16 @@ async def handle_equipment_command(update: Update, context: ContextTypes.DEFAULT
                 "`/rpg equip unequip treasure2` - 卸下宝物2"
             , parse_mode=ParseMode.MARKDOWN)
             return
-            
+
         equipment_type = args[1].lower()
         if equipment_type not in ['weapon', 'offhand', 'armor', 'treasure1', 'treasure2']:
             await update.message.reply_text(f"不支持的装备类型: {equipment_type}")
             return
-            
+
         success, message = await unequip_item(user_id, equipment_type)
         await update.message.reply_text(message)
         return
-        
+
     # 未识别的装备命令
     await update.message.reply_text(
         "装备命令用法：\n" +
@@ -242,30 +245,30 @@ async def handle_inventory_command(update: Update, context: ContextTypes.DEFAULT
     user = update.effective_user
     user_id = user.id
     args = context.args[1:] if len(context.args) > 1 else []
-    
+
     # 检查玩家是否有角色
     character = await get_character(user_id)
     if not character:
         await update.message.reply_text("你还没有创建角色，请先使用 `/rpg` 创建。", parse_mode=ParseMode.MARKDOWN)
         return
-        
+
     # 无参数时显示当前道具
     if not args:
         inventory = await get_player_inventory(user_id)
-        
+
         if not inventory:
             await update.message.reply_text(
                 f"**🎒 {user.username or user.first_name} 的道具栏 (0/{INVENTORY_CAPACITY})**\n\n" +
                 "道具栏空空如也..."
             , parse_mode=ParseMode.MARKDOWN)
             return
-            
+
         # 构建道具信息文本
         items_text = []
         for item in inventory:
             item_type = item_type_to_chinese(item['type'])
             items_text.append(f"[{item['id']}] {item['name']} x{item['quantity']} ({item_type})")
-            
+
         message = (
             f"**🎒 {user.username or user.first_name} 的道具栏 ({len(inventory)}/{INVENTORY_CAPACITY})**\n\n" +
             "\n".join(items_text) +
@@ -273,27 +276,27 @@ async def handle_inventory_command(update: Update, context: ContextTypes.DEFAULT
         )
         await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
         return
-        
+
     # 使用道具
     if len(args) >= 2 and args[0] == "use":
         if not args[1].isdigit():
             await update.message.reply_text("道具ID必须是数字。")
             return
-            
+
         item_id = int(args[1])
         success, message = await use_item(user_id, item_id)
         await update.message.reply_text(message)
         return
-        
+
     # 查看道具详情
     if len(args) >= 1 and args[0].isdigit():
         item_id = int(args[0])
         item = await get_item_details(item_id)
-        
+
         if not item:
             await update.message.reply_text(f"找不到ID为 {item_id} 的道具。")
             return
-            
+
         message = (
             f"**🔍 道具详情: {item['name']}**\n\n" +
             f"类型: {item_type_to_chinese(item['type'])}\n" +
@@ -304,14 +307,14 @@ async def handle_inventory_command(update: Update, context: ContextTypes.DEFAULT
         )
         await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
         return
-        
+
     # 未识别的道具命令
     await update.message.reply_text(
         "道具命令用法：\n" +
         "`/rpg item` - 查看道具栏\n" +
         "`/rpg item [道具ID]` - 查看道具详情\n" +
         "`/rpg item use [道具ID]` - 使用道具"
-    , parse_mode=ParseMode.MARKDOWN) 
+    , parse_mode=ParseMode.MARKDOWN)
 
 
 def setup_rpg_handlers(application) -> None:

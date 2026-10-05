@@ -1,8 +1,7 @@
 import logging
 import random
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from fogmoe_telegram_bot.core import balance, mysql_connection, process_user
 
@@ -105,12 +104,12 @@ async def grant_kindness(recipient_id: int, amount: int) -> KindnessOutcome | No
 
 def _iso(moment: datetime) -> str:
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
+        moment = moment.replace(tzinfo=UTC)
     return moment.isoformat(sep=" ")
 
 
 async def kindness_gift_tool(
-    amount: Optional[int] = None,
+    amount: int | None = None,
     **kwargs,
 ) -> dict:
     context = get_tool_request_context()

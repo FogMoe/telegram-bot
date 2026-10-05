@@ -1,7 +1,7 @@
 """AI 对话扣费：扣费失败不进入本轮、不贡献奖池；同一 update 重放不重复扣费（真实 MySQL）。"""
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -277,7 +277,7 @@ class TestConversationTurn:
 
     def test_a_new_message_and_an_edit_are_both_charged(self, app_database, conversation):
         seed_user(app_database, 1, free=5)
-        edited_at = datetime(2026, 10, 5, 8, 0, 0, tzinfo=timezone.utc)
+        edited_at = datetime(2026, 10, 5, 8, 0, 0, tzinfo=UTC)
 
         run(drive(chat_update(1, 50), conversation))
         run(drive(chat_update(1, 50, edited_at=edited_at), conversation))

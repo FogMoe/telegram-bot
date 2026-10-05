@@ -7,11 +7,12 @@ import hashlib
 import logging
 import re
 from collections import OrderedDict
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AbstractAsyncContextManager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Iterator
+from datetime import UTC, datetime
+from typing import Any
 
 from telegram import Update
 from telegram.ext import ExtBot
@@ -104,7 +105,7 @@ _PENDING_FLUSH_LOCKS: dict[int, asyncio.Lock] = {}
 def _format_timestamp(value: Any) -> str:
     if value and hasattr(value, "strftime"):
         return value.strftime("%Y-%m-%d %H:%M:%S")
-    return str(value or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
+    return str(value or datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"))
 
 
 def _format_xml_attrs(attrs: list[tuple[str, str | None]]) -> str:
@@ -282,7 +283,7 @@ def format_callback_event(update: Update) -> str | None:
         ("type", "user_event"),
         ("chat_type", getattr(chat, "type", None)),
         ("title", getattr(chat, "title", None)),
-        ("timestamp", _format_timestamp(datetime.now(timezone.utc))),
+        ("timestamp", _format_timestamp(datetime.now(UTC))),
         ("user", f"@{user.username or 'EmptyUsername'}"),
         ("origin", "telegram"),
         ("event", "callback_query"),

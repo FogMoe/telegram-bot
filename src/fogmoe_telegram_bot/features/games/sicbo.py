@@ -1,13 +1,11 @@
 import asyncio
 import logging
 import random
-from typing import Dict, List, Tuple
 from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import (
-    CommandHandler, CallbackQueryHandler, ContextTypes
-)
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
+
 from fogmoe_telegram_bot.core import balance, process_user
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 
@@ -15,8 +13,8 @@ from fogmoe_telegram_bot.core.command_cooldown import cooldown
 logger = logging.getLogger(__name__)
 
 # 定义游戏状态字典和锁
-active_games: Dict[int, Dict] = {}  # 储存活跃游戏: {user_id: game_state}
-game_locks: Dict[int, asyncio.Lock] = {}  # 用户游戏锁: {user_id: asyncio.Lock()}
+active_games: dict[int, dict] = {}  # 储存活跃游戏: {user_id: game_state}
+game_locks: dict[int, asyncio.Lock] = {}  # 用户游戏锁: {user_id: asyncio.Lock()}
 
 # 可选的下注金额
 BET_AMOUNTS = (1, 5, 10, 20, 50, 100)
@@ -182,7 +180,7 @@ def get_bet_amount_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 # 掷骰子并计算结果
-def roll_dice() -> Tuple[List[int], Dict]:
+def roll_dice() -> tuple[list[int], dict]:
     dice = [random.randint(1, 6) for _ in range(3)]
     total = sum(dice)
     results = {
@@ -220,7 +218,7 @@ def end_game(user_id: int) -> None:
 async def sicbo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     user_lock = get_user_lock(user_id)
-    
+
     try:
         if not user_lock.locked():
             async with user_lock:
@@ -267,19 +265,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     callback_data = query.data
     user_id = query.from_user.id
-    
+
     if not callback_data.startswith("sicbo_"):
         await query.answer("无效的操作")
         return
-    
+
     query_parts = callback_data.split('_')
     game_user_id = int(query_parts[1])
     action = '_'.join(query_parts[2:])
-    
+
     if game_user_id != user_id:
         await query.answer("这不是您的游戏，请使用 /sicbo 开始自己的游戏", show_alert=True)
         return
-    
+
     if user_id not in active_games:
         await query.answer("游戏已结束或已被取消")
         await query.edit_message_text("游戏已结束或已被取消。请使用 /sicbo 开始新游戏。")
@@ -386,12 +384,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         f"您下注: *{bet_name}* {bet_amount} 金币\n"
                         f"{'恭喜您赢了! 🎉' if win else '很遗憾，您输了! 😔'}\n"
                     )
-                    
+
                     if win:
                         result_message += f"赔率: {payout_rate}:1\n获得: {winnings} 金币"
                     else:
                         result_message += f"您损失了 {bet_amount} 金币"
-                        
+
                     result_message += f"\n\n当前余额: {new_balance} 金币\n\n如需再玩一次，请使用 /sicbo 命令。"
                     await query.edit_message_text(result_message, parse_mode="Markdown")
                     end_game(user_id)

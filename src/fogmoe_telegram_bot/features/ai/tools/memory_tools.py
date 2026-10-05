@@ -1,6 +1,5 @@
 import json
 import re
-from typing import Optional
 
 from fogmoe_telegram_bot.core import config, group_chat_history, mysql_connection
 
@@ -89,8 +88,8 @@ async def fetch_group_context_tool(
 
 
 async def fetch_permanent_summaries_tool(
-    start: Optional[int] = None,
-    end: Optional[int] = None,
+    start: int | None = None,
+    end: int | None = None,
     **kwargs,
 ) -> dict:
     """Retrieve current user's permanent conversation summaries."""
@@ -157,8 +156,8 @@ async def fetch_permanent_summaries_tool(
 
 async def search_permanent_records_tool(
     pattern: str,
-    limit: Optional[int] = None,
-    oldest_first: Optional[bool] = None,
+    limit: int | None = None,
+    oldest_first: bool | None = None,
     **kwargs,
 ) -> dict:
     """Search user's permanent conversation snapshots with a regex pattern."""
@@ -342,7 +341,7 @@ async def search_permanent_records_tool(
     return response
 
 
-async def read_diary_page_tool(page: Optional[int] = None) -> dict:
+async def read_diary_page_tool(page: int | None = None) -> dict:
     """Read one diary page through the recap agent's read-only interface."""
     context = get_tool_request_context()
     user_id = context.get("user_id")
@@ -378,14 +377,14 @@ async def read_diary_page_tool(page: Optional[int] = None) -> dict:
 
 
 async def user_diary_tool(
-    action: Optional[str] = None,
-    content: Optional[str] = None,
-    start_line: Optional[int] = None,
-    end_line: Optional[int] = None,
-    line_numbers: Optional[bool] = None,
-    page: Optional[int] = None,
-    title: Optional[str] = None,
-    summary: Optional[str] = None,
+    action: str | None = None,
+    content: str | None = None,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    line_numbers: bool | None = None,
+    page: int | None = None,
+    title: str | None = None,
+    summary: str | None = None,
     **kwargs,
 ) -> dict:
     """Read or update the internal diary for the current user."""

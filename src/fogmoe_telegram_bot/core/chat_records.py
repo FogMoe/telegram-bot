@@ -7,7 +7,7 @@
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from . import ai_providers, config
@@ -335,7 +335,7 @@ def _build_history_state_event(
 ) -> dict:
     attrs = [
         ("type", "system"),
-        ("timestamp", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")),
+        ("timestamp", datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")),
         ("origin", "history_state"),
         ("history_state", state),
     ]
@@ -368,7 +368,7 @@ def _build_coin_service_state_event(state: str) -> dict:
 
     attrs = [
         ("type", "system"),
-        ("timestamp", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")),
+        ("timestamp", datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")),
         ("origin", "coin_service"),
         ("service_state", state),
         ("reason", reason),

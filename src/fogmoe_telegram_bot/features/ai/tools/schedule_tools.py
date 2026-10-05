@@ -1,5 +1,4 @@
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
 from fogmoe_telegram_bot.core import mysql_connection
 
@@ -10,7 +9,7 @@ MAX_TOTAL_SCHEDULES = 12
 RECURRENCE_UNITS = {"none", "minute", "hour", "day"}
 
 
-def _normalise_recurrence_unit(value: Optional[str]) -> str:
+def _normalise_recurrence_unit(value: str | None) -> str:
     raw = (value or "none").strip().lower()
     aliases = {
         "": "none",
@@ -29,7 +28,7 @@ def _normalise_recurrence_unit(value: Optional[str]) -> str:
     return aliases.get(raw, raw)
 
 
-def _recurrence_delta(unit: str, interval: int) -> Optional[timedelta]:
+def _recurrence_delta(unit: str, interval: int) -> timedelta | None:
     if unit == "minute":
         return timedelta(minutes=interval)
     if unit == "hour":
@@ -39,14 +38,14 @@ def _recurrence_delta(unit: str, interval: int) -> Optional[timedelta]:
     return None
 
 
-def _default_first_run_at(unit: str, interval: int) -> Optional[datetime]:
+def _default_first_run_at(unit: str, interval: int) -> datetime | None:
     delta = _recurrence_delta(unit, interval)
     if delta is None:
         return None
     return datetime.utcnow() + delta
 
 
-def _parse_timestamp_utc(value: str | None) -> Optional[datetime]:
+def _parse_timestamp_utc(value: str | None) -> datetime | None:
     if not value:
         return None
 
@@ -70,15 +69,15 @@ def _parse_timestamp_utc(value: str | None) -> Optional[datetime]:
             return None
 
     if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        dt = dt.astimezone(UTC).replace(tzinfo=None)
     return dt
 
 
-def _format_timestamp_utc(value: Optional[datetime]) -> Optional[str]:
+def _format_timestamp_utc(value: datetime | None) -> str | None:
     if not value:
         return None
     if value.tzinfo is not None:
-        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        value = value.astimezone(UTC).replace(tzinfo=None)
     return value.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -86,13 +85,13 @@ async def _create_or_replace_schedule(
     user_id: int,
     run_at: datetime,
     trigger_reason: str,
-    context_text: Optional[str],
+    context_text: str | None,
     instruction_text: str,
     recurrence_unit: str,
     recurrence_interval: int,
-) -> tuple[Optional[int], Optional[datetime], bool, Optional[str]]:
+) -> tuple[int | None, datetime | None, bool, str | None]:
     replaced = False
-    blocked_reason: Optional[str] = None
+    blocked_reason: str | None = None
     async with mysql_connection.transaction() as connection:
         pending_row = await mysql_connection.fetch_one(
             "SELECT COUNT(*) FROM ai_schedules WHERE user_id = %s AND status = 'pending'",
@@ -180,14 +179,14 @@ async def _create_or_replace_schedule(
 
 
 async def schedule_ai_message_tool(
-    action: Optional[str] = None,
-    timestamp_utc: Optional[str] = None,
-    recurrence_unit: Optional[str] = None,
-    recurrence_interval: Optional[int] = None,
-    trigger_reason: Optional[str] = None,
-    context: Optional[str] = None,
-    instruction: Optional[str] = None,
-    schedule_id: Optional[int] = None,
+    action: str | None = None,
+    timestamp_utc: str | None = None,
+    recurrence_unit: str | None = None,
+    recurrence_interval: int | None = None,
+    trigger_reason: str | None = None,
+    context: str | None = None,
+    instruction: str | None = None,
+    schedule_id: int | None = None,
     **kwargs,
 ) -> dict:
     request_context = get_tool_request_context()

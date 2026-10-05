@@ -1,11 +1,13 @@
 import logging
 import os
-from telegram import Update
-from telegram.ext import ContextTypes, CommandHandler
-from sqlalchemy.exc import SQLAlchemyError
-from fogmoe_telegram_bot.core import config, mysql_connection
 import tempfile
-from fogmoe_telegram_bot.core.command_cooldown import cooldown # 导入冷却装饰器
+
+from sqlalchemy.exc import SQLAlchemyError
+from telegram import Update
+from telegram.ext import CommandHandler, ContextTypes
+
+from fogmoe_telegram_bot.core import config, mysql_connection
+from fogmoe_telegram_bot.core.command_cooldown import cooldown  # 导入冷却装饰器
 from fogmoe_telegram_bot.core.redaction import report_error
 
 # 定义开发者命令处理函数
@@ -13,12 +15,12 @@ from fogmoe_telegram_bot.core.redaction import report_error
 @cooldown # 添加冷却装饰器
 async def get_bot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """显示机器人当前服务的部分统计信息和群组ID列表"""
-    
+
     # 检查使用者是否为管理员
     if update.effective_user.id != config.ADMIN_USER_ID: # ADMIN_USER_ID
         await update.message.reply_text("您没有权限执行此操作")
         return
-    
+
     try:
         user_row = await mysql_connection.fetch_one(
             "SELECT COUNT(*) as count FROM user",
@@ -83,13 +85,13 @@ async def get_bot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         recent_users = await mysql_connection.fetch_all(
             """
             SELECT id, name
-            FROM user 
-            ORDER BY id DESC 
+            FROM user
+            ORDER BY id DESC
             LIMIT 10
             """,
             mapping=True,
         )
-        
+
         # --- 构建统计信息消息 ---
         stats_message = "🤖 *机器人统计信息*\n\n"
         stats_message += f"👤 总用户数: {user_count}\n"
@@ -97,7 +99,7 @@ async def get_bot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats_message += f"✅ 启用验证群组: {verify_group_count}\n"
         stats_message += f"🛡️ 启用垃圾控制群组: {spam_group_count}\n"
         stats_message += f"📈 配置图表群组: {chart_group_count}\n\n"
-        
+
         # 添加最近用户信息
         stats_message += "*最近的用户 (按ID排序，最多10个):*\n"
         if recent_users:
@@ -131,7 +133,7 @@ async def get_bot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("发送统计文件时出错。")
         else:
            await update.message.reply_text(stats_message, parse_mode='Markdown')
-        
+
     except SQLAlchemyError as db_err:
         notice = report_error(logging.getLogger(__name__), "数据库查询出错", db_err)
         await update.message.reply_text(f"数据库查询出错，详情已记录在日志中。\n{notice}")
@@ -142,34 +144,34 @@ async def get_bot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @cooldown # 添加冷却装饰器
 async def view_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """显示机器人最近的日志"""
-    
+
     # 检查使用者是否为管理员
     if update.effective_user.id != config.ADMIN_USER_ID:  # ADMIN_USER_ID
         await update.message.reply_text("您没有权限执行此操作")
         return
-    
+
     try:
         # 获取日志行数参数，默认为50行
         lines = 50
         if context.args and context.args[0].isdigit():
             lines = min(int(context.args[0]), 200)  # 限制最多显示200行
-        
+
         # 读取日志文件的最后N行
         log_path = config.LOG_FILE_PATH
         if not os.path.exists(log_path):
             await update.message.reply_text("日志文件不存在")
             return
-        
+
         # 读取最后N行日志
-        with open(log_path, 'r', encoding='utf-8') as f:
+        with open(log_path, encoding='utf-8') as f:
             log_lines = f.readlines()
             last_logs = log_lines[-lines:] if len(log_lines) > lines else log_lines
-        
+
         # 构建日志消息
         logs_message = f"📋 *最近{len(last_logs)}行日志*\n\n```\n"
         logs_message += ''.join(last_logs)
         logs_message += "\n```"
-        
+
         # 如果日志太长，分段发送或发文件
         if len(logs_message) > 4000:
             await update.message.reply_text("日志内容过长，将以文件形式发送")
@@ -185,7 +187,7 @@ async def view_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("发送日志文件时出错。")
         else:
             await update.message.reply_text(logs_message, parse_mode='Markdown')
-            
+
     except Exception as e:
         notice = report_error(logging.getLogger(__name__), "获取日志出错", e)
         await update.message.reply_text(f"获取日志出错，详情已记录在日志中。\n{notice}")

@@ -27,11 +27,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from alembic import command
 from alembic.config import Config
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
+
+from alembic import command
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 

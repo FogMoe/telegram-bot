@@ -1,6 +1,5 @@
 import logging
 import time
-from typing import Dict, Optional
 
 from fogmoe_telegram_bot.core import ai_providers, metrics
 from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline
@@ -8,14 +7,14 @@ from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline
 from .chat_capabilities import chat_model_for_service, chat_service_supports_vision
 from .chat_provider import run_chat_provider
 from .context_budget import ContextBudgetExceededError
+from .errors import SafetyBlockError, is_timeout_error
 from .message_content import messages_have_images, strip_image_content
 from .provider_resolver import get_provider_order_for_task
 from .tools import (
-    clear_tool_request_context,
     cleanup_linux_sandbox_async,
+    clear_tool_request_context,
     set_tool_request_context,
 )
-from .errors import SafetyBlockError, is_timeout_error
 from .types import (
     AIResponse,
     PartialAIResponseError,
@@ -145,8 +144,8 @@ async def _call_service_with_context(
     service_name: str,
     messages,
     user_id: int,
-    tool_context: Optional[Dict[str, object]],
-    visible_content_handler: Optional[VisibleContentHandler],
+    tool_context: dict[str, object] | None,
+    visible_content_handler: VisibleContentHandler | None,
     deadline: Deadline | None = None,
 ) -> AIResponse:
     request_context = dict(tool_context or {})
@@ -169,7 +168,7 @@ async def _call_service_with_context(
 
 
 def _visible_content_was_sent(
-    visible_content_handler: Optional[VisibleContentHandler],
+    visible_content_handler: VisibleContentHandler | None,
 ) -> bool:
     if visible_content_handler is None:
         return False
@@ -203,7 +202,7 @@ def _visible_content_was_sent(
 
 
 def _visible_content_events(
-    visible_content_handler: Optional[VisibleContentHandler],
+    visible_content_handler: VisibleContentHandler | None,
 ) -> list[dict]:
     if visible_content_handler is None:
         return []
@@ -252,7 +251,7 @@ def _messages_for_service(
 def _deadline_response(
     exc: TurnDeadlineError,
     service_name: str,
-    visible_content_handler: Optional[VisibleContentHandler],
+    visible_content_handler: VisibleContentHandler | None,
 ) -> AIResponse:
     """整轮截止时间到期（或进程停止）：保留已有的工具日志，回复固定的提示文案。
 
@@ -280,8 +279,8 @@ def _deadline_response(
 async def _try_ai_services(
     messages,
     user_id: int,
-    tool_context: Optional[Dict[str, object]] = None,
-    visible_content_handler: Optional[VisibleContentHandler] = None,
+    tool_context: dict[str, object] | None = None,
+    visible_content_handler: VisibleContentHandler | None = None,
     text_fallback_messages=None,
     deadline: Deadline | None = None,
 ) -> tuple[AIResponse | None, Exception | None]:
@@ -384,9 +383,9 @@ async def _try_ai_services(
 async def get_ai_response(
     messages,
     user_id: int,
-    tool_context: Optional[Dict[str, object]] = None,
+    tool_context: dict[str, object] | None = None,
     text_fallback_messages=None,
-    visible_content_handler: Optional[VisibleContentHandler] = None,
+    visible_content_handler: VisibleContentHandler | None = None,
     deadline: Deadline | None = None,
 ) -> AIResponse:
     """

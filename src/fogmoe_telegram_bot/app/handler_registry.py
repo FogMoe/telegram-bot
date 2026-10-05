@@ -18,7 +18,6 @@ from .handler_groups import (
     register_translation_handlers,
 )
 
-
 REGISTRATION_STEPS = (
     register_error_handlers,
     register_history_handlers,

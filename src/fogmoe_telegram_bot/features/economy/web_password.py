@@ -3,16 +3,17 @@
 命令只允许私聊（`private_chat_only`），密码参数不会出现在日志与历史里，见 docs/sensitive-data.md。
 """
 
+import html
 import logging
 from datetime import datetime
+
 from telegram import Update
 from telegram.constants import ParseMode
-from telegram.ext import ContextTypes, CommandHandler
+from telegram.ext import CommandHandler, ContextTypes
 
 from fogmoe_telegram_bot.core import user_records
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.command_privacy import private_chat_only
-import html
 
 from .operations import web_password as web_password_operations
 from .operations.web_password import SetPasswordStatus
@@ -26,7 +27,7 @@ async def webpassword_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     """处理/webpassword命令"""
     user_id = update.effective_user.id
     username = update.effective_user.username or update.effective_user.first_name
-    
+
     # 检查用户名是否为空
     if not update.effective_user.username:
         await update.message.reply_text(
@@ -36,10 +37,10 @@ async def webpassword_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             "Please set your username in Telegram settings and try again."
         )
         return
-    
+
     # 转义用户名，防止HTML解析错误
     escaped_username = html.escape(username)
-    
+
     # 检查用户是否注册
     if not await user_records.async_check_user_exists(user_id):
         await update.message.reply_text(
@@ -47,7 +48,7 @@ async def webpassword_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             "Please register first using the /me command."
         )
         return
-    
+
     # 检查是否提供了密码参数
     if not context.args:
         # 显示当前密码状态
@@ -70,7 +71,7 @@ async def webpassword_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"使用方法: <code>/webpassword 新密码</code>\n"
                 f"密码要求: 6-20位，包含字母和数字"
             )
-        
+
         try:
             await update.message.reply_text(
                 message,
@@ -83,13 +84,13 @@ async def webpassword_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 parse_mode=None
             )
         return
-    
+
     # 获取密码参数
     password = " ".join(context.args)
-    
+
     # 异步处理设置密码
     result = await web_password_operations.process_set_web_password(user_id, password)
-    
+
     # 构建响应消息
     if result.status is SetPasswordStatus.SAVED:
         action_text = "更新" if result.is_update else "设置"
@@ -111,7 +112,7 @@ async def webpassword_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"• 字符: 仅限字母和数字\n"
             f"• 必须包含至少一个字母和一个数字"
         )
-    
+
     # 发送消息
     try:
         await update.message.reply_text(
@@ -130,6 +131,6 @@ def setup_webpassword_handlers(application):
     """设置Web密码功能的处理器"""
     # 添加命令处理器
     application.add_handler(CommandHandler("webpassword", webpassword_command))
-    
+
     # 日志记录
-    logging.info("Web密码系统已初始化") 
+    logging.info("Web密码系统已初始化")

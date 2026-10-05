@@ -3,12 +3,13 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
-from fogmoe_telegram_bot.core import balance, process_user
-from fogmoe_telegram_bot.core.command_identity import message_identity
 from telegram import Update
-from telegram.ext import ContextTypes, CommandHandler
 from telegram.constants import ParseMode
+from telegram.ext import CommandHandler, ContextTypes
+
+from fogmoe_telegram_bot.core import balance, process_user
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
+from fogmoe_telegram_bot.core.command_identity import message_identity
 from fogmoe_telegram_bot.core.redaction import report_error
 
 from .repositories import swaps as swaps_repository
@@ -121,7 +122,7 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理/swap命令，直接处理兑换流程"""
     user_id = update.effective_user.id
     username = update.effective_user.username or "Unknown"
-    
+
     # 检查用户是否已注册
     if not await process_user.async_user_exists(user_id):
         await update.message.reply_text(
@@ -130,7 +131,7 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-    
+
     # 检查用户是否有待处理的兑换请求
     if await has_pending_swap_request(user_id):
         # 获取现有请求的详细信息
@@ -140,7 +141,7 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-    
+
     # 如果没有参数或参数数量不正确，显示帮助信息
     if not context.args or len(context.args) != 2:
         await update.message.reply_text(
@@ -161,7 +162,7 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-    
+
     # 尝试解析金币数量
     try:
         amount = int(context.args[0])
@@ -179,7 +180,7 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-    
+
     # 验证钱包地址
     wallet_address = context.args[1].strip()
     if not is_valid_solana_address(wallet_address):
@@ -191,7 +192,7 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-    
+
     # 检查用户是否有足够的金币
     user_coins = await process_user.async_get_user_coins(user_id)
     if user_coins < amount:
@@ -203,7 +204,7 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-    
+
     try:
         outcome = await submit_swap_request(
             user_id,

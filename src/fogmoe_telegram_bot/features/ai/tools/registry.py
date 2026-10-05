@@ -1,4 +1,4 @@
-from typing import Callable, Dict
+from collections.abc import Callable
 
 from .advisor_tools import advisor_tool
 from .code_tools import execute_python_code_tool
@@ -12,16 +12,16 @@ from .memory_tools import (
     search_permanent_records_tool,
     user_diary_tool,
 )
-from .schedule_tools import schedule_ai_message_tool
-from .sandbox_tools import linux_sandbox_tool
 from .models import AI_TOOL_ARG_MODELS
+from .sandbox_tools import linux_sandbox_tool
+from .schedule_tools import schedule_ai_message_tool
 from .schemas import OPENAI_TOOLS
 from .sticker_tools import list_available_stickers_tool
 from .telegram_command_tools import execute_telegram_command_tool
 from .user_tools import kindness_gift_tool, update_impression_tool
 from .voice_tools import generate_voice_tool
 
-AI_TOOL_HANDLERS: Dict[str, Callable[..., dict]] = {
+AI_TOOL_HANDLERS: dict[str, Callable[..., dict]] = {
     "get_help_text": get_help_text_tool,
     "execute_telegram_command": execute_telegram_command_tool,
     "read_doc": read_doc_tool,

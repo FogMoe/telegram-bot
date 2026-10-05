@@ -17,7 +17,8 @@ from economy_support import (
 from mysql_support import execute, fetch, fetch_scalar, run
 
 from fogmoe_telegram_bot.core import balance, config, sql
-from fogmoe_telegram_bot.features.economy import ref as ref_handlers, task as task_handlers
+from fogmoe_telegram_bot.features.economy import ref as ref_handlers
+from fogmoe_telegram_bot.features.economy import task as task_handlers
 from fogmoe_telegram_bot.features.economy.operations import invitations as ref
 from fogmoe_telegram_bot.features.economy.operations import task
 from fogmoe_telegram_bot.features.economy.operations.task import TaskClaim

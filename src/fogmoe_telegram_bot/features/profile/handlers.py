@@ -1,8 +1,8 @@
 import logging
 
+from sqlalchemy.exc import SQLAlchemyError
 from telegram import Update
 from telegram.ext import ChatMemberHandler, ContextTypes
-from sqlalchemy.exc import SQLAlchemyError
 
 from fogmoe_telegram_bot.core import balance, config, mysql_connection, process_user
 from fogmoe_telegram_bot.core.command_cooldown import cooldown

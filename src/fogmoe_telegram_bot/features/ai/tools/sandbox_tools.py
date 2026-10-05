@@ -2,7 +2,7 @@ import logging
 import re
 import threading
 import time
-from typing import Any, Optional
+from typing import Any
 
 from fogmoe_telegram_bot.core import blocking, config
 from fogmoe_telegram_bot.core.redaction import describe_exception
@@ -50,7 +50,7 @@ def _truncate_output(value: Any, remaining_chars: int) -> tuple[str, bool]:
     return text[:remaining_chars], True
 
 
-def _clamp_timeout(timeout_seconds: Optional[int]) -> int:
+def _clamp_timeout(timeout_seconds: int | None) -> int:
     try:
         timeout_value = int(timeout_seconds) if timeout_seconds is not None else DEFAULT_COMMAND_TIMEOUT_SECONDS
     except (TypeError, ValueError):
@@ -58,7 +58,7 @@ def _clamp_timeout(timeout_seconds: Optional[int]) -> int:
     return max(1, min(timeout_value, MAX_COMMAND_TIMEOUT_SECONDS))
 
 
-def _normalise_cwd(cwd: Optional[str]) -> str:
+def _normalise_cwd(cwd: str | None) -> str:
     if not isinstance(cwd, str) or not cwd.strip():
         return DEFAULT_CWD
     return cwd.strip()
@@ -79,7 +79,7 @@ def _blocked_result(error: str, reason: str) -> dict:
     }
 
 
-def _context_user_id(context: dict[str, object]) -> Optional[str]:
+def _context_user_id(context: dict[str, object]) -> str | None:
     user_id = context.get("user_id")
     if user_id is None:
         return None
@@ -184,12 +184,12 @@ def _release_user_sandbox(context: dict[str, object]) -> None:
 
 def _result_from_command(
     *,
-    exit_code: Optional[int],
+    exit_code: int | None,
     stdout: Any,
     stderr: Any,
     cwd: str,
     timeout_seconds: int,
-    status: Optional[str] = None,
+    status: str | None = None,
 ) -> dict:
     stdout_text, stdout_truncated = _truncate_output(stdout, MAX_OUTPUT_CHARS)
     stderr_text, stderr_truncated = _truncate_output(
@@ -237,8 +237,8 @@ def _get_or_create_sandbox(context: dict[str, object]):
 
 def linux_sandbox_tool(
     command: str,
-    cwd: Optional[str] = None,
-    timeout_seconds: Optional[int] = None,
+    cwd: str | None = None,
+    timeout_seconds: int | None = None,
     **kwargs,
 ) -> dict:
     """Run a shell command in a temporary E2B Linux sandbox for this request."""

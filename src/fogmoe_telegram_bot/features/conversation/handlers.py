@@ -24,8 +24,8 @@ from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
 from fogmoe_telegram_bot.core import command_cooldown, group_chat_history
 from fogmoe_telegram_bot.core.admission import (
     AdmissionSettings,
-    OverloadReason,
     Overloaded,
+    OverloadReason,
     get_admission,
 )
 from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline, DeadlineExceeded

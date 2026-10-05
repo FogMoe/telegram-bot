@@ -2,10 +2,10 @@ import asyncio
 import logging
 
 import telegram
+from sqlalchemy.exc import SQLAlchemyError
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
-from sqlalchemy.exc import SQLAlchemyError
 
 from fogmoe_telegram_bot.core import config, mysql_connection
 from fogmoe_telegram_bot.core.command_cooldown import cooldown

@@ -1,6 +1,7 @@
 import logging
 import threading
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from .generated_audio_sender import send_generated_audio_from_tool_result
 from .generated_image_sender import send_generated_images_from_tool_result

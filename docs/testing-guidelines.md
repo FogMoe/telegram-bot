@@ -132,10 +132,9 @@ uv run ruff check .
 uv run ruff check . --fix
 ```
 
-当前只启用 `E4` / `E7` / `E9` / `F` 四组规则，盯的是真问题——未使用的 import、
-未定义的名字、语法错误——而不是代码风格。`ruff.toml` 里注释掉了 `I`（import 排序）、
-`W`（空白）、`UP`（语法现代化）、`BLE`（裸 except）、`LOG`（logging 用法）几组，
-想扩展时打开一组、修一组，别一次全开。
+启用的规则见 `ruff.toml` 的 `select`：pyflakes 与基础错误（`E4` / `E7` / `E9` / `F`），
+加上 import 排序（`I`）、空白（`W`）和语法现代化（`UP`），后三组基本都能用 `--fix` 自动修。
+`BLE`（裸 except）、`LOG`（logging 用法）还没打开；想扩展时打开一组、修一组，别一次全开。
 
 `ruff check` 报出的问题应该清零后再提交；确实需要保留的写 `per-file-ignores`，
 不要用零散的 `# noqa`。

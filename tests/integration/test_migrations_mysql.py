@@ -3,12 +3,10 @@
 from argparse import Namespace
 
 import pytest
-from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from legacy_data import first_message_content, seed_duplicate_rows
 from mysql_support import (
-    head_revision,
     PROJECT_ROOT,
     alembic_config,
     current_versions,
@@ -16,8 +14,11 @@ from mysql_support import (
     execute,
     fetch,
     fetch_scalar,
+    head_revision,
     upgrade,
 )
+
+from alembic import command
 
 HEAD = head_revision()
 REV_0016 = "0016_add_ai_schedule_daily_limit"

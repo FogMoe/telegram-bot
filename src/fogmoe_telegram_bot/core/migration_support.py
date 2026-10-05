@@ -20,8 +20,9 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.engine import URL, Connection
+
+from alembic import op
 
 VERSION_TABLE = "alembic_version"
 # 最长的 revision ID 是 37 个字符；留足余量，避免以后再踩宽度问题。

@@ -1,15 +1,15 @@
 """任务到 provider 与模型的解析。声明在 `core.ai_providers`，这里只按配置读取并整理顺序。"""
 
-from typing import Any, Dict, List
+from typing import Any
 
 from fogmoe_telegram_bot.core import ai_providers
 
 TASKS = set(ai_providers.TASK_SPECS)
 
 
-def _dedupe(values: List[str | None], *, lower: bool = False) -> List[str]:
+def _dedupe(values: list[str | None], *, lower: bool = False) -> list[str]:
     seen = set()
-    result: List[str] = []
+    result: list[str] = []
     for value in values:
         if not value:
             continue
@@ -24,7 +24,7 @@ def _dedupe(values: List[str | None], *, lower: bool = False) -> List[str]:
     return result
 
 
-def get_provider_order_for_task(task: str, settings: Any = None) -> List[str]:
+def get_provider_order_for_task(task: str, settings: Any = None) -> list[str]:
     task_name = task.lower()
     task_spec = ai_providers.TASK_SPECS.get(task_name)
     if task_spec is None:
@@ -52,7 +52,7 @@ def provider_fallback_model_for_task(
     return ai_providers.configured_fallback_model(spec, task, settings)
 
 
-def get_models_for_task(provider: str, task: str, settings: Any = None) -> List[str]:
+def get_models_for_task(provider: str, task: str, settings: Any = None) -> list[str]:
     return _dedupe(
         [
             provider_model_for_task(provider, task, settings),
@@ -76,5 +76,5 @@ def missing_capability_for_task(provider: str, task: str) -> str | None:
     return None
 
 
-def completion_kwargs_for_task(provider: str, task: str) -> Dict[str, Any]:
+def completion_kwargs_for_task(provider: str, task: str) -> dict[str, Any]:
     return {}

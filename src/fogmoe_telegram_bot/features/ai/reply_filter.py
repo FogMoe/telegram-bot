@@ -1,6 +1,5 @@
 import re
 
-
 NO_RESPONSE_SENTINELS = {
     "[no_response]",
 }

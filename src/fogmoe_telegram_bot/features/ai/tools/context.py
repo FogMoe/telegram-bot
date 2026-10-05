@@ -1,13 +1,12 @@
 from contextvars import ContextVar
-from typing import Dict, Optional
 
-_REQUEST_CONTEXT: ContextVar[Dict[str, object]] = ContextVar(
+_REQUEST_CONTEXT: ContextVar[dict[str, object]] = ContextVar(
     "tool_request_context",
     default={},
 )
 
 
-def set_tool_request_context(context: Optional[Dict[str, object]] = None) -> None:
+def set_tool_request_context(context: dict[str, object] | None = None) -> None:
     _REQUEST_CONTEXT.set(context or {})
 
 
@@ -15,7 +14,7 @@ def clear_tool_request_context() -> None:
     _REQUEST_CONTEXT.set({})
 
 
-def get_tool_request_context() -> Dict[str, object]:
+def get_tool_request_context() -> dict[str, object]:
     return _REQUEST_CONTEXT.get()
 
 

@@ -12,7 +12,7 @@
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fogmoe_telegram_bot.core import ai_providers
 from fogmoe_telegram_bot.core.deadline import Deadline
@@ -27,8 +27,8 @@ async def run_chat_provider(
     service_name: str,
     messages: Any,
     user_id: int,
-    tool_context: Optional[Dict[str, object]] = None,
-    visible_content_handler: Optional[VisibleContentHandler] = None,
+    tool_context: dict[str, object] | None = None,
+    visible_content_handler: VisibleContentHandler | None = None,
     settings: Any = None,
     deadline: Deadline | None = None,
 ) -> AIResponse:

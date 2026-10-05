@@ -11,7 +11,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from fogmoe_telegram_bot.core import balance, chat_records, config, process_user, sql, stake_reward_pool
+from fogmoe_telegram_bot.core import (
+    balance,
+    chat_records,
+    config,
+    process_user,
+    sql,
+    stake_reward_pool,
+)
 from fogmoe_telegram_bot.features.conversation import billing
 from fogmoe_telegram_bot.features.economy import charge_coin
 from fogmoe_telegram_bot.features.economy.operations import charge as charge_operations

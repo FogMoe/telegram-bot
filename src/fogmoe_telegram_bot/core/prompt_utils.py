@@ -1,6 +1,5 @@
 import re
-from typing import Iterable
-
+from collections.abc import Iterable
 
 _XML_ELEMENT_TAG_PATTERN = re.compile(
     r"</?[A-Za-z_][A-Za-z0-9_.:-]*"

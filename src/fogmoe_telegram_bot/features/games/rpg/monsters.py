@@ -3,8 +3,8 @@ import time
 from telegram.constants import ParseMode
 
 from . import settlement
-from .utils import calculate_damage
 from .characters import check_and_process_level_up, get_character
+from .utils import calculate_damage
 
 # 怪物数据字典，包含各种怪物的属性
 MONSTERS = {
@@ -52,7 +52,7 @@ async def show_monsters(update, context):
     if not MONSTERS:
         await update.message.reply_text("目前没有可挑战的怪物。")
         return
-    
+
     monsters_info = "🎮 **可挑战的怪物列表** 🎮\n\n"
     for monster_id, monster in MONSTERS.items():
         monsters_info += f"**{monster['name']}** (ID: {monster_id})\n"
@@ -63,65 +63,65 @@ async def show_monsters(update, context):
         monsters_info += f"经验奖励: {monster['exp_reward']}\n"
         monsters_info += f"金币奖励: {monster['coin_reward']}\n"
         monsters_info += f"描述: {monster['description']}\n\n"
-    
+
     monsters_info += "使用 `/rpg battle monster <怪物ID>` 来挑战怪物。"
-    
+
     await update.message.reply_text(monsters_info, parse_mode=ParseMode.MARKDOWN)
 
 async def initiate_monster_battle(update, context, monster_id: str):
     """处理玩家与怪物的战斗"""
     user_id = update.effective_user.id
     username = update.effective_user.username or update.effective_user.first_name
-    
+
     # 1. 检查怪物是否存在
     if monster_id not in MONSTERS:
         await update.message.reply_text(f"找不到ID为 '{monster_id}' 的怪物。使用 `/rpg monsters` 查看所有可挑战的怪物。")
         return
-    
+
     monster = MONSTERS[monster_id]
-    
+
     # 2. 检查冷却时间
     current_time = time.time()
     if user_id in monster_battle_cooldowns:
         last_battle_time = monster_battle_cooldowns[user_id]
         cooldown_remaining = last_battle_time + MONSTER_BATTLE_COOLDOWN - current_time
-        
+
         if cooldown_remaining > 0:
             minutes, seconds = divmod(int(cooldown_remaining), 60)
             await update.message.reply_text(f"你需要休息一下！还需要等待 {minutes}分{seconds}秒 才能再次挑战怪物。")
             return
-    
+
     # 3. 检查玩家角色是否存在
     character = await get_character(user_id)
     if not character:
         await update.message.reply_text("你还没有创建角色，请先使用 `/rpg` 命令创建。")
         return
-    
+
     # 4. 检查角色生命值
     if character['hp'] <= 0:
         await update.message.reply_text("你的生命值过低，无法发起战斗！先使用 `/rpg heal` 恢复生命值。")
         return
-    
+
     # 5. 开始战斗
     await update.message.reply_text(f"🏹 你向 **{monster['name']}** 发起了挑战！战斗开始...")
-    
+
     # 创建怪物实例（复制怪物数据以免修改原始数据）
     monster_instance = monster.copy()
-    
+
     # 战斗逻辑
     battle_log = [f"**{username}** vs **{monster['name']}**\n"]
-    
+
     player_hp = character['hp']
     monster_hp = monster_instance['hp']
-    
+
     # 玩家先攻
     current_attacker = "player"
     round_number = 1
-    
+
     # 进行战斗回合，直到一方HP归零
     while player_hp > 0 and monster_hp > 0:
         battle_log.append(f"**回合 {round_number}:**")
-        
+
         if current_attacker == "player":
             # 玩家攻击怪物
             damage = calculate_damage(character, {'def': monster_instance['def']})
@@ -136,13 +136,13 @@ async def initiate_monster_battle(update, context, monster_id: str):
             battle_log.append(f"{monster_instance['name']} 对 {username} 造成了 {damage} 点伤害！")
             battle_log.append(f"{username} 剩余HP: {player_hp}")
             current_attacker = "player"
-        
+
         round_number += 1
         # 防止战斗无限进行
         if round_number > 20:
             battle_log.append("战斗时间过长，以平局结束！")
             break
-    
+
     # 战斗结果
     if player_hp <= 0 and monster_hp <= 0:
         battle_log.append("\n战斗结果: 平局！双方同归于尽。")
@@ -153,14 +153,14 @@ async def initiate_monster_battle(update, context, monster_id: str):
     else:
         battle_log.append(f"\n战斗结果: 胜利！你击败了 {monster_instance['name']}。")
         result = "win"
-    
+
     # 发送战斗日志
     battle_log_text = "\n".join(battle_log)
     await update.message.reply_text(battle_log_text, parse_mode=ParseMode.MARKDOWN)
-    
+
     # 更新冷却时间
     monster_battle_cooldowns[user_id] = current_time
-    
+
     # 处理战斗后果：生命值、经验、金币奖励在同一个事务里提交，
     # 同一条命令被重复投递时奖励只会生效一次。
     won = result == "win"

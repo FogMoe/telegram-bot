@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import math
-from typing import Any, Iterable, Mapping, Tuple
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 import litellm
 
@@ -197,7 +198,7 @@ def _count_litellm_tokens(
         return None
 
 
-def _count_char_categories(text: str) -> Tuple[int, int, int]:
+def _count_char_categories(text: str) -> tuple[int, int, int]:
     en_chars = 0
     zh_chars = 0
     other_chars = 0

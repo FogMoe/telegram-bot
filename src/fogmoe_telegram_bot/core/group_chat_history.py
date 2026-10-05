@@ -5,19 +5,19 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from datetime import datetime, timezone
-from typing import Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from datetime import UTC, datetime
 
 from sqlalchemy.exc import OperationalError
 
 from . import mysql_connection, redaction
 from .prompt_utils import remove_xml_tags
 
-_bot_user_id: Optional[int] = None
+_bot_user_id: int | None = None
 _bot_display_name: str = "FogMoeBot"
 
 
-def set_bot_identity(user_id: int, display_name: Optional[str] = None) -> None:
+def set_bot_identity(user_id: int, display_name: str | None = None) -> None:
     """Register the bot's Telegram user id for downstream lookups."""
     global _bot_user_id, _bot_display_name
     _bot_user_id = user_id
@@ -49,7 +49,7 @@ async def log_group_message(
         message,
         sanitize or redaction.message_sanitizer(),
     )
-    created_at = message.date or datetime.utcnow().replace(tzinfo=timezone.utc)
+    created_at = message.date or datetime.utcnow().replace(tzinfo=UTC)
 
     record = (group_id, message_id, user_id, message_type, content, created_at)
     await _log_group_message(record)
@@ -69,7 +69,7 @@ def _decode_non_text(value: str) -> str:
 def _extract_message_payload(
     message,
     sanitize: Callable[[str], str] = lambda text: text,
-) -> Tuple[str, str]:
+) -> tuple[str, str]:
     if getattr(message, "text", None):
         return "text", sanitize(remove_xml_tags(message.text))
 
@@ -101,13 +101,13 @@ def _extract_message_payload(
     return "other", _encode_non_text("[unsupported message]")
 
 
-async def _log_group_message(record: Tuple[int, int, int, str, str, datetime]) -> None:
+async def _log_group_message(record: tuple[int, int, int, str, str, datetime]) -> None:
     group_id, message_id, user_id, message_type, content, created_at = record
 
     content = content or ""
 
     if created_at.tzinfo is not None:
-        created_at = created_at.astimezone(timezone.utc).replace(tzinfo=None)
+        created_at = created_at.astimezone(UTC).replace(tzinfo=None)
 
     try:
         async with mysql_connection.transaction() as connection:
@@ -169,9 +169,9 @@ async def _cleanup_group_history(group_id: int, retries: int = 3) -> None:
 
 def get_group_context(
     group_id: int,
-    around_message_id: Optional[int] = None,
+    around_message_id: int | None = None,
     window_size: int = 5,
-) -> List[Dict[str, object]]:
+) -> list[dict[str, object]]:
     # 同步边界：只能在没有事件循环的线程里调用；AI 工具与主路径用 async_get_group_context，见 docs/runtime.md。
     if not group_id:
         return []
@@ -182,9 +182,9 @@ def get_group_context(
 
 async def async_get_group_context(
     group_id: int,
-    around_message_id: Optional[int] = None,
+    around_message_id: int | None = None,
     window_size: int = 5,
-) -> List[Dict[str, object]]:
+) -> list[dict[str, object]]:
     if not group_id:
         return []
     return await _get_group_context(group_id, around_message_id, window_size)
@@ -192,9 +192,9 @@ async def async_get_group_context(
 
 async def _get_group_context(
     group_id: int,
-    around_message_id: Optional[int],
+    around_message_id: int | None,
     window_size: int,
-) -> List[Dict[str, object]]:
+) -> list[dict[str, object]]:
     async with mysql_connection.connect() as connection:
         try:
             if around_message_id:

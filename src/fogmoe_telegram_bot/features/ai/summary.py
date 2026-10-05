@@ -8,7 +8,6 @@ import asyncio
 import json
 import logging
 import re
-from typing import Optional, Tuple
 
 from fogmoe_telegram_bot.core import background, config, mysql_connection
 from fogmoe_telegram_bot.core.token_estimator import estimate_tokens
@@ -55,7 +54,7 @@ def schedule_summary_generation(user_id: int) -> None:
     background.spawn(_process_summary_for_user(user_id), name=f"summary-{user_id}")
 
 
-async def _generate_and_store_summary(user_id: int) -> Optional[str]:
+async def _generate_and_store_summary(user_id: int) -> str | None:
     record = await _fetch_pending_snapshot(user_id)
     if not record:
         return None
@@ -76,7 +75,7 @@ async def _generate_and_store_summary(user_id: int) -> Optional[str]:
     return summary_text
 
 
-async def generate_summary_immediately(user_id: int) -> Optional[str]:
+async def generate_summary_immediately(user_id: int) -> str | None:
     """立即生成并保存摘要；超过 `SUMMARY_IMMEDIATE_TIMEOUT_SECONDS` 返回 None，由调用方退回后台排队。"""
     try:
         async with asyncio.timeout(SUMMARY_IMMEDIATE_TIMEOUT_SECONDS):
@@ -105,7 +104,7 @@ async def _process_summary_for_user(user_id: int) -> None:
         logging.exception("Unexpected error while processing summary for user %s: %s", user_id, exc)
 
 
-async def _fetch_pending_snapshot(user_id: int) -> Optional[Tuple[int, str]]:
+async def _fetch_pending_snapshot(user_id: int) -> tuple[int, str] | None:
     row = await mysql_connection.fetch_one(
         "SELECT id, conversation_snapshot FROM permanent_chat_records "
         "WHERE user_id = %s AND (summary IS NULL OR summary = '') "
@@ -404,7 +403,7 @@ async def _generate_summary(
     record_id: int,
     snapshot_text: str,
     previous_summary: str,
-) -> Optional[str]:
+) -> str | None:
     transcript = _format_history_for_summary(snapshot_text)
     prompt = (
         "请按照系统要求总结 CURRENT_TRANSCRIPT。PREVIOUS_SUMMARY 是上一份"

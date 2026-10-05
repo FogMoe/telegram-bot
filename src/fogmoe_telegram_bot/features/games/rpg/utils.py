@@ -17,13 +17,13 @@ def get_level_from_exp(exp: int) -> int:
     """根据总经验值计算当前等级"""
     if exp < 0:
         return 1  # 经验不能为负
-    
+
     level = 1
     while True:
         # 如果经验值小于下一级所需经验，则当前等级为level
         if exp < get_exp_for_level(level):
             return level
-        
+
         level += 1
         # 安全检查，防止无限循环
         if level > 1000:  # 假设最高级别为1000级
@@ -103,4 +103,4 @@ RPG_HELP_TEXT = """
 与怪物战斗有5分钟冷却时间。
 与玩家战斗胜利可获得对方部分金币和经验值。
 击败怪物可获得固定的金币和经验奖励。
-""" 
+"""

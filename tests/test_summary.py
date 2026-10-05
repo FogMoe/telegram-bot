@@ -4,7 +4,6 @@ import json
 import pytest
 
 from fogmoe_telegram_bot.core import background
-
 from fogmoe_telegram_bot.features.ai import summary
 from fogmoe_telegram_bot.features.ai.tools.context import get_tool_request_context
 from fogmoe_telegram_bot.features.ai.tools.schemas import OPENAI_TOOLS

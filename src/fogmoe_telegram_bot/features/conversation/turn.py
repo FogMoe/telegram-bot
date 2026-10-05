@@ -32,7 +32,10 @@ from fogmoe_telegram_bot.core.telegram_history import (
 from fogmoe_telegram_bot.core.telegram_utils import partial_send
 from fogmoe_telegram_bot.features.ai import ai_chat
 from fogmoe_telegram_bot.features.ai.reply_filter import normalize_ai_reply_text
-from fogmoe_telegram_bot.features.ai.router import TURN_DEADLINE_ERROR_MESSAGE, TURN_SHUTDOWN_ERROR_MESSAGE
+from fogmoe_telegram_bot.features.ai.router import (
+    TURN_DEADLINE_ERROR_MESSAGE,
+    TURN_SHUTDOWN_ERROR_MESSAGE,
+)
 from fogmoe_telegram_bot.features.ai.tool_history import (
     tool_logs_completed_clear,
     tool_logs_to_record_entries,

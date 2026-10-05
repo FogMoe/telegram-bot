@@ -12,14 +12,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, TypeVar
-
-F = TypeVar("F", bound=Callable[..., Any])
+from typing import Any
 
 _INLINE_ATTRIBUTE = "__runs_inline__"
 
 
-def inline_tool(func: F) -> F:
+def inline_tool[F: Callable[..., Any]](func: F) -> F:
     """标记一个同步工具直接在事件循环里调用（不进线程适配器）。"""
     setattr(func, _INLINE_ATTRIBUTE, True)
     return func

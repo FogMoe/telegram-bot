@@ -1,14 +1,14 @@
-import logging
 import asyncio
+import logging
 import time
 
 from . import settlement
-from .utils import calculate_damage, calculate_exp_gain, get_level_from_exp
 from .characters import (
     check_and_process_level_up,
     get_character,
     get_user_id_by_username,
 )
+from .utils import calculate_damage, calculate_exp_gain, get_level_from_exp
 
 # --- 玩家间战斗系统 ---
 # 玩家战斗冷却时间（秒）
@@ -68,13 +68,13 @@ async def run_battle(update, context, attacker_id: int, defender_id: int):
         # 更新目标HP并记录日志
         target_hp -= damage
         target_hp = round(max(0, target_hp), 1) # 保持一位小数且不少于0
-        
+
         # 根据当前回合更新正确的HP变量
         if current_turn_id == defender_id:
             attacker_hp = target_hp
         else:
             defender_hp = target_hp
-            
+
         turn_log += f"造成了 {damage} 点伤害。 {defend_name} 剩余 HP: {target_hp}"
         battle_log.append(turn_log)
 
@@ -155,7 +155,7 @@ async def run_battle(update, context, attacker_id: int, defender_id: int):
     # 返回战斗结果（胜者ID和负者ID，如果是平局则都为None）
     return winner_id, loser_id
 
-# --- 发起战斗 --- 
+# --- 发起战斗 ---
 async def initiate_battle(update, context, target_username: str):
     """处理 /rpg battle <用户名> 命令"""
     attacker_id = update.effective_user.id
@@ -168,13 +168,13 @@ async def initiate_battle(update, context, target_username: str):
     if attacker_char['hp'] <= 0:
          await update.message.reply_text("你当前生命值过低，无法发起战斗！使用 `/rpg heal` 恢复生命值。")
          return
-         
+
     # 1.5 检查冷却时间
     current_time = time.time()
     if attacker_id in player_battle_cooldowns:
         last_battle_time = player_battle_cooldowns[attacker_id]
         cooldown_remaining = last_battle_time + PLAYER_BATTLE_COOLDOWN - current_time
-        
+
         if cooldown_remaining > 0:
             minutes, seconds = divmod(int(cooldown_remaining), 60)
             hours, minutes = divmod(minutes, 60)
@@ -209,7 +209,7 @@ async def initiate_battle(update, context, target_username: str):
         target_display_name = target_user.username or target_user.first_name
         await update.message.reply_text(f"玩家 {target_display_name} 当前设置了不允许被挑战。")
         return
-        
+
     if defender_char['hp'] <= 0:
          target_user = await context.bot.get_chat(target_id)
          target_display_name = target_user.username or target_user.first_name
@@ -218,7 +218,7 @@ async def initiate_battle(update, context, target_username: str):
 
     # 6. (可选) 添加其他战斗限制，例如等级差距过大等
 
-    # --- 开始战斗 --- 
+    # --- 开始战斗 ---
     target_user = await context.bot.get_chat(target_id)
     target_display_name = target_user.username or target_user.first_name
     await update.message.reply_text(f"正在向 {target_display_name} 发起挑战...⚔️")
@@ -227,4 +227,4 @@ async def initiate_battle(update, context, target_username: str):
     player_battle_cooldowns[attacker_id] = current_time
 
     # 调用战斗执行函数
-    return await run_battle(update, context, attacker_id, target_id) 
+    return await run_battle(update, context, attacker_id, target_id)

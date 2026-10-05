@@ -30,7 +30,13 @@ from fogmoe_telegram_bot.core import (
 from fogmoe_telegram_bot.core.archive_utils import send_permanent_records_archive
 from fogmoe_telegram_bot.core.redaction import redact_text
 from fogmoe_telegram_bot.core.telegram_utils import partial_send, safe_send_markdown
-from fogmoe_telegram_bot.features.ai import ai_chat, idle_followup, outbound, sticker_sender, summary
+from fogmoe_telegram_bot.features.ai import (
+    ai_chat,
+    idle_followup,
+    outbound,
+    sticker_sender,
+    summary,
+)
 from fogmoe_telegram_bot.features.ai.telegram_visible_sender import TelegramVisibleContentHandler
 
 from . import billing, history_hooks

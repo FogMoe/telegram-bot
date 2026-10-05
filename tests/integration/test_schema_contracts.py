@@ -6,12 +6,12 @@ from datetime import datetime
 import pytest
 from legacy_data import first_message_content, seed_duplicate_rows
 from mysql_support import (
-    head_revision,
     bind_app_engine,
     current_versions,
     execute,
     fetch,
     fetch_scalar,
+    head_revision,
     run,
     upgrade,
 )

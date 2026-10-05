@@ -1,17 +1,17 @@
 import logging
-from typing import Optional, Dict, Any
+from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 
 from fogmoe_telegram_bot.core import sql, user_records
 
-from . import settlement
 from ..repositories import rpg as rpg_repository
+from . import settlement
 from .utils import get_level_from_exp
 
 # --- 数据库交互函数 (RPG 角色) ---
 
-async def get_character(user_id: int) -> Optional[Dict[str, Any]]:
+async def get_character(user_id: int) -> dict[str, Any] | None:
     """异步获取用户角色数据"""
     try:
         return await rpg_repository.get_character(user_id)
@@ -36,7 +36,7 @@ async def create_character(user_id: int) -> bool:
         return False
 
 # --- 获取用户ID通过用户名 ---
-async def get_user_id_by_username(username: str) -> Optional[int]:
+async def get_user_id_by_username(username: str) -> int | None:
     """异步根据用户名获取用户ID (查询 user 表的 name 列)"""
     # 清理可能存在的 @ 符号
     clean_username = username.strip().lstrip('@')
@@ -74,7 +74,7 @@ async def update_character_stats(user_id: int, updates: dict) -> bool:
 
 # --- 设置是否允许被挑战 ---
 async def set_battle_allowance(update, context, allow: bool):
-    
+
     user_id = update.effective_user.id
     username = update.effective_user.username or update.effective_user.first_name
 
@@ -106,7 +106,7 @@ async def check_and_process_level_up(user_id: int, context):
         logging.info(f"用户 {user_id} 等级从 {character['level']} 修正为 {current_level}")
         updates = {'level': current_level}
 
-        # --- 定义属性成长规则 --- 
+        # --- 定义属性成长规则 ---
         # 每次升级增加的属性值 (可以调整)
         hp_increase = 5
         atk_increase = 1

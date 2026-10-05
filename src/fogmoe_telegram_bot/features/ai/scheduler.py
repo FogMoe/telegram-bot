@@ -13,15 +13,17 @@ import logging
 import threading
 from collections.abc import Collection
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
 from telegram.ext import ContextTypes
 
 from fogmoe_telegram_bot.core import mysql_connection, process_user
 from fogmoe_telegram_bot.core.archive_utils import send_permanent_records_archive
 from fogmoe_telegram_bot.core.prompt_utils import format_metadata_attrs, xml_escape
-from fogmoe_telegram_bot.core.telegram_history import suppress_telegram_history, telegram_history_scope
+from fogmoe_telegram_bot.core.telegram_history import (
+    suppress_telegram_history,
+    telegram_history_scope,
+)
 from fogmoe_telegram_bot.core.telegram_utils import partial_send
 from fogmoe_telegram_bot.features.ai import ai_chat, job_claims, summary
 from fogmoe_telegram_bot.features.ai.conversation_locks import get_conversation_lock
@@ -32,7 +34,10 @@ from fogmoe_telegram_bot.features.ai.schedule_limits import (
     DAILY_SCHEDULE_TRIGGER_LIMIT,
     reserve_daily_schedule_trigger,
 )
-from fogmoe_telegram_bot.features.ai.sticker_sender import normalize_sticker_directives, send_ai_reply_with_stickers
+from fogmoe_telegram_bot.features.ai.sticker_sender import (
+    normalize_sticker_directives,
+    send_ai_reply_with_stickers,
+)
 from fogmoe_telegram_bot.features.ai.telegram_visible_sender import TelegramVisibleContentHandler
 from fogmoe_telegram_bot.features.ai.tool_history import tool_logs_to_record_entries
 from fogmoe_telegram_bot.features.ai.types import ABORT_EVENT_KEY
@@ -71,9 +76,9 @@ class ScheduleClaim:
     schedule_id: int
     user_id: int
     run_at: datetime
-    created_at: Optional[datetime]
+    created_at: datetime | None
     trigger_reason: str
-    context_text: Optional[str]
+    context_text: str | None
     instruction: str
     recurrence_unit: str
     recurrence_interval: int
@@ -96,7 +101,7 @@ def _text(value):
     return value
 
 
-def _recurrence_delta(unit: str, interval: int) -> Optional[timedelta]:
+def _recurrence_delta(unit: str, interval: int) -> timedelta | None:
     if unit == "minute":
         return timedelta(minutes=interval)
     if unit == "hour":
@@ -110,36 +115,36 @@ def _calculate_next_run_at(
     previous_run_at: datetime,
     recurrence_unit: str,
     recurrence_interval: int,
-) -> Optional[datetime]:
+) -> datetime | None:
     delta = _recurrence_delta(recurrence_unit, recurrence_interval)
     if delta is None:
         return None
 
     if previous_run_at.tzinfo is not None:
-        previous_run_at = previous_run_at.astimezone(timezone.utc).replace(tzinfo=None)
+        previous_run_at = previous_run_at.astimezone(UTC).replace(tzinfo=None)
 
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     next_run_at = previous_run_at + delta
     while next_run_at <= now:
         next_run_at += delta
     return next_run_at
 
 
-def _format_timestamp(value: Optional[datetime]) -> str:
+def _format_timestamp(value: datetime | None) -> str:
     if not value:
         return ""
     if value.tzinfo is not None:
-        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        value = value.astimezone(UTC).replace(tzinfo=None)
     return value.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _format_scheduled_message(
     *,
     timestamp: datetime,
-    scheduled_at: Optional[datetime],
-    scheduled_for: Optional[datetime],
+    scheduled_at: datetime | None,
+    scheduled_for: datetime | None,
     trigger_reason: str,
-    context_text: Optional[str],
+    context_text: str | None,
     instruction: str,
 ) -> str:
     attrs = [
@@ -162,7 +167,7 @@ def _format_scheduled_message(
     return "\n".join(lines)
 
 
-async def _handle_overflow_summary(conversation_id: int, level: Optional[str]) -> None:
+async def _handle_overflow_summary(conversation_id: int, level: str | None) -> None:
     if level != "overflow":
         return
     summary_text = await summary.generate_summary_immediately(conversation_id)
@@ -223,7 +228,7 @@ def _claim_from_row(row, token: str, attempt: int) -> ScheduleClaim:
 
 async def _claim_next_schedule(
     exclude_ids: Collection[int] = (),
-) -> Optional[ScheduleClaim]:
+) -> ScheduleClaim | None:
     """claim 一个到期任务：新 token、新租约、同一事务里写下尝试记录。
 
     一次只 claim 一个，崩溃最多卡住当前这一个；SKIP LOCKED 让多个进程互不阻塞。
@@ -283,11 +288,11 @@ async def _settle_schedule(
     connection,
     *,
     schedule_id: int,
-    token: Optional[str],
+    token: str | None,
     run_at: datetime,
     recurrence_unit: str,
     recurrence_interval: int,
-    error: Optional[str],
+    error: str | None,
     outcome: str,
     advance_recurring: bool = True,
 ) -> None:
@@ -347,7 +352,7 @@ async def _release_in_txn(
     outcome: str,
     *,
     attempts_expr: str,
-    error: Optional[str] = None,
+    error: str | None = None,
 ) -> None:
     result = await connection.exec_driver_sql(
         "UPDATE ai_schedules SET status = 'pending', stage = 'idle', "
@@ -366,7 +371,7 @@ async def _release_claim(
     outcome: str,
     *,
     attempts_expr: str,
-    error: Optional[str] = None,
+    error: str | None = None,
 ) -> None:
     """把还没产生副作用的 claim 放回 pending。"""
     async with mysql_connection.transaction() as connection:
@@ -691,7 +696,7 @@ async def _process_schedule_task_locked(
         )
         return
 
-    now_utc = datetime.now(timezone.utc)
+    now_utc = datetime.now(UTC)
     scheduled_message = _format_scheduled_message(
         timestamp=now_utc,
         scheduled_at=claim.created_at,

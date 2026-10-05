@@ -233,7 +233,10 @@ def test_an_inline_tool_runs_on_the_event_loop_without_a_thread_hop(monkeypatch)
 
 
 def test_the_request_context_reaches_sync_tools_running_in_threads(monkeypatch):
-    from fogmoe_telegram_bot.features.ai.tools.context import get_tool_request_context, set_tool_request_context
+    from fogmoe_telegram_bot.features.ai.tools.context import (
+        get_tool_request_context,
+        set_tool_request_context,
+    )
 
     fake, _ = script(Response(Message("", [call("c1")])), Response(Message("ok")))
     seen = {}

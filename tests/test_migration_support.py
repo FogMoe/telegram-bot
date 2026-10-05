@@ -8,11 +8,11 @@ from argparse import Namespace
 from pathlib import Path
 
 import pytest
-from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy.engine import make_url
 
+from alembic import command
 from fogmoe_telegram_bot.core import migration_support
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

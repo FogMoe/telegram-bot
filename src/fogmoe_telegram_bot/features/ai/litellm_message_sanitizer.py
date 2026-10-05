@@ -4,7 +4,7 @@
 取声明的默认协议；调用方已经知道最终协议（例如 Gemini 走 OpenAI-compatible 端点）时直接传 `protocol`。
 """
 
-from typing import Any, Dict, List
+from typing import Any
 
 from fogmoe_telegram_bot.core import ai_providers
 from fogmoe_telegram_bot.core.ai_providers import OPENAI_WIRE, WireProtocol
@@ -22,11 +22,11 @@ def _wire_protocol(provider: str, protocol: WireProtocol | None) -> WireProtocol
 
 
 def sanitize_tool_call_for_provider(
-    tool_call: Dict[str, Any],
+    tool_call: dict[str, Any],
     provider: str,
     *,
     protocol: WireProtocol | None = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     wire = _wire_protocol(provider, protocol)
     sanitized = dict(tool_call)
     if not wire.keeps_provider_specific_fields:
@@ -38,11 +38,11 @@ def sanitize_tool_call_for_provider(
 
 
 def sanitize_message_for_provider(
-    message: Dict[str, Any],
+    message: dict[str, Any],
     provider: str,
     *,
     protocol: WireProtocol | None = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     wire = _wire_protocol(provider, protocol)
     sanitized = dict(message)
     if not wire.keeps_provider_specific_fields:
@@ -71,11 +71,11 @@ def sanitize_message_for_provider(
 
 
 def sanitize_messages_for_provider(
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     provider: str,
     *,
     protocol: WireProtocol | None = None,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     return [
         sanitize_message_for_provider(message, provider, protocol=protocol)
         if isinstance(message, dict)

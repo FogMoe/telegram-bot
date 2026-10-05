@@ -1,10 +1,9 @@
-from typing import Optional
 
 from fogmoe_telegram_bot.core import mysql_connection, process_user
 from fogmoe_telegram_bot.core.prompt_utils import format_user_state_prompt
 
 
-async def build_user_state_prompt(user_id: int) -> Optional[str]:
+async def build_user_state_prompt(user_id: int) -> str | None:
     row = await mysql_connection.fetch_one(
         "SELECT permission, coins, coins_paid, info FROM user WHERE id = %s",
         (user_id,),

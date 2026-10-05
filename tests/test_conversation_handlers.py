@@ -1,7 +1,7 @@
 """对话的 Telegram 入口：准入判断与输入映射，不涉及一轮对话本身（见 test_conversation_turn.py）。"""
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -71,8 +71,8 @@ def drive(items, **kwargs):
 
 def test_a_private_batch_becomes_one_turn_request_sorted_by_time(pipeline):
     bot = object()
-    early = datetime(2026, 10, 5, 8, 0, 0, tzinfo=timezone.utc)
-    late = datetime(2026, 10, 5, 8, 0, 5, tzinfo=timezone.utc)
+    early = datetime(2026, 10, 5, 8, 0, 0, tzinfo=UTC)
+    late = datetime(2026, 10, 5, 8, 0, 5, tzinfo=UTC)
     items = [
         queued(make_update(make_message(12, "后发", date=late), update_id=902), bot),
         queued(make_update(make_message(11, "先发", date=early), update_id=901), bot),

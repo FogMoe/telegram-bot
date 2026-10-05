@@ -1,19 +1,21 @@
-from fogmoe_telegram_bot.core import mysql_connection
-from telegram import Update
-from telegram.constants import ParseMode
-from telegram.ext import ContextTypes, CommandHandler, MessageHandler, filters
+import html
 import logging
-import time
 import re
 import threading
-import html
+import time
 from collections import defaultdict
+
+from telegram import Update
+from telegram.constants import ParseMode
+from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
+
+from fogmoe_telegram_bot.core import mysql_connection
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.redaction import report_error
 
 # HTML标签白名单
 ALLOWED_HTML_TAGS = {
-    'b', 'i', 'u', 'a', 'code', 'pre', 's', 'strong', 'em', 
+    'b', 'i', 'u', 'a', 'code', 'pre', 's', 'strong', 'em',
     'ins', 'del', 'strike', 'span', 'tg-spoiler'
 }
 
@@ -36,17 +38,17 @@ def sanitize_html(html_content):
     """净化HTML内容，仅允许白名单中的标签"""
     # 使用正则表达式匹配所有HTML标签
     tags = re.findall(r'</?([a-zA-Z0-9]+)[^>]*>', html_content)
-    
+
     # 检查每个标签是否在白名单中
     for tag in set(tags):
         if tag.lower() not in ALLOWED_HTML_TAGS:
             # 如果不在白名单中，转义该标签
             html_content = re.sub(
-                r'<(/?)' + re.escape(tag) + r'([^>]*)>', 
-                r'&lt;\1' + tag + r'\2&gt;', 
+                r'<(/?)' + re.escape(tag) + r'([^>]*)>',
+                r'&lt;\1' + tag + r'\2&gt;',
                 html_content
             )
-    
+
     return html_content
 
 
@@ -56,12 +58,12 @@ def is_keyword_match(keyword, message):
     pattern = r'\b' + re.escape(keyword) + r'\b'
     if re.search(pattern, message, re.IGNORECASE):
         return True
-    
+
     # 对于中文和其他没有明确单词边界的语言，
     # 可以直接做子字符串匹配，因为这些语言不使用空格分隔单词
     if not re.match(r'^[a-zA-Z0-9\s\W]+$', keyword):
         return keyword.lower() in message.lower()
-    
+
     return False
 
 
@@ -71,15 +73,15 @@ def can_trigger_keyword(chat_id):
         now = time.time()
         group_data = rate_limiter[chat_id]
         trigger_times = group_data["last_trigger_times"]
-        
+
         # 清理一分钟前的记录
         while trigger_times and now - trigger_times[0] > 60:
             trigger_times.pop(0)
-        
+
         # 检查是否超过限制
         if len(trigger_times) >= MAX_TRIGGERS_PER_MINUTE:
             return False
-        
+
         # 记录本次触发
         trigger_times.append(now)
         return True
@@ -93,7 +95,7 @@ async def load_keywords_from_db(chat_id):
             "SELECT keyword, response FROM group_keywords WHERE group_id = %s",
             (chat_id,),
         )
-        
+
         # 线程安全地更新缓存
         with cache_lock:
             keyword_cache[chat_id] = {
@@ -109,7 +111,7 @@ async def load_keywords_from_db(chat_id):
 # 获取群组关键词（优先使用缓存）
 async def get_group_keywords(chat_id):
     now = time.time()
-    
+
     # 线程安全地读取缓存
     with cache_lock:
         # 检查缓存是否存在且未过期
@@ -118,7 +120,7 @@ async def get_group_keywords(chat_id):
             # 如果缓存未过期，直接返回
             if now - cache_data["last_updated"] < CACHE_TIMEOUT:
                 return cache_data["keywords"]
-    
+
     # 缓存不存在或已过期，从数据库重新加载
     return await load_keywords_from_db(chat_id)
 
@@ -128,7 +130,7 @@ async def keyword_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理/keyword命令，显示、添加或删除关键词"""
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-    
+
     # 仅在群组中有效
     if update.effective_chat.type not in ["group", "supergroup"]:
         await update.message.reply_text("此命令只能在群组中使用。\nThis command can only be used in groups.")
@@ -147,7 +149,7 @@ async def keyword_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     sub_command = context.args[0].lower()
-    
+
     if sub_command == "add":
         if len(context.args) < 3:
             await update.message.reply_text(
@@ -155,19 +157,19 @@ async def keyword_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "回复内容支持 Telegram HTML 格式。"
             )
             return
-        
+
         keyword = context.args[1]
         response = " ".join(context.args[2:])
         await add_keyword(update, chat_id, user_id, keyword, response)
-        
+
     elif sub_command == "del":
         if len(context.args) < 2:
             await update.message.reply_text("删除关键词的正确格式是：\n/keyword del <触发关键词>")
             return
-            
+
         keyword = context.args[1]
         await del_keyword(update, chat_id, keyword)
-        
+
     else:
         await update.message.reply_text(
             "未知的子命令。可用的命令有：\n"
@@ -181,7 +183,7 @@ async def show_keywords(update: Update, chat_id: int):
     try:
         # 使用缓存机制获取关键词
         keywords = await get_group_keywords(chat_id)
-        
+
         if not keywords:
             await update.message.reply_text(
                 "此群组尚未设置任何关键词。\n\n"
@@ -190,7 +192,7 @@ async def show_keywords(update: Update, chat_id: int):
                 "回复内容支持 Telegram HTML 格式。"
             )
             return
-            
+
         message = "当前群组的关键词列表：\n\n"
         for idx, (keyword, response) in enumerate(keywords, 1):
             message += f"{idx}. 触发词: '{keyword}'\n"
@@ -198,10 +200,10 @@ async def show_keywords(update: Update, chat_id: int):
                 message += f"   回复: '{response[:30]}...'\n\n"
             else:
                 message += f"   回复: '{response}'\n\n"
-        
+
         message += "\n使用 /keyword add <触发关键词> <回复内容> 添加关键词\n"
         message += "使用 /keyword del <触发关键词> 删除关键词"
-        
+
         await update.message.reply_text(message)
     except Exception as e:
         notice = report_error(logging.getLogger(__name__), "获取关键词列表时出错", e)
@@ -212,22 +214,22 @@ async def add_keyword(update: Update, chat_id: int, user_id: int, keyword: str, 
     if len(keyword) > 255:
         await update.message.reply_text("触发关键词太长，请不要超过255个字符。")
         return
-        
+
     # 添加内容长度限制
     if len(response) > MAX_RESPONSE_LENGTH:
         await update.message.reply_text(f"回复内容太长，请不要超过{MAX_RESPONSE_LENGTH}个字符。")
         return
-    
+
     # HTML净化
     response = sanitize_html(response)
-    
+
     try:
         # 首先检查是否是更新现有关键词，安全使用参数
         existing_keyword = await mysql_connection.fetch_one(
             "SELECT keyword FROM group_keywords WHERE group_id = %s AND keyword = %s",
             (chat_id, keyword),
         )
-        
+
         # 如果不是更新现有关键词，检查群组关键词数量是否已达上限
         if not existing_keyword:
             # 优先使用缓存判断关键词数量
@@ -235,31 +237,31 @@ async def add_keyword(update: Update, chat_id: int, user_id: int, keyword: str, 
                 if chat_id in keyword_cache and len(keyword_cache[chat_id]["keywords"]) >= 10:
                     await update.message.reply_text("每个群组最多只能设置10个关键词，请先删除一些关键词再添加。")
                     return
-            
+
             # 缓存不存在或不确定，查询数据库
             count_row = await mysql_connection.fetch_one(
                 "SELECT COUNT(*) FROM group_keywords WHERE group_id = %s",
                 (chat_id,),
             )
             keyword_count = count_row[0] if count_row else 0
-            
+
             if keyword_count >= 10:
                 await update.message.reply_text("每个群组最多只能设置10个关键词，请先删除一些关键词再添加。")
                 return
-        
+
         # 添加或更新关键词，使用参数化查询防止注入
         await mysql_connection.execute(
             """
-            INSERT INTO group_keywords (group_id, keyword, response, created_by) 
+            INSERT INTO group_keywords (group_id, keyword, response, created_by)
             VALUES (%s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE response = VALUES(response), created_by = VALUES(created_by)
             """,
             (chat_id, keyword, response, user_id),
         )
-        
+
         # 更新成功后，强制刷新缓存
         await load_keywords_from_db(chat_id)
-        
+
         # 检查是更新还是新增
         if existing_keyword:
             await update.message.reply_text(f"已更新关键词触发器：'{keyword}'")
@@ -276,7 +278,7 @@ async def del_keyword(update: Update, chat_id: int, keyword: str):
             "DELETE FROM group_keywords WHERE group_id = %s AND keyword = %s",
             (chat_id, keyword),
         )
-        
+
         # 删除后，强制刷新缓存
         if rowcount > 0:
             await load_keywords_from_db(chat_id)
@@ -296,28 +298,28 @@ async def process_group_message(update: Update, context: ContextTypes.DEFAULT_TY
     """处理群组消息，检查是否触发关键词"""
     # 获取有效消息
     effective_message = get_effective_message(update)
-    
+
     # 仅处理群组消息且不处理命令
-    if (update.effective_chat.type not in ["group", "supergroup"] or 
-        not effective_message or 
-        not effective_message.text or 
+    if (update.effective_chat.type not in ["group", "supergroup"] or
+        not effective_message or
+        not effective_message.text or
         effective_message.text.startswith('/')):
         return
-        
+
     chat_id = update.effective_chat.id
     message_text = effective_message.text
-    
+
     # 使用缓存获取关键词
     keywords = await get_group_keywords(chat_id)
-    
+
     if not keywords:
         return
-    
+
     # 检查速率限制
     if not can_trigger_keyword(chat_id):
         # 触发过于频繁，静默忽略
         return
-        
+
     for keyword, response in keywords:
         # 使用更精确的匹配方法
         if is_keyword_match(keyword, message_text):
@@ -335,10 +337,10 @@ async def process_group_message(update: Update, context: ContextTypes.DEFAULT_TY
 
 def setup_keyword_handlers(dispatcher):
     """注册关键词相关的处理器"""
-    
+
     # 添加命令处理器
     dispatcher.add_handler(CommandHandler("keyword", keyword_command))
-    
+
     # 添加消息处理器，优先级设置较低以便其他功能先处理
     # 修改过滤器以包含编辑后的消息
     dispatcher.add_handler(

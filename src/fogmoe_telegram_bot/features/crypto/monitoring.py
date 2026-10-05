@@ -6,7 +6,7 @@ from telegram import Bot, Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from fogmoe_telegram_bot.core import background, blocking, config
-from fogmoe_telegram_bot.core.telegram_utils import safe_send_markdown, partial_send
+from fogmoe_telegram_bot.core.telegram_utils import partial_send, safe_send_markdown
 from fogmoe_telegram_bot.features.crypto import biance_api
 
 logger = logging.getLogger(__name__)

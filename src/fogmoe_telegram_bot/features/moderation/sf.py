@@ -1,9 +1,10 @@
 import logging
-import asyncio
-import aiohttp
 import re
+
+import aiohttp
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
+
 from fogmoe_telegram_bot.core import process_user
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.redaction import report_error
@@ -50,10 +51,10 @@ async def sf_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # 获取用户名，如果没有用户名则使用用户ID
     user_name = update.effective_user.username or str(user_id)
     user_mention = f"@{user_name}"
-    
+
     # 检查是否有参数
     args = context.args
-    
+
     # 如果有help参数或没有参数，显示帮助信息
     if not args or (args and args[0].lower() == "help"):
         await update.message.reply_text(
@@ -61,7 +62,7 @@ async def sf_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             parse_mode="Markdown"
         )
         return
-    
+
     # 检查用户是否注册
     if not await process_user.async_user_exists(user_id):
         await update.message.reply_text(
@@ -69,10 +70,10 @@ async def sf_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             "Please register first using the /me command before using this feature."
         )
         return
-    
+
     # 获取用户提供的链接
     share_url = args[0]
-    
+
     # 检查输入是否是链接
     if not URL_PATTERN.match(share_url):
         await update.message.reply_text(
@@ -80,38 +81,38 @@ async def sf_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             "Please enter a valid link format. For example: https://example.com"
         )
         return
-    
+
     # 发送处理中消息
     processing_msg = await update.message.reply_text(
         "⏳ 正在检测链接，请稍候...\n"
         "Checking link, please wait..."
     )
-    
+
     try:
         # 检查链接是否泄露隐私
         result = await check_share_link(share_url)
-        
+
         if result is None:
             await processing_msg.edit_text(
                 f"{user_mention} 检测链接失败，请稍后再试。\n"
                 "Failed to check link. Please try again later."
             )
             return
-        
+
         # 准备回复消息
         reply_text = f"{user_mention} 链接检测结果：\n\n"
-        
+
         if result == "该分享链接安全":
             reply_text += "✅ 您的分享链接安全，未检测到泄露个人隐私信息。"
         else:
             reply_text += f"⚠️ {result}"
-        
+
         # 更新处理消息
         await processing_msg.edit_text(reply_text)
-        
+
         # 记录用户使用了该功能
         logger.info(f"用户 {user_name}(ID:{user_id}) 检测了链接: {share_url}")
-        
+
     except Exception as e:
         notice = report_error(logger, "检测链接时出错", e)
         await processing_msg.edit_text(
@@ -124,13 +125,13 @@ async def check_share_link(share_url):
     params = {
         "share_url": share_url
     }
-    
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(SHARE_LEAK_API_URL, json=params, headers=HEADERS, timeout=10) as response:
                 if response.status == 200:
                     data = await response.json()
-                    
+
                     # 检查API返回结果
                     if data.get("status") == "success" and data.get("code") == 200:
                         return data.get("data", "未知结果")
@@ -143,7 +144,7 @@ async def check_share_link(share_url):
     except aiohttp.ClientError as e:
         logger.error(f"连接API时出错: {str(e)}")
         return None
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.error("请求API超时")
         return None
     except Exception as e:

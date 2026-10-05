@@ -1,7 +1,6 @@
 import base64
 import logging
 import threading
-from typing import Dict, Optional
 
 import requests
 
@@ -25,7 +24,7 @@ def _get_session() -> requests.Session:
 
 def execute_python_code_tool(
     source_code: str,
-    stdin: Optional[str] = None,
+    stdin: str | None = None,
     **kwargs,
 ) -> dict:
     """Execute Python code remotely via Judge0."""
@@ -43,7 +42,7 @@ def execute_python_code_tool(
         headers["X-Auth-Token"] = JUDGE0_API_KEY
 
     try:
-        payload: Dict[str, object] = {
+        payload: dict[str, object] = {
             "language_id": 71,
             "source_code": base64.b64encode(source_code.encode("utf-8")).decode("ascii"),
         }
@@ -67,7 +66,7 @@ def execute_python_code_tool(
             "error": f"Failed to contact Judge0: {describe_exception(exc)} (ref: {error_ref})"
         }
 
-    def _decode_field(value: Optional[str]) -> Optional[str]:
+    def _decode_field(value: str | None) -> str | None:
         if value in (None, ""):
             return ""
         try:

@@ -1,17 +1,18 @@
 import asyncio
-from fogmoe_telegram_bot.core import balance, blocking, process_user, user_records
 import logging
-from datetime import datetime, timedelta
-from binance.um_futures import UMFutures
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
-from telegram.constants import ParseMode
 import time
+from datetime import datetime, timedelta
+
+from binance.um_futures import UMFutures
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
+
+from fogmoe_telegram_bot.core import balance, blocking, process_user, user_records
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.redaction import log_exception, user_error_notice
 
 from .repositories import predictions as predictions_repository
-
 
 logger = logging.getLogger(__name__)
 # 用户级别的锁，而非全局锁，避免不同用户操作互相阻塞
@@ -47,7 +48,7 @@ async def get_btc_price():
 async def btc_predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理 /btc_predict 命令"""
     user_id = update.effective_user.id
-    
+
     # 检查用户是否已注册
     if not await process_user.async_user_exists(user_id):
         await update.message.reply_text(
@@ -55,20 +56,20 @@ async def btc_predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             "Please register first using the /me command."
         )
         return
-    
+
     # 获取比特币当前价格
     btc_price, error = await get_btc_price()
     if error:
         await update.message.reply_text(f"{error}\n请稍后再试。")
         return
-    
+
     # 检查用户是否已有活跃预测
     active_prediction = await get_user_active_prediction(user_id)
     if (active_prediction):
         remaining_time = active_prediction.end_time - datetime.now()
         minutes = int(remaining_time.total_seconds() // 60)
         seconds = int(remaining_time.total_seconds() % 60)
-        
+
         # 显示用户当前预测状态
         direction = "上涨" if active_prediction.predict_type == 'up' else "下跌"
         await update.message.reply_text(
@@ -80,7 +81,7 @@ async def btc_predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"请等待此次预测结束后再开始新预测。"
         )
         return
-    
+
     # 如果没有带参数，显示介绍信息
     if not context.args:
         # 创建问额度的键盘，添加用户ID以防止他人点击
@@ -93,7 +94,7 @@ async def btc_predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             [InlineKeyboardButton("自定义金额", callback_data=f"crypto_amount_custom_user_{user_id}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         await update.message.reply_text(
             f"🔮 比特币价格预测 🔮\n\n"
             f"当前比特币价格: ${btc_price:,.2f}\n\n"
@@ -108,7 +109,7 @@ async def btc_predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode=ParseMode.MARKDOWN
         )
         return
-    
+
     # 如果带参数，解析投入金额
     try:
         amount = int(context.args[0])
@@ -122,14 +123,14 @@ async def btc_predict_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def handle_amount_selection(update, context, amount):
     """处理用户选择的金额"""
     user_id = update.effective_user.id
-    
+
     # 检查最低投入
     if amount < 20:
         await update.message.reply_text(
             "最低投入金额为20金币。请重新选择。"
         )
         return
-    
+
     # 检查用户是否有足够的金币
     user_coins = await process_user.async_get_user_coins(user_id)
     if user_coins < amount:
@@ -137,13 +138,13 @@ async def handle_amount_selection(update, context, amount):
             f"您的金币不足。当前余额: {user_coins} 金币，需要: {amount} 金币。"
         )
         return
-    
+
     # 获取比特币当前价格
     btc_price, error = await get_btc_price()
     if error:
         await update.message.reply_text(f"{error}\n请稍后再试。")
         return
-    
+
     # 显示选择预测方向的按钮，加入用户ID以防止他人点击
     keyboard = [
         [
@@ -153,7 +154,7 @@ async def handle_amount_selection(update, context, amount):
         [InlineKeyboardButton("取消", callback_data=f"crypto_cancel_user_{user_id}")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     await update.message.reply_text(
         f"您准备投入 {amount} 金币进行比特币价格预测。\n"
         f"当前价格: ${btc_price:,.2f}\n\n"
@@ -167,7 +168,7 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理所有与加密货币预测相关的回调"""
     query = update.callback_query
     user_id = query.from_user.id
-    
+
     try:
         # 检查是否在按钮冷却期内
         current_time = time.time()
@@ -176,10 +177,10 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if current_time - last_click_time < CLICK_COOLDOWN_SECONDS:
                 await query.answer("请不要频繁点击按钮，请稍等几秒钟。", show_alert=True)
                 return
-        
+
         # 更新用户最后点击时间
         button_click_cooldown[user_id] = current_time
-        
+
         # 检查是否是其他用户点击了带有user_id的按钮
         if "_user_" in query.data:
             try:
@@ -191,15 +192,15 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"解析用户ID时出错: {e}, 数据: {query.data}")
                 await query.answer("按钮数据格式错误", show_alert=True)
                 return
-        
+
         # 首先确认回调
         await query.answer()
-        
+
         # 处理取消操作
         if query.data.startswith("crypto_cancel"):
             await query.edit_message_text("已取消预测。")
             return
-        
+
         # 处理金额选择
         if query.data.startswith("crypto_amount_"):
             # 解析数据
@@ -219,7 +220,7 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     await query.edit_message_text("回调数据格式错误，请使用 /btc_predict 重新开始。")
                     return
-                    
+
             if amount_str == "custom":
                 await query.edit_message_text(
                     "请直接发送命令指定您要投入的金额，例如:\n"
@@ -230,13 +231,13 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 try:
                     amount = int(amount_str)
-                    
+
                     # 获取比特币当前价格
                     btc_price, error = await get_btc_price()
                     if error:
                         await query.edit_message_text(f"{error}\n请稍后再试。")
                         return
-                    
+
                     # 检查用户是否有足够的金币
                     user_coins = await process_user.async_get_user_coins(user_id)
                     if user_coins < amount:
@@ -245,7 +246,7 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"请使用 /btc_predict 重新选择金额。"
                         )
                         return
-                    
+
                     # 修改按钮回调数据，加入用户ID
                     keyboard = [
                         [
@@ -255,7 +256,7 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         [InlineKeyboardButton("取消", callback_data=f"crypto_cancel_user_{user_id}")]
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
-                    
+
                     await query.edit_message_text(
                         f"您准备投入 {amount} 金币进行比特币价格预测。\n"
                         f"当前价格: ${btc_price:,.2f}\n\n"
@@ -268,7 +269,7 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.error(f"处理金额回调时出错: {e}")
                     await query.edit_message_text("解析金额时发生错误，请使用 /btc_predict 重新开始。")
                     return
-        
+
         # 处理预测方向选择
         elif query.data.startswith("crypto_predict_"):
             # 解析回调数据，从query.data中去除user_id部分
@@ -279,15 +280,15 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     base_parts = parts[0].split("_")  # crypto_predict_up 或 crypto_predict_down
                     if len(base_parts) < 3:
                         raise IndexError("预测方向数据不完整")
-                    
+
                     direction = base_parts[2]  # 'up' 或 'down'
-                    
+
                     # 从user_id后面的部分提取amount
                     user_parts = parts[1].split("_")
                     # user_parts[0] 是用户ID，user_parts[1]是金额
                     if len(user_parts) < 2:
                         raise IndexError("金额数据不完整")
-                        
+
                     amount = int(user_parts[1])
                 except (IndexError, ValueError) as e:
                     logger.error(f"解析预测数据时出错: {e}, 数据: {original_data}")
@@ -300,7 +301,7 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.error(f"预测回调数据格式错误: {original_data}")
                     await query.edit_message_text("回调数据格式错误，请使用 /btc_predict 重新开始。")
                     return
-                    
+
                 direction = parts[2]  # 'up' 或 'down'
                 try:
                     amount = int(parts[3])
@@ -308,7 +309,7 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.error(f"解析预测金额时出错: {e}, 数据: {original_data}")
                     await query.edit_message_text("解析预测数据时发生错误，请使用 /btc_predict 重新开始。")
                     return
-            
+
             # 使用用户特定的锁，防止同一用户多次操作冲突
             user_lock = await get_user_lock(user_id)
             # 增加锁的超时控制，防止长时间阻塞
@@ -322,25 +323,25 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if (active_prediction):
                             await query.answer("您已经有一个正在进行的预测。请等待它结束后再开始新预测。", show_alert=True)
                             return False
-                        
+
                         # 获取当前比特币价格
                         btc_price, error = await get_btc_price()
                         if error:
                             await query.edit_message_text(f"{error}\n请稍后再试。")
                             return False
-                        
+
                         # 创建预测
                         success, error_msg = await create_prediction(user_id, direction, amount, btc_price)
                         if not success:
                             await query.edit_message_text(f"创建预测失败: {error_msg}")
                             return False
-                        
+
                         # 创建任务来检查结果
                         task = asyncio.create_task(
                             schedule_prediction_check(context, query.message.chat_id, user_id)
                         )
                         active_predict_tasks[user_id] = task
-                        
+
                         # 更新消息
                         direction_text = "上涨 ↗" if direction == "up" else "下跌 ↘"
                         await query.edit_message_text(
@@ -354,13 +355,13 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             parse_mode=ParseMode.MARKDOWN
                         )
                         return True
-                
+
                 try:
                     # 使用wait_for限制操作时间为5秒
                     success = await asyncio.wait_for(locked_operation(), timeout=5.0)
                     if not success:
                         return  # 如果操作失败，locked_operation内部已经处理了错误消息
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning(f"用户 {user_id} 的预测操作超时")
                     await query.edit_message_text("操作超时，请使用 /btc_predict 重新开始。")
                     return
@@ -371,7 +372,7 @@ async def crypto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             logger.warning(f"未知回调数据: {query.data}")
             await query.answer("未知操作，请使用 /btc_predict 重新开始。", show_alert=True)
-            
+
     except Exception as e:
         logger.error(f"处理预测回调时发生未处理异常: {str(e)}")
         try:
@@ -546,7 +547,7 @@ async def schedule_prediction_check(context, chat_id, user_id):
     try:
         # 等待10分钟
         await asyncio.sleep(600)
-        
+
         # 检查预测结果
         result = await check_prediction_result(user_id)
         if not result:
@@ -556,16 +557,16 @@ async def schedule_prediction_check(context, chat_id, user_id):
                 text="⚠️ 无法检查您的比特币价格预测结果，请联系管理员。"
             )
             return
-        
+
         # 获取用户名称，用于@通知
         username = await get_username_by_user_id(user_id, context)
         mention_text = f"@{username}" if username else f"用户 {user_id}"
-        
+
         # 发送结果通知
         direction = "上涨 ↗" if result['predict_type'] == 'up' else "下跌 ↘"
         actual_direction = "上涨 ↗" if result['end_price'] > result['start_price'] else "下跌 ↘"
         change_pct = abs((result['end_price'] - result['start_price']) / result['start_price'] * 100)
-        
+
         if result['is_correct']:
             message = (
                 f"🎉 {mention_text}，您的比特币价格预测正确！\n\n"
@@ -586,7 +587,7 @@ async def schedule_prediction_check(context, chat_id, user_id):
                 f"您损失了投入的 {result['amount']} 金币。再接再厉！\n\n"
                 f"📊 [点击查看比特币实时价格图表](https://cn.tradingview.com/chart/?symbol=BINANCE%3ABTCUSDT.P)"
             )
-        
+
         await context.bot.send_message(
             chat_id=chat_id,
             text=message,
@@ -618,7 +619,7 @@ async def get_username_by_user_id(user_id, context):
             return user.user.username
     except Exception as e:
         logger.error(f"从Telegram获取用户名失败: {str(e)}")
-    
+
     # 如果从Telegram获取失败，尝试从数据库获取
     try:
         name = await user_records.get_name(user_id)
@@ -626,7 +627,7 @@ async def get_username_by_user_id(user_id, context):
             return name
     except Exception as e:
         logger.error(f"从数据库获取用户名失败: {str(e)}")
-    
+
     return None
 
 def setup_crypto_predict_handlers(application):

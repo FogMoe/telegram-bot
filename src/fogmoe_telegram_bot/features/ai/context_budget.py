@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from fogmoe_telegram_bot.core.token_estimator import estimate_message_tokens, estimate_tokens
 

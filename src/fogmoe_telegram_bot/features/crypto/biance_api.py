@@ -1,11 +1,12 @@
-from binance.um_futures import UMFutures
-from binance.error import ClientError
 import time
-
-from fogmoe_telegram_bot.core.redaction import describe_exception
 from datetime import datetime, timedelta
+
+from binance.error import ClientError
+from binance.um_futures import UMFutures
 from requests.exceptions import ConnectionError, ReadTimeout
 from urllib3.exceptions import ProtocolError
+
+from fogmoe_telegram_bot.core.redaction import describe_exception
 
 
 def calculate_body_ratio(open_price, close_price, high, low):
@@ -64,7 +65,7 @@ def check_result(trigger_time, trigger_price):
         price_change = ((current_price - trigger_price) / trigger_price * 100)
         return format_check_result(
             trigger_time,
-            trigger_price, 
+            trigger_price,
             current_price,
             price_change,
             current_price > trigger_price
@@ -78,7 +79,7 @@ def monitor_btc_pattern(body_ratio_threshold=0.7, green_vs_red_ratio=1.0):
         client = UMFutures(timeout=30)
         max_retries = 3
         retry_delay = 5
-        
+
         for attempt in range(max_retries):
             try:
                 klines = client.mark_price_klines("BTCUSDT", '5m', limit=3)
@@ -87,10 +88,10 @@ def monitor_btc_pattern(body_ratio_threshold=0.7, green_vs_red_ratio=1.0):
                 if attempt == max_retries - 1:
                     return [f"连接错误 (尝试 {max_retries} 次): {describe_exception(e)}"], None
                 time.sleep(retry_delay)
-        
+
         if len(klines) < 3:
             return ["获取数据不足"], None
-            
+
         candles = []
         for k in klines:
             candles.append({
@@ -100,32 +101,32 @@ def monitor_btc_pattern(body_ratio_threshold=0.7, green_vs_red_ratio=1.0):
                 'close': float(k[4]),
                 'time': datetime.fromtimestamp(k[0]/1000)
             })
-        
+
         # 连续两根红柱+第三根绿柱+涨幅计算
         if (is_red_candle(candles[0]['open'], candles[0]['close']) and
             is_red_candle(candles[1]['open'], candles[1]['close']) and
             is_green_candle(candles[2]['open'], candles[2]['close'])):
-            
-            ratio1 = calculate_body_ratio(candles[0]['open'], candles[0]['close'], 
+
+            ratio1 = calculate_body_ratio(candles[0]['open'], candles[0]['close'],
                                           candles[0]['high'], candles[0]['low'])
             green_change = calculate_price_change(candles[2]['open'], candles[2]['close'])
             red_change = abs(calculate_price_change(candles[1]['open'], candles[1]['close']))
-            
-            if (ratio1 >= body_ratio_threshold and 
+
+            if (ratio1 >= body_ratio_threshold and
                 green_change >= red_change * green_vs_red_ratio):
-                
+
                 trigger_price = candles[2]['close']
                 trigger_dt = candles[2]['time'] + timedelta(minutes=5)  # 得到datetime
                 trigger_time = trigger_dt.timestamp()                  # 转为浮点秒数
-                
+
                 message = format_result_message(
                     trigger_price,
                     datetime.now() + timedelta(minutes=10)
                 )
                 return [message], (trigger_price, trigger_time)
-        
+
         return [], None
-            
+
     except ClientError as e:
         return [f"API错误: {e.error_message}"], None
     except Exception as e:

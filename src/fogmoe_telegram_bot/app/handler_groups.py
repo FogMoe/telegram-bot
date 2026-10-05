@@ -13,7 +13,12 @@ from fogmoe_telegram_bot.features.ai import idle_followup, scheduler, translate_
 from fogmoe_telegram_bot.features.conversation import handlers as conversation
 from fogmoe_telegram_bot.features.conversation import history_hooks
 from fogmoe_telegram_bot.features.conversation.clear import clear_command
-from fogmoe_telegram_bot.features.crypto import chart, crypto_predict, monitoring, swap_fogmoe_solana_token
+from fogmoe_telegram_bot.features.crypto import (
+    chart,
+    crypto_predict,
+    monitoring,
+    swap_fogmoe_solana_token,
+)
 from fogmoe_telegram_bot.features.economy import (
     bribe,
     charge_coin,
@@ -27,7 +32,12 @@ from fogmoe_telegram_bot.features.economy import (
 from fogmoe_telegram_bot.features.economy.coins import give_command, lottery_command, rich_command
 from fogmoe_telegram_bot.features.games import gamble, omikuji, rockpaperscissors_game, rpg, sicbo
 from fogmoe_telegram_bot.features.media import music, pic
-from fogmoe_telegram_bot.features.moderation import keyword_handler, member_verify, report, spam_control
+from fogmoe_telegram_bot.features.moderation import (
+    keyword_handler,
+    member_verify,
+    report,
+    spam_control,
+)
 from fogmoe_telegram_bot.features.profile import handlers as profile
 
 from .error_handler import error_handler

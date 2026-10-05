@@ -1,7 +1,7 @@
 """Implement /bribe command for increasing affection by spending coins."""
 
 import logging
-from typing import Sequence
+from collections.abc import Sequence
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes

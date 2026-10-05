@@ -16,10 +16,11 @@ import json
 import logging
 import re
 import threading
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from statistics import median
-from typing import Any, Iterable
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from telegram.ext import ContextTypes
@@ -417,7 +418,7 @@ def _format_idle_recap_event(
     timestamp: datetime,
 ) -> str:
     if timestamp.tzinfo is not None:
-        timestamp = timestamp.astimezone(timezone.utc).replace(tzinfo=None)
+        timestamp = timestamp.astimezone(UTC).replace(tzinfo=None)
     attrs = [
         ("type", "idle_followup"),
         ("timestamp", timestamp.strftime("%Y-%m-%d %H:%M:%S")),
@@ -454,7 +455,7 @@ async def note_incoming_private_message(user_id: int) -> None:
 
     if not IDLE_FOLLOWUP_ENABLED:
         return
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     try:
         await mysql_connection.execute(
             "UPDATE ai_idle_followups "
@@ -475,7 +476,7 @@ async def arm_from_private_turn(user_id: int) -> None:
 
     if not IDLE_FOLLOWUP_ENABLED:
         return
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     try:
         async with mysql_connection.transaction() as connection:
             row = await mysql_connection.fetch_one(
@@ -554,7 +555,7 @@ async def _claim_due_followups(
     claim 以 activity_version 为条件：用户在这期间有了新活动就不会 claim 到。
     租约已到期的 executing 行先由 `_recover_expired_followups` 按阶段处理。
     """
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     claims: list[IdleFollowupClaim] = []
     async with mysql_connection.transaction() as connection:
         rows = await mysql_connection.fetch_all(
@@ -714,7 +715,7 @@ async def _record_claim_failure(run: _IdleRun, exc: BaseException) -> None:
     )
     async with mysql_connection.transaction() as connection:
         if retry_safe and next_retry_count < IDLE_FOLLOWUP_MAX_RETRIES:
-            next_run_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(
+            next_run_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(
                 minutes=IDLE_FOLLOWUP_RETRY_MINUTES
             )
             result = await connection.exec_driver_sql(
@@ -1011,7 +1012,7 @@ async def _run_claim(
 
         recap_event = _format_idle_recap_event(
             recap,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
         user_state_prompt = await build_user_state_prompt(claim.user_id)
         if user_state_prompt is None:

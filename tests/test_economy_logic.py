@@ -9,7 +9,8 @@ from fogmoe_telegram_bot.features.ai.tools import user_tools
 from fogmoe_telegram_bot.features.crypto import crypto_predict
 from fogmoe_telegram_bot.features.crypto import swap_fogmoe_solana_token as swap
 from fogmoe_telegram_bot.features.economy import shop_views, stake_coin
-from fogmoe_telegram_bot.features.economy.operations import bribe, coins, invitations as ref, stake, task
+from fogmoe_telegram_bot.features.economy.operations import bribe, coins, stake, task
+from fogmoe_telegram_bot.features.economy.operations import invitations as ref
 from fogmoe_telegram_bot.features.economy.operations import shop as shop_purchases
 
 

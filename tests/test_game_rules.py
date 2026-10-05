@@ -3,7 +3,8 @@
 import pytest
 
 from fogmoe_telegram_bot.core import balance
-from fogmoe_telegram_bot.features.games import gamble, gamble_rounds, rockpaperscissors_game as rps, rps_games
+from fogmoe_telegram_bot.features.games import gamble, gamble_rounds, rps_games
+from fogmoe_telegram_bot.features.games import rockpaperscissors_game as rps
 from fogmoe_telegram_bot.features.games.rpg import settlement
 
 

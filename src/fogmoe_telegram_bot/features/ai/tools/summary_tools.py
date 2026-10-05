@@ -6,8 +6,8 @@ import math
 import re
 import unicodedata
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 from fogmoe_telegram_bot.core import mysql_connection
 

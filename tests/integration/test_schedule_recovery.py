@@ -865,8 +865,7 @@ class TestHousekeeping:
         execute(
             env.url,
             (
-                "UPDATE ai_schedules SET status = 'executed' WHERE id IN (%s)"
-                % ", ".join(["%s"] * len(executed)),
+                f"UPDATE ai_schedules SET status = 'executed' WHERE id IN ({', '.join(['%s'] * len(executed))})",
                 tuple(executed),
             ),
         )

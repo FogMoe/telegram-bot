@@ -11,7 +11,10 @@ from fogmoe_telegram_bot.features.ai.tools.context import (
     clear_tool_request_context,
     set_tool_request_context,
 )
-from fogmoe_telegram_bot.features.ai.tools.models import ExecuteTelegramCommandArgs, parameters_schema
+from fogmoe_telegram_bot.features.ai.tools.models import (
+    ExecuteTelegramCommandArgs,
+    parameters_schema,
+)
 from fogmoe_telegram_bot.features.ai.tools.schemas import OPENAI_TOOLS
 from fogmoe_telegram_bot.features.ai.types import TOOL_CONTEXT_MESSAGES_KEY
 from fogmoe_telegram_bot.features.economy.operations.coins import give_op_key
