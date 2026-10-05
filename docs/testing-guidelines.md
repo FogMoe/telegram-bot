@@ -74,6 +74,18 @@
 
 使用 uv 时也可以直接运行 `uv run pytest`，它会先按 `uv.lock` 同步环境。
 
+### 日常测试与 slow 测试
+
+日常的 `pytest` 只跑快的单元测试，几秒内结束；改动之后通常只跑相关的测试文件就够了。
+
+单个超过约 0.1 秒的测试标记为 `@pytest.mark.slow`（真实等待的并发、超时测试，扫描整个源码目录的边界检查，组装 Application 的测试），本地默认跳过。要一起跑时加 `--run-slow`：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest --run-slow
+```
+
+CI 的 `test` 任务带 `--run-slow`，所以 slow 测试在每个 PR 和 main 上都会运行。新增测试如果超过 0.1 秒，同样加上 slow 标记；找慢测试用 `pytest --run-slow --durations=30`。
+
 ### 测试不读取 `.env`
 
 `core/config.py` 在导入时读取配置，`tests/conftest.py` 会在导入项目模块之前设置 `BOT_ENV_FILE=`（空值），所以 pytest 默认不读取仓库根的 `.env`；随后把生效配置换成只含代码默认值的设置（`AppSettings.from_values()`），进程环境变量也不会影响测试。需要让测试读取指定文件时，自己设置 `BOT_ENV_FILE=<路径>`。
@@ -179,7 +191,7 @@ Windows 的 Git Bash 没有 Linux 的进程模型，需要用 bash 替身代替 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) 在每个 pull request 和推送到 `main` 时运行：
 
 - `lint`：`uv lock --check`（锁与 `pyproject.toml` 一致）、导出的 `requirements*.txt` 与锁一致、ruff、mypy。
-- `test`：除 `tests/integration` 以外的 pytest。
+- `test`：除 `tests/integration` 以外的 pytest，包括 slow 测试（`--run-slow`）。
 - `integration`：`mysql:8.4` service 上的 `tests/integration`；目录里还没有测试时不算失败，但全部被跳过会失败。
 - `image`：构建镜像并运行启动冒烟检查，确认日志同时进入 stdout 和挂载的日志目录。
 - `run-bot-script`：运行 `scripts/verify_run_bot.sh`。

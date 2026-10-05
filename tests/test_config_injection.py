@@ -130,6 +130,7 @@ def test_readers_of_config_at_call_time_see_the_override(settings_override):
     assert provider_resolver.provider_model_for_task("siliconflow", "chat") == "sf-model"
 
 
+@pytest.mark.slow
 def test_create_application_uses_the_explicit_settings(settings_override):
     settings = config.AppSettings.from_values(TELEGRAM_BOT_TOKEN="123:from-settings")
 
@@ -140,6 +141,7 @@ def test_create_application_uses_the_explicit_settings(settings_override):
     assert sum(len(handlers) for handlers in application.handlers.values()) > 0
 
 
+@pytest.mark.slow
 def test_create_application_accepts_a_prebuilt_bot(settings_override):
     bot = HistoryTrackingExtBot(token="456:prebuilt")
 
@@ -216,6 +218,7 @@ def test_the_import_time_scan_sees_module_level_reads_and_ignores_function_bodie
     assert _import_time_config_reads(tree) == {"BASE_DIR", "TOKEN", "LIMIT", "DEFAULT"}
 
 
+@pytest.mark.slow
 def test_no_new_module_reads_configuration_at_import_time():
     modules_dir = config.BASE_DIR / "modules"
     found = set()

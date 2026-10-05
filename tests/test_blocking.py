@@ -38,6 +38,7 @@ def test_a_sync_call_runs_in_a_worker_thread_not_in_the_event_loop():
     assert worker_thread != loop_thread
 
 
+@pytest.mark.slow
 def test_concurrency_is_bounded_by_the_pool_size_and_the_rest_queue():
     adapter = make_adapter(workers=2)
     lock = threading.Lock()
@@ -101,6 +102,7 @@ def test_exceptions_from_the_worker_reach_the_caller():
         adapter.shutdown()
 
 
+@pytest.mark.slow
 def test_a_cancelled_call_that_never_started_is_not_executed():
     adapter = make_adapter(workers=1)
     release = threading.Event()
@@ -136,6 +138,7 @@ def test_a_cancelled_call_that_never_started_is_not_executed():
     assert started == []  # 有副作用的同步工具：等待方放弃之后不会再被执行
 
 
+@pytest.mark.slow
 def test_a_call_already_running_when_cancelled_finishes_in_the_background():
     adapter = make_adapter()
     finished = threading.Event()
@@ -199,6 +202,7 @@ def test_shutdown_reports_queued_calls_as_closed_not_as_a_cancelled_task():
     assert isinstance(outcome, blocking.AdapterClosedError)
 
 
+@pytest.mark.slow
 def test_pool_sizes_come_from_the_active_configuration(settings_override):
     settings_override(BLOCKING_TOOL_THREADS=3, BLOCKING_IO_THREADS=2)
     # 适配器按首次使用时的配置建线程池：先释放已有的线程池，让它按这份配置重建。

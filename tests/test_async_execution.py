@@ -156,6 +156,7 @@ def test_multiple_tool_rounds_run_until_the_model_answers(monkeypatch):
     assert [log["tool_call_id"] for log in tool_logs if log["type"] == "tool_result"] == ["c1", "c2"]
 
 
+@pytest.mark.slow
 def test_sync_tool_concurrency_is_bounded_by_the_thread_adapter(monkeypatch, settings_override):
     settings_override(BLOCKING_TOOL_THREADS=2)
     blocking.shutdown_all()
@@ -364,6 +365,7 @@ def test_skipped_tools_are_not_executed(monkeypatch):
 # -- 整轮截止时间 --------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_a_hanging_provider_call_ends_at_the_deadline_with_a_typed_error(monkeypatch):
     async def hang():
         await asyncio.sleep(30)
@@ -391,6 +393,7 @@ def test_the_per_call_timeout_is_tightened_to_the_remaining_deadline(monkeypatch
     assert calls[0].kwargs["timeout"] <= 42
 
 
+@pytest.mark.slow
 def test_a_tool_cut_off_by_the_deadline_is_paired_and_never_replayed(monkeypatch):
     fake, calls = script(
         Response(Message("", [call("c1"), call("c2", "fetch_url", '{"url": "https://e.test"}')])),
@@ -428,6 +431,7 @@ def test_a_tool_cut_off_by_the_deadline_is_paired_and_never_replayed(monkeypatch
     assert len(calls) == 1  # 没有为了「重试」再调用模型
 
 
+@pytest.mark.slow
 def test_a_sync_tool_cut_off_by_the_deadline_is_abandoned_not_waited_for(monkeypatch):
     fake, _ = script(Response(Message("", [call("c1")])))
     release = threading.Event()
@@ -454,6 +458,7 @@ def test_a_sync_tool_cut_off_by_the_deadline_is_abandoned_not_waited_for(monkeyp
     assert finished.wait(2)  # 线程自己跑完，结果被丢弃
 
 
+@pytest.mark.slow
 def test_the_deadline_also_covers_visible_content_delivery(monkeypatch):
     fake, _ = script(Response(Message("很长的一段话", None)))
 
@@ -473,6 +478,7 @@ def test_the_deadline_also_covers_visible_content_delivery(monkeypatch):
     assert run_loop(scenario()).phase == "delivery"
 
 
+@pytest.mark.slow
 def test_media_whose_delivery_is_cut_off_keeps_its_result_and_is_not_sent_again(monkeypatch):
     fake, _ = script(
         Response(
@@ -532,6 +538,7 @@ def test_media_whose_delivery_is_cut_off_keeps_its_result_and_is_not_sent_again(
     ]
 
 
+@pytest.mark.slow
 def test_telegram_events_of_tools_that_finished_survive_a_deadline_later_in_the_round(monkeypatch):
     fake, _ = script(
         Response(Message("", [call("c1", "fetch_url", '{"url": "https://e.test"}'), call("c2")])),
@@ -589,6 +596,7 @@ def test_a_failed_provider_falls_back_to_the_next_one_through_the_async_stack(mo
     assert [(c.provider, c.model) for c in calls] == [("openai", "openai-model"), ("gemini", "gemini-model")]
 
 
+@pytest.mark.slow
 def test_a_hung_provider_ends_the_whole_turn_at_the_deadline_with_a_notice(monkeypatch, two_providers):
     async def hang():
         await asyncio.sleep(30)
@@ -627,6 +635,7 @@ def test_an_expired_deadline_never_calls_a_provider_or_blames_one(monkeypatch, t
     assert metrics.snapshot().counter("turn.deadline_hits", reason="deadline", phase="fallback") == 1
 
 
+@pytest.mark.slow
 def test_the_first_provider_that_runs_into_the_deadline_leaves_no_time_for_the_fallback(
     monkeypatch, two_providers
 ):
@@ -647,6 +656,7 @@ def test_the_first_provider_that_runs_into_the_deadline_leaves_no_time_for_the_f
     assert "gemini" not in router._provider_failure_streaks
 
 
+@pytest.mark.slow
 def test_a_deadline_during_tools_returns_the_paired_tool_logs_and_does_not_retry(monkeypatch, two_providers):
     async def hanging_search(**kwargs):
         await asyncio.sleep(30)
@@ -665,6 +675,7 @@ def test_a_deadline_during_tools_returns_the_paired_tool_logs_and_does_not_retry
     assert len(calls) == 1
 
 
+@pytest.mark.slow
 def test_a_deadline_after_visible_content_still_tells_the_user(monkeypatch, two_providers):
     class Handler:
         sent_contents = ["已经发出的一段"]

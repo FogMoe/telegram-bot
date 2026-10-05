@@ -42,6 +42,7 @@ def _read_admin_user_id(env: dict[str, str]) -> str:
     return result.stdout.strip()
 
 
+@pytest.mark.slow
 def test_import_reads_only_the_selected_env_file(tmp_path):
     env_file = tmp_path / "custom.env"
     env_file.write_text("ADMIN_USER_ID=424242\n", encoding="utf-8")

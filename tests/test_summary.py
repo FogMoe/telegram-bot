@@ -243,6 +243,7 @@ def clean_background():
     summary._slot_state = None
 
 
+@pytest.mark.slow
 def test_background_summaries_run_with_bounded_concurrency(monkeypatch, clean_background):
     state = {"running": 0, "peak": 0, "done": []}
 

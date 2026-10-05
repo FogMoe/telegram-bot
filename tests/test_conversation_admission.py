@@ -106,6 +106,7 @@ def test_the_turn_deadline_comes_from_the_configuration(world, settings_override
     assert 122 < request.deadline.remaining() <= 123
 
 
+@pytest.mark.slow
 def test_a_request_over_the_global_limit_queues_and_reports_the_wait(world, settings_override):
     settings_override(CHAT_MAX_CONCURRENT_TURNS=1, CHAT_QUEUE_MAX_WAIT_SECONDS=5)
     world.turn_seconds = 0.1
@@ -123,6 +124,7 @@ def test_a_request_over_the_global_limit_queues_and_reports_the_wait(world, sett
     assert world.turns[1].queue_seconds >= 0.07  # 排队时间交给了这一轮
 
 
+@pytest.mark.slow
 def test_waiting_longer_than_the_threshold_gets_a_busy_notice_and_never_starts_the_turn(
     world, settings_override
 ):
@@ -149,6 +151,7 @@ def test_waiting_longer_than_the_threshold_gets_a_busy_notice_and_never_starts_t
     assert metrics.snapshot().counter("admission.rejected", reason="queue_timeout") == 1
 
 
+@pytest.mark.slow
 def test_a_full_queue_answers_busy_immediately(world, settings_override):
     settings_override(
         CHAT_MAX_CONCURRENT_TURNS=1, CHAT_MAX_QUEUED_TURNS=1, CHAT_QUEUE_MAX_WAIT_SECONDS=5
@@ -174,6 +177,7 @@ def test_a_full_queue_answers_busy_immediately(world, settings_override):
     assert [request.sender.user_id for request in world.turns] == [1, 2]
 
 
+@pytest.mark.slow
 def test_the_per_user_limit_rejects_the_overflow_behind_the_conversation_lock(
     world, settings_override
 ):
@@ -196,6 +200,7 @@ def test_the_per_user_limit_rejects_the_overflow_behind_the_conversation_lock(
     assert metrics.snapshot().counter("admission.rejected", reason="user_limit") == 1
 
 
+@pytest.mark.slow
 def test_the_per_user_limit_does_not_affect_other_users(world, settings_override):
     settings_override(CHAT_MAX_PENDING_PER_USER=1)
     world.turn_seconds = 0.1
@@ -208,6 +213,7 @@ def test_the_per_user_limit_does_not_affect_other_users(world, settings_override
     assert len(world.turns) == 2
 
 
+@pytest.mark.slow
 def test_group_chatter_that_does_not_address_the_bot_is_neither_counted_nor_rejected(
     world, settings_override
 ):
@@ -233,6 +239,7 @@ def test_group_chatter_that_does_not_address_the_bot_is_neither_counted_nor_reje
     assert sorted(world.group_logs) == [(1, -100), (2, -100)]
 
 
+@pytest.mark.slow
 def test_a_rejected_group_request_is_still_recorded_in_the_group_history(world, settings_override):
     settings_override(CHAT_MAX_PENDING_PER_USER=1)
     world.turn_seconds = 0.2
@@ -298,6 +305,7 @@ def test_a_closed_admission_answers_that_the_bot_is_restarting(world):
     assert replies == [(9, handlers.SHUTTING_DOWN_TEXT)]
 
 
+@pytest.mark.slow
 def test_a_failing_notice_never_breaks_the_handler(world, settings_override):
     settings_override(CHAT_MAX_CONCURRENT_TURNS=1, CHAT_QUEUE_MAX_WAIT_SECONDS=0)
     world.turn_seconds = 0.2
@@ -319,6 +327,7 @@ def test_a_failing_notice_never_breaks_the_handler(world, settings_override):
     assert [request.sender.user_id for request in world.turns] == [1]
 
 
+@pytest.mark.slow
 def test_slots_and_user_names_are_released_after_every_outcome(world, settings_override):
     settings_override(CHAT_MAX_CONCURRENT_TURNS=1, CHAT_QUEUE_MAX_WAIT_SECONDS=0)
     world.turn_seconds = 0.05

@@ -101,6 +101,7 @@ def test_handlers_and_operations_contain_no_sql(directory):
     assert offenders == {}
 
 
+@pytest.mark.slow
 def test_the_crypto_entry_points_that_hold_coins_contain_no_sql():
     offenders = {}
     for name in CRYPTO_COVERED:

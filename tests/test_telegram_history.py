@@ -743,6 +743,7 @@ def test_cross_chat_notification_does_not_inherit_admin_command(monkeypatch):
     assert 'command="admin_announce"' not in recipient_event[1]
 
 
+@pytest.mark.slow
 def test_send_and_record_does_not_record_failed_telegram_send(monkeypatch):
     recorded = []
 

@@ -68,7 +68,7 @@ jobs:
         run: uv sync
 
       - name: Pytest (MySQL integration tests run in their own job)
-        run: uv run pytest -ra --ignore=tests/integration
+        run: uv run pytest -ra --ignore=tests/integration --run-slow
 
   integration:
     name: MySQL integration tests

@@ -783,6 +783,7 @@ class TestDeadline:
 
         assert world.model_requests[0].deadline is deadline
 
+    @pytest.mark.slow
     def test_a_hung_provider_ends_the_turn_at_the_deadline_without_refunding(self, hung_provider):
         world = World()
         request = make_request(text_message(5, "你好"), deadline=Deadline(0.15))
@@ -804,6 +805,7 @@ class TestDeadline:
         # 收尾照常进行：零余额边界仍然写入。
         assert world.names()[-1] == "insert_records"
 
+    @pytest.mark.slow
     def test_a_deadline_while_preparing_media_replies_and_stops_after_the_charge(self):
         world = World()
 
@@ -827,6 +829,7 @@ class TestDeadline:
         assert "run_model" not in world.names()
         assert "insert_records" not in world.names()
 
+    @pytest.mark.slow
     def test_a_hung_flush_before_the_charge_ends_the_turn_without_charging(self):
         world = World()
 
@@ -866,6 +869,7 @@ class TestDeadline:
         assert result.status is TurnStatus.DEADLINE_EXCEEDED
         assert "charge" not in world.names()
 
+    @pytest.mark.slow
     @pytest.mark.parametrize("stage", ["load_user_state", "get_history"])
     def test_hung_database_reads_before_the_model_end_the_turn_at_the_deadline(self, stage):
         world = World()
@@ -901,6 +905,7 @@ class TestDeadline:
         assert result.status is TurnStatus.DEADLINE_EXCEEDED
         assert world.calls("reply_text")[0][2] == router.TURN_SHUTDOWN_ERROR_MESSAGE
 
+    @pytest.mark.slow
     def test_writing_the_reply_to_history_is_bounded_and_delivery_still_runs(self, monkeypatch):
         world = World()
         monkeypatch.setattr(turn, "DELIVERY_GRACE_SECONDS", 0.2)
@@ -925,6 +930,7 @@ class TestDeadline:
             == 1
         )
 
+    @pytest.mark.slow
     def test_delivery_that_hangs_past_the_deadline_is_cut_off_and_the_turn_still_finishes(
         self, monkeypatch
     ):

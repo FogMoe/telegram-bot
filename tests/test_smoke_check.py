@@ -1,5 +1,9 @@
+import pytest
+
 from app import smoke_check
 from core import config
+
+pytestmark = pytest.mark.slow
 
 
 def test_smoke_check_assembles_application_without_token(monkeypatch, capsys):

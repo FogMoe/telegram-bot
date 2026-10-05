@@ -83,6 +83,7 @@ BLOCKING_METHODS = {"mark_price", "mark_price_klines"}
 ALLOWED_BLOCKING_IN_ASYNC: set[tuple[str, str]] = set()
 
 
+@pytest.mark.slow
 def test_no_async_function_makes_a_blocking_network_call_directly():
     offenders = []
     for relative, tree in _parsed_modules():
@@ -104,6 +105,7 @@ ALLOWED_THREAD_POOLS = {
 }
 
 
+@pytest.mark.slow
 def test_thread_pools_only_live_in_the_bounded_adapter():
     offenders = []
     for relative, tree in _parsed_modules():
@@ -120,6 +122,7 @@ def test_thread_pools_only_live_in_the_bounded_adapter():
 ALLOWED_DEFAULT_EXECUTOR = {"features/economy/operations/web_password.py"}
 
 
+@pytest.mark.slow
 def test_the_default_executor_is_not_used_for_network_or_tool_work():
     offenders = []
     for relative, tree in _parsed_modules():
@@ -146,6 +149,7 @@ ALLOWED_RUN_SYNC = {
 }
 
 
+@pytest.mark.slow
 def test_run_sync_stays_at_documented_sync_boundaries():
     offenders = []
     for relative, tree in _parsed_modules():
@@ -157,6 +161,7 @@ def test_run_sync_stays_at_documented_sync_boundaries():
     assert offenders == []
 
 
+@pytest.mark.slow
 def test_the_conversation_path_does_not_bridge_back_into_the_loop_from_threads():
     """`run_coroutine_threadsafe` 只剩 core.db.run_sync 一处：主路径没有跨线程的同步等待。"""
     offenders = []
@@ -186,6 +191,7 @@ async def _ticker(counter, stop):
         await asyncio.sleep(0.01)
 
 
+@pytest.mark.slow
 def test_the_monitoring_price_check_runs_off_the_event_loop(monkeypatch):
     seen = {}
     sent = []
@@ -246,6 +252,7 @@ def test_the_monitor_loop_polls_in_a_worker_thread(monkeypatch):
     assert seen["thread"] != seen["loop"]
 
 
+@pytest.mark.slow
 def test_the_btc_price_lookup_does_not_block_the_event_loop(monkeypatch):
     seen = {}
 

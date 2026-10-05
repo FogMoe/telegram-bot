@@ -40,6 +40,29 @@ install_history_hooks()
 _INTEGRATION_DIR = Path(__file__).resolve().parent / "integration"
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-slow",
+        action="store_true",
+        help="同时运行标记为 slow 的测试（CI 带这个参数）",
+    )
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "slow: 单个超过约 0.1 秒的测试（真实等待、扫描源码、组装 Application），本地默认跳过"
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-slow"):
+        return
+    skip = pytest.mark.skip(reason="slow：本地默认跳过，加 --run-slow 运行")
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(skip)
+
+
 @pytest.fixture(autouse=True)
 def _no_database_in_unit_tests(request, monkeypatch):
     """单元测试不连数据库：没打桩就走到 `core.db` 的访问立即按连接失败处理。

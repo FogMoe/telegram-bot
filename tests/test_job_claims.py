@@ -19,6 +19,7 @@ async def _renew_always():
 
 
 class TestRunLeased:
+    @pytest.mark.slow
     def test_returns_the_result_and_stops_the_heartbeat(self):
         renewals = []
 
@@ -91,6 +92,7 @@ class TestRunLeased:
         assert observed["cancelled"] is True
         assert abort_event.is_set()
 
+    @pytest.mark.slow
     def test_a_transient_renewal_error_is_survived(self):
         calls = []
 
@@ -116,6 +118,7 @@ class TestRunLeased:
 
         assert result == "done" and len(calls) >= 2
 
+    @pytest.mark.slow
     def test_a_lease_that_cannot_be_confirmed_for_a_whole_term_is_treated_as_lost(self):
         async def renew():
             raise ConnectionError("database is down")

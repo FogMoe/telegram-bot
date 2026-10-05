@@ -1,9 +1,12 @@
 import asyncio
 import hashlib
 
+import pytest
+
 from features.economy.operations import web_password
 
 
+@pytest.mark.slow
 def test_hash_password_uses_argon2id_and_verifies():
     password_hash = web_password.hash_password("abc12345")
 

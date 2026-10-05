@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+import pytest
+
 MODULES_DIR = Path(__file__).resolve().parents[1] / "modules"
 GAMES_DIR = MODULES_DIR / "features" / "games"
 ECONOMY_DIR = MODULES_DIR / "features" / "economy"
@@ -24,6 +26,7 @@ def sources(directory: Path):
     return {path: path.read_text(encoding="utf-8") for path in directory.rglob("*.py")}
 
 
+@pytest.mark.slow
 def test_the_removed_balance_functions_are_neither_defined_nor_called():
     offenders = {
         str(path.relative_to(MODULES_DIR)): [

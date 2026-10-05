@@ -121,6 +121,7 @@ def test_expire_wakes_a_waiting_guard_with_the_shutdown_reason():
     assert elapsed < 1.0
 
 
+@pytest.mark.slow
 def test_expire_keeps_the_grace_of_a_delivery_guard():
     async def scenario():
         deadline = Deadline(60)

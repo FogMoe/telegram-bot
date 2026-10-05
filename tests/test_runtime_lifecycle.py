@@ -226,6 +226,7 @@ def test_a_zero_interval_turns_the_metrics_reporter_off(settings_override):
     assert asyncio.run(scenario()) == 0
 
 
+@pytest.mark.slow
 def test_the_application_notifies_the_runtime_before_ptb_starts_stopping(monkeypatch):
     order = []
 
@@ -245,6 +246,7 @@ def test_the_application_notifies_the_runtime_before_ptb_starts_stopping(monkeyp
     assert isinstance(application, bot_app.BotApplication)
 
 
+@pytest.mark.slow
 def test_concurrent_updates_are_bounded_by_the_configured_value():
     application = bot_app.create_application(
         config.AppSettings.from_values(

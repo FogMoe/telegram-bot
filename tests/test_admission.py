@@ -44,6 +44,7 @@ def test_requests_within_the_limit_run_immediately_with_no_wait():
     assert metrics.snapshot().counter("admission.admitted") == 2
 
 
+@pytest.mark.slow
 def test_requests_over_the_global_limit_queue_in_arrival_order():
     controller = make_controller(max_concurrent=1, max_queued=5)
     order = []
@@ -231,6 +232,7 @@ def test_per_user_pending_is_released_when_the_body_fails():
         assert controller.pending_for(7) == 1
 
 
+@pytest.mark.slow
 def test_the_per_user_limit_bounds_the_queue_behind_the_conversation_lock():
     """会话锁保证同一用户一次只跑一轮；名额限制的是排在锁后面的深度。"""
     controller = make_controller(max_concurrent=10, max_pending_per_user=2)
@@ -286,6 +288,7 @@ def test_close_rejects_queued_requests_immediately_and_future_ones():
     assert controller.running == 0 and controller.queued == 0
 
 
+@pytest.mark.slow
 def test_shutdown_expires_in_flight_deadlines_after_the_grace_period():
     controller = make_controller(max_concurrent=2)
 

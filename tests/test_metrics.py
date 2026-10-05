@@ -130,6 +130,7 @@ def test_summary_line_says_idle_when_nothing_happened(registry):
     assert metrics.format_summary(snapshot, snapshot, interval_seconds=60).endswith("idle")
 
 
+@pytest.mark.slow
 def test_reporter_logs_a_line_per_interval_and_a_final_one_on_cancel(registry, caplog):
     reporter = metrics.MetricsReporter(0.05, registry=registry, log=logging.getLogger("test.metrics"))
 
