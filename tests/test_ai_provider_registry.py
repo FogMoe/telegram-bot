@@ -6,11 +6,11 @@ from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
-from core import ai_providers, config
-from core.ai_providers import Capabilities, WireProtocol
-from features.ai import chat_capabilities, provider_resolver, task_runner
-from features.ai.litellm_message_sanitizer import sanitize_message_for_provider
-from features.ai.litellm_provider_config import provider_params
+from fogmoe_telegram_bot.core import ai_providers, config
+from fogmoe_telegram_bot.core.ai_providers import Capabilities, WireProtocol
+from fogmoe_telegram_bot.features.ai import chat_capabilities, provider_resolver, task_runner
+from fogmoe_telegram_bot.features.ai.litellm_message_sanitizer import sanitize_message_for_provider
+from fogmoe_telegram_bot.features.ai.litellm_provider_config import provider_params
 
 SETTING_NAMES = set(config.AppSettings.model_fields)
 TASK_NAMES = tuple(ai_providers.TASK_SPECS)

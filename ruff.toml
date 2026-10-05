@@ -21,5 +21,5 @@ select = ["E4", "E7", "E9", "F"]
 #   "LOG"  logging 用法（项目有 236 处直接调用 root logger）
 
 [lint.per-file-ignores]
-# conftest 必须先改 sys.path 再 import 项目模块
+# conftest 必须先设置 BOT_ENV_FILE 再 import 项目模块
 "tests/conftest.py" = ["E402"]

@@ -9,8 +9,8 @@ import asyncio
 
 import pytest
 
-from core import archive_utils, mysql_connection, telegram_history
-from features.ai import summary
+from fogmoe_telegram_bot.core import archive_utils, mysql_connection, telegram_history
+from fogmoe_telegram_bot.features.ai import summary
 
 
 @pytest.fixture(autouse=True)

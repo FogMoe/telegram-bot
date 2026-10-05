@@ -7,12 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import metrics, telegram_history
-from core.deadline import REASON_SHUTDOWN, Deadline
-from features.ai import router
-from features.conversation import billing, turn
-from features.conversation.turn_services import TurnServices
-from features.conversation.turn_types import (
+from fogmoe_telegram_bot.core import metrics, telegram_history
+from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline
+from fogmoe_telegram_bot.features.ai import router
+from fogmoe_telegram_bot.features.conversation import billing, turn
+from fogmoe_telegram_bot.features.conversation.turn_services import TurnServices
+from fogmoe_telegram_bot.features.conversation.turn_types import (
     ChatRef,
     ConversationSettings,
     IncomingMessage,
@@ -760,8 +760,8 @@ class TestDeadline:
     @pytest.fixture
     def hung_provider(self, monkeypatch, settings_override):
         """真实的 router 与工具循环，模型调用永远不返回。"""
-        from features.ai import tool_runner
-        from features.conversation import turn_services
+        from fogmoe_telegram_bot.features.ai import tool_runner
+        from fogmoe_telegram_bot.features.conversation import turn_services
 
         settings_override(AI_CHAT_ORDER="openai", OPENAI_CHAT_MODEL="gpt")
         router._provider_failure_streaks.clear()

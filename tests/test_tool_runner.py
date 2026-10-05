@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from features.ai import tool_runner
+from fogmoe_telegram_bot.features.ai import tool_runner
 
 
 @pytest.fixture(autouse=True)

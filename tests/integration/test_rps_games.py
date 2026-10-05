@@ -16,10 +16,10 @@ from economy_support import (
 from game_support import MessageSender, make_game_bot, make_game_context, make_job_context
 from mysql_support import execute, fetch, fetch_scalar, run
 
-from core import balance
-from features.games import rockpaperscissors_game as rps
-from features.games import rps_games
-from features.games.rps_games import Seat
+from fogmoe_telegram_bot.core import balance
+from fogmoe_telegram_bot.features.games import rockpaperscissors_game as rps
+from fogmoe_telegram_bot.features.games import rps_games
+from fogmoe_telegram_bot.features.games.rps_games import Seat
 
 CHAT = -100
 WAITING_MESSAGE = 500

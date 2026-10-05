@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from core import background, blocking, http_sessions, metrics
+from fogmoe_telegram_bot.core import background, blocking, http_sessions, metrics
 
 
 @pytest.fixture(autouse=True)

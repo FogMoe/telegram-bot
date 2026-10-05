@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from features.conversation import messages as conversation
+from fogmoe_telegram_bot.features.conversation import messages as conversation
 
 
 @pytest.fixture(autouse=True)

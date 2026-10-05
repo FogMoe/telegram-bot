@@ -17,10 +17,10 @@ from economy_support import (
 )
 from mysql_support import execute, fetch_scalar, run
 
-from core import balance
-from features.economy import shop, shop_views
-from features.economy.operations import shop as shop_purchases
-from features.economy.operations.shop import (
+from fogmoe_telegram_bot.core import balance
+from fogmoe_telegram_bot.features.economy import shop, shop_views
+from fogmoe_telegram_bot.features.economy.operations import shop as shop_purchases
+from fogmoe_telegram_bot.features.economy.operations.shop import (
     MemoryLimitPurchase,
     PermissionUpgrade,
     PurchaseStatus,

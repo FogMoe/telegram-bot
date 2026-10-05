@@ -11,10 +11,10 @@
 
 ## 分层约定
 
-- `modules/main.py` 只作为进程入口，不写单元测试。
-- `modules/app/` 是应用组装和 Telegram handler 注册层，测试重点放在较稳定的组装边界，避免启动真实 bot。
-- `modules/core/` 放跨功能共享逻辑，适合写小型单元测试。
-- `modules/features/` 放业务功能。优先把可测试的纯逻辑拆到独立函数或小模块，再让 Telegram handler 调用它们。
+- `src/fogmoe_telegram_bot/main.py` 只作为进程入口，不写单元测试。
+- `src/fogmoe_telegram_bot/app/` 是应用组装和 Telegram handler 注册层，测试重点放在较稳定的组装边界，避免启动真实 bot。
+- `src/fogmoe_telegram_bot/core/` 放跨功能共享逻辑，适合写小型单元测试。
+- `src/fogmoe_telegram_bot/features/` 放业务功能。优先把可测试的纯逻辑拆到独立函数或小模块，再让 Telegram handler 调用它们。
 - 外部服务调用、数据库读写、Telegram API 交互默认用替身对象或小范围集成测试，不在普通单元测试里访问真实网络或真实数据库。`tests/conftest.py` 让 `tests/integration` 以外的测试里所有走到 `core.db` 的访问立即抛 `OperationalError`；单元测试里看到「单元测试不连接数据库」就是漏了打桩。
 
 ## 经济与游戏的测试
@@ -109,15 +109,15 @@ uv run pytest tests/test_env_api_connectivity.py -s
 不连接 Telegram 和数据库，只确认依赖可导入、Application 能组装、handler 与 job 能注册：
 
 ```bash
-uv run python modules/main.py --check
+uv run fogmoe-telegram-bot --check
 ```
 
-CI 在构建出的镜像里运行同一条命令，实现见 `modules/app/smoke_check.py`。
+CI 在构建出的镜像里运行同一条命令，实现见 `src/fogmoe_telegram_bot/app/smoke_check.py`。
 
 ### 运行时基准
 
-`scripts/bench_runtime.py` 用 fake provider 与 fake Telegram（不连网、不连数据库）测 N 个并发对话的整轮耗时，可以指向不同版本的
-`modules/` 目录做改造前后的对比。它测的是本地合成负载，不在 CI 里运行，结果与解读见 [runtime.md](runtime.md) 的「基准」：
+`scripts/bench_runtime.py` 用 fake provider 与 fake Telegram（不连网、不连数据库）测 N 个并发对话的整轮耗时，可以用 `--src` 指向另一份检出的
+`src/` 目录做对比。它测的是本地合成负载，不在 CI 里运行，结果与解读见 [runtime.md](runtime.md) 的「基准」：
 
 ```bash
 uv run python scripts/bench_runtime.py --label after --concurrency 10,50,200

@@ -1,6 +1,6 @@
 import re
 
-from core import config
+from fogmoe_telegram_bot.core import config
 
 
 def test_env_example_documents_advisor_settings():

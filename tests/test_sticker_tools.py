@@ -1,6 +1,6 @@
 import logging
 
-from features.ai.tools import sticker_tools
+from fogmoe_telegram_bot.features.ai.tools import sticker_tools
 
 
 def test_list_available_stickers_returns_minimal_model_payload(monkeypatch):

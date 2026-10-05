@@ -1,4 +1,4 @@
-from features.ai.message_content import (
+from fogmoe_telegram_bot.features.ai.message_content import (
     content_to_text,
     messages_have_images,
     strip_image_content,

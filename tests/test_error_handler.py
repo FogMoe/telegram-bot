@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from telegram import Message, Update
 
-from app import error_handler as error_handler_module
+from fogmoe_telegram_bot.app import error_handler as error_handler_module
 
 SECRET = "SECRETVALUE123"
 PRIVATE_TEXT = "my private message body"

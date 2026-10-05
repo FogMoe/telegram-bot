@@ -11,12 +11,12 @@ from economy_support import seed_user
 from mysql_support import execute, fetch, fetch_scalar, run
 from sqlalchemy.exc import IntegrityError
 
-from core import sql
-from features.games.repositories import gamble as gamble_repository
-from features.games.repositories import omikuji as omikuji_repository
-from features.games.repositories import rpg as rpg_repository
-from features.games.repositories import rps as rps_repository
-from features.games.repositories.rps import Seat
+from fogmoe_telegram_bot.core import sql
+from fogmoe_telegram_bot.features.games.repositories import gamble as gamble_repository
+from fogmoe_telegram_bot.features.games.repositories import omikuji as omikuji_repository
+from fogmoe_telegram_bot.features.games.repositories import rpg as rpg_repository
+from fogmoe_telegram_bot.features.games.repositories import rps as rps_repository
+from fogmoe_telegram_bot.features.games.repositories.rps import Seat
 
 
 def in_transaction(work):

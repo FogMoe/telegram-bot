@@ -128,7 +128,7 @@ CREATE DATABASE fogmoe_telegram_bot_db
 
 ```bash
 uv run alembic upgrade head
-uv run python modules/main.py
+uv run fogmoe-telegram-bot
 ```
 
 升级既有安装、迁移中途失败后的恢复和集成测试的运行方式见 [docs/database-migrations.md](docs/database-migrations.md)。
@@ -170,12 +170,12 @@ docker compose up -d --build bot
 
 | 运行方式 | 实时查看 | 持久文件 |
 | --- | --- | --- |
-| `uv run python modules/main.py` | 控制台 | `logs/tgbot.log` |
+| `uv run fogmoe-telegram-bot` | 控制台 | `logs/tgbot.log` |
 | Docker Compose | `docker compose logs -f bot` | 宿主机的 `./logs/tgbot.log`（Compose 默认把 `./logs` 挂载到容器的 `/app/logs`） |
 
 保留策略：
 
-- **轮转文件**：`tgbot.log` 写满后轮转为 `tgbot.log.1`、`tgbot.log.2`……，只保留有限份数，轮转参数见 `modules/core/bot_logging.py` 的 `build_handlers`。重启不会清空这些文件。
+- **轮转文件**：`tgbot.log` 写满后轮转为 `tgbot.log.1`、`tgbot.log.2`……，只保留有限份数，轮转参数见 `src/fogmoe_telegram_bot/core/bot_logging.py` 的 `build_handlers`。重启不会清空这些文件。
 - **容器重启或重建**：`./logs` 在宿主机上，`docker compose restart`、`docker compose up -d --build` 之后日志文件仍在。
 - **`docker compose logs`**：由 Docker 的 json-file 驱动保存，大小和份数限制见 `docker-compose.yml` 的 `logging`。容器被删除（例如重建）后这部分输出随之丢失，需要更长留存时请查看 `./logs`，或接入自己的日志收集系统。
 
@@ -221,7 +221,7 @@ AI 对话是原生 async：模型调用与数据库工具都在事件循环里 `
 
 依赖声明在 [pyproject.toml](pyproject.toml)，`uv.lock` 是唯一的版本来源。开发依赖（pytest、ruff、mypy）在 `dev` 依赖组，`uv sync` 默认一并安装。用 `uv add <包>`、`uv add --dev <包>`、`uv remove <包>` 修改依赖，它们会同时更新 `pyproject.toml` 和 `uv.lock`；CI 用 `uv lock --check` 检查两者一致。
 
-`modules/` 里直接 import 的第三方包必须写进 `pyproject.toml` 的 `dependencies`，不能只依赖传递依赖。
+`src/` 里直接 import 的第三方包必须写进 `pyproject.toml` 的 `dependencies`，不能只依赖传递依赖。
 
 ---
 

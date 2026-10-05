@@ -1,5 +1,5 @@
-from core import config
-from features.ai import chat_capabilities
+from fogmoe_telegram_bot.core import config
+from fogmoe_telegram_bot.features.ai import chat_capabilities
 
 
 def test_chat_model_supports_vision_respects_text_only_patterns(monkeypatch):

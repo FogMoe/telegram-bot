@@ -2,7 +2,7 @@ import logging
 import sys
 from logging.handlers import RotatingFileHandler
 
-from core import bot_logging, config
+from fogmoe_telegram_bot.core import bot_logging, config
 
 
 def _use_log_dir(monkeypatch, tmp_path):

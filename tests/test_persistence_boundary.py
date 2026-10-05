@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-MODULES_DIR = Path(__file__).resolve().parents[1] / "modules"
-ECONOMY_DIR = MODULES_DIR / "features" / "economy"
-GAMES_DIR = MODULES_DIR / "features" / "games"
-CRYPTO_DIR = MODULES_DIR / "features" / "crypto"
+PACKAGE_DIR = Path(__file__).resolve().parents[1] / "src" / "fogmoe_telegram_bot"
+ECONOMY_DIR = PACKAGE_DIR / "features" / "economy"
+GAMES_DIR = PACKAGE_DIR / "features" / "games"
+CRYPTO_DIR = PACKAGE_DIR / "features" / "crypto"
 # crypto 里只有这两个入口持有金币，SQL 已收拢到 crypto/repositories；其余模块（图表设置等）不在范围内。
 CRYPTO_COVERED = ("crypto_predict.py", "swap_fogmoe_solana_token.py")
 
@@ -24,7 +24,11 @@ SQL_STATEMENT = re.compile(
 SQL_CALLS = {"exec_driver_sql", "fetch_one", "fetch_all", "execute"}
 # repository 不持有事务：事务由业务操作开，repository 只接受 connection。
 TRANSACTION_CALLS = {"transaction", "commit", "rollback", "begin", "run_in_transaction"}
-FORBIDDEN_REPOSITORY_IMPORTS = ("telegram", "core.balance", "core.stake_reward_pool")
+FORBIDDEN_REPOSITORY_IMPORTS = (
+    "telegram",
+    "fogmoe_telegram_bot.core.balance",
+    "fogmoe_telegram_bot.core.stake_reward_pool",
+)
 
 
 def python_files(directory: Path):
@@ -85,7 +89,7 @@ def parse(path: Path) -> ast.Module:
 
 
 def relative(path: Path) -> str:
-    return path.relative_to(MODULES_DIR).as_posix()
+    return path.relative_to(PACKAGE_DIR).as_posix()
 
 
 @pytest.mark.parametrize("directory", [ECONOMY_DIR, GAMES_DIR], ids=["economy", "games"])

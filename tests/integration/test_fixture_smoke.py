@@ -5,8 +5,8 @@ from mysql_support import database_name, execute, fetch_scalar, run
 
 
 def test_app_database_binds_the_application_engine(app_database):
-    from core import config
-    from core.sql import fetch_one
+    from fogmoe_telegram_bot.core import config
+    from fogmoe_telegram_bot.core.sql import fetch_one
 
     async def current_database():
         row = await fetch_one("SELECT DATABASE()")
@@ -18,7 +18,7 @@ def test_app_database_binds_the_application_engine(app_database):
 
 def test_application_code_never_falls_back_to_the_configured_database(mysql_database):
     """不用 app_database 时，配置里的库地址是不可达的占位值，而不是 .env 里的真实地址。"""
-    from core import config
+    from fogmoe_telegram_bot.core import config
 
     assert "invalid.invalid" in config.SQLALCHEMY_DATABASE_URI
 

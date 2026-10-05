@@ -5,10 +5,10 @@ import ast
 import pytest
 from pydantic import ValidationError
 
-from app import bot_app
-from core import config
-from core.telegram_history import HistoryTrackingExtBot
-from features.ai import provider_resolver
+from fogmoe_telegram_bot.app import bot_app
+from fogmoe_telegram_bot.core import config
+from fogmoe_telegram_bot.core.telegram_history import HistoryTrackingExtBot
+from fogmoe_telegram_bot.features.ai import provider_resolver
 
 # 设置里有、但不作为 `config.<NAME>` 模块常量暴露的字段：由推导出来的常量取代，或只用于推导。
 NOT_PUBLISHED = {
@@ -172,7 +172,7 @@ IMPORT_TIME_CONFIG_READS = {
 
 
 def _import_time_config_reads(tree: ast.Module) -> set[str]:
-    """顶层（含类体、装饰器与默认参数，不含函数体）读取的 `config.<NAME>` 与 `from core.config import`。"""
+    """顶层（含类体、装饰器与默认参数，不含函数体）读取的 `config.<NAME>` 与 `from fogmoe_telegram_bot.core.config import`。"""
     names: set[str] = set()
 
     class Scanner(ast.NodeVisitor):
@@ -193,7 +193,7 @@ def _import_time_config_reads(tree: ast.Module) -> set[str]:
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
-            if node.module in {"core.config", "config"}:
+            if node.module in {"fogmoe_telegram_bot.core.config", "config"}:
                 names.update(alias.name for alias in node.names)
 
     scanner = Scanner()
@@ -204,8 +204,8 @@ def _import_time_config_reads(tree: ast.Module) -> set[str]:
 
 def test_the_import_time_scan_sees_module_level_reads_and_ignores_function_bodies():
     tree = ast.parse(
-        "from core import config\n"
-        "from core.config import BASE_DIR\n"
+        "from fogmoe_telegram_bot.core import config\n"
+        "from fogmoe_telegram_bot.core.config import BASE_DIR\n"
         "TOKEN = config.TOKEN\n"
         "class Holder:\n"
         "    limit = config.LIMIT\n"
@@ -220,10 +220,10 @@ def test_the_import_time_scan_sees_module_level_reads_and_ignores_function_bodie
 
 @pytest.mark.slow
 def test_no_new_module_reads_configuration_at_import_time():
-    modules_dir = config.BASE_DIR / "modules"
+    package_dir = config.BASE_DIR / "src" / "fogmoe_telegram_bot"
     found = set()
-    for path in modules_dir.rglob("*.py"):
-        relative = path.relative_to(modules_dir)
+    for path in package_dir.rglob("*.py"):
+        relative = path.relative_to(package_dir)
         tree = ast.parse(path.read_text(encoding="utf-8"))
         found.update((relative.as_posix(), name) for name in _import_time_config_reads(tree))
 

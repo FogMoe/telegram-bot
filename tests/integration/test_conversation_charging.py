@@ -20,9 +20,9 @@ from economy_support import (
 )
 from mysql_support import run
 
-from core import command_cooldown
-from features.conversation import batching, billing, handlers, turn_services
-from features.conversation.turn_types import ModelResponse
+from fogmoe_telegram_bot.core import command_cooldown
+from fogmoe_telegram_bot.features.conversation import batching, billing, handlers, turn_services
+from fogmoe_telegram_bot.features.conversation.turn_types import ModelResponse
 
 
 def turn(message_id, cost, *, chat_id=100, edit_stamp=None, update_id=None):

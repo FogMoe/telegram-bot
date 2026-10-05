@@ -4,9 +4,9 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
-from features.ai.tools import memory_tools
-from features.ai.tools.context import clear_tool_request_context, set_tool_request_context
-from features.ai.tools.models import ReadDiaryPageArgs, UserDiaryArgs, parameters_schema
+from fogmoe_telegram_bot.features.ai.tools import memory_tools
+from fogmoe_telegram_bot.features.ai.tools.context import clear_tool_request_context, set_tool_request_context
+from fogmoe_telegram_bot.features.ai.tools.models import ReadDiaryPageArgs, UserDiaryArgs, parameters_schema
 
 
 def _run(coro):

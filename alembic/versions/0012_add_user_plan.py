@@ -2,7 +2,7 @@
 
 from alembic import op
 
-from modules.core.migration_support import add_columns_if_missing
+from fogmoe_telegram_bot.core.migration_support import add_columns_if_missing
 
 revision = "0012_add_user_plan"
 down_revision = "0011_add_user_coins_paid"
@@ -11,7 +11,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    from modules.core import config
+    from fogmoe_telegram_bot.core import config
 
     add_columns_if_missing(
         "user",

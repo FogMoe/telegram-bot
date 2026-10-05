@@ -16,6 +16,12 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
+# Install the project itself as an editable package pointing at /app/src. The runtime
+# stage copies the same source to the same path; config.BASE_DIR resolves /app from it.
+COPY README.md ./
+COPY src ./src
+RUN uv sync --frozen --no-dev
+
 # Runtime stage: only the virtualenv and application code
 FROM python:3.13-slim
 
@@ -28,7 +34,7 @@ WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 
 # Copy application code
-COPY modules ./modules
+COPY src ./src
 COPY resources ./resources
 # 迁移脚本随镜像发布，便于在容器内执行 alembic upgrade head
 COPY alembic.ini ./alembic.ini
@@ -36,4 +42,4 @@ COPY alembic ./alembic
 COPY .env.example ./.env.example
 
 # Expose no ports; the bot connects out to Telegram
-CMD ["python", "-u", "modules/main.py"]
+CMD ["fogmoe-telegram-bot"]

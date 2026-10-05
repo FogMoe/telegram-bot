@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import group_chat_history, redaction, telegram_history
+from fogmoe_telegram_bot.core import group_chat_history, redaction, telegram_history
 
 SECRET = "top-secret-0001"
 

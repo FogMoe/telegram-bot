@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from core import config
+from fogmoe_telegram_bot.core import config
 
 ENV_FILE_VAR = config.ENV_FILE_VAR
 
@@ -30,11 +30,11 @@ def test_pytest_session_does_not_load_dotenv():
 
 
 def _read_admin_user_id(env: dict[str, str]) -> str:
-    code = "from core import config; print(config.ADMIN_USER_ID)"
+    code = "from fogmoe_telegram_bot.core import config; print(config.ADMIN_USER_ID)"
     result = subprocess.run(
         [sys.executable, "-c", code],
         env=env,
-        cwd=config.BASE_DIR / "modules",
+        cwd=config.BASE_DIR,
         capture_output=True,
         text=True,
         check=True,

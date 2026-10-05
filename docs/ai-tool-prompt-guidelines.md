@@ -5,8 +5,8 @@
 适用于：
 
 - `resources/prompts/system_prompt.md` 中的工具调用规则；
-- `modules/features/ai/tools/schemas.py` 中的工具描述；
-- `modules/features/ai/tools/models.py` 中的参数描述与约束；
+- `src/fogmoe_telegram_bot/features/ai/tools/schemas.py` 中的工具描述；
+- `src/fogmoe_telegram_bot/features/ai/tools/models.py` 中的参数描述与约束；
 - 由工具调用其他模型时使用的独立 system prompt；
 - 工具 handler 中的运行时校验、限流和错误处理。
 
@@ -86,7 +86,7 @@
 
 ## 第二层：tool description
 
-位置：`modules/features/ai/tools/schemas.py`
+位置：`src/fogmoe_telegram_bot/features/ai/tools/schemas.py`
 
 tool description 是工具自身的使用说明，必须在脱离主 system prompt 时仍能让模型理解：
 
@@ -115,7 +115,7 @@ tool description 不应重复列出完整的调用时机和禁用场景，也不
 
 ## 第三层：参数 description 与 Schema
 
-位置：`modules/features/ai/tools/models.py`
+位置：`src/fogmoe_telegram_bot/features/ai/tools/models.py`
 
 每个参数 description 只解释该字段：
 
@@ -164,7 +164,7 @@ resources/prompts/advisor_system_prompt.md
 
 ## 第五层：handler 与配置
 
-位置通常为 `modules/features/ai/tools/*_tools.py` 和 `modules/core/config.py`。
+位置通常为 `src/fogmoe_telegram_bot/features/ai/tools/*_tools.py` 和 `src/fogmoe_telegram_bot/core/config.py`。
 
 以下规则必须由运行时保证：
 

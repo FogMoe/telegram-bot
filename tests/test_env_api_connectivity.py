@@ -5,9 +5,9 @@ from typing import Iterable
 
 import pytest
 
-from core import config
-from features.ai.litellm_client import create_chat_completion
-from features.ai.provider_resolver import completion_kwargs_for_task
+from fogmoe_telegram_bot.core import config
+from fogmoe_telegram_bot.features.ai.litellm_client import create_chat_completion
+from fogmoe_telegram_bot.features.ai.provider_resolver import completion_kwargs_for_task
 
 
 TRUTHY_VALUES = {"1", "true", "yes", "on"}

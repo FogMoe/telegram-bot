@@ -2,7 +2,7 @@
 
 from alembic import op
 
-from modules.core.migration_support import add_columns_if_missing
+from fogmoe_telegram_bot.core.migration_support import add_columns_if_missing
 
 revision = "0011_add_user_coins_paid"
 down_revision = "0010_add_user_give_daily"

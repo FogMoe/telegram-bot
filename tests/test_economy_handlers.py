@@ -9,20 +9,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import user_records
-from features.economy import bribe, charge_coin, checkin, coins, ref, stake_coin, task, web_password
-from features.economy.operations import bribe as bribe_operations
-from features.economy.operations import charge as charge_operations
-from features.economy.operations import checkin as checkin_operations
-from features.economy.operations import coins as coin_operations
-from features.economy.operations import invitations as invitation_operations
-from features.economy.operations import lottery as lottery_operations
-from features.economy.operations import stake as stake_operations
-from features.economy.operations import task as task_operations
-from features.economy.operations import web_password as web_password_operations
-from features.economy.repositories.coins import RichEntry
-from features.economy.repositories.invitations import InvitedUser, Referrer
-from features.economy.repositories.web_passwords import WebPasswordRecord
+from fogmoe_telegram_bot.core import user_records
+from fogmoe_telegram_bot.features.economy import bribe, charge_coin, checkin, coins, ref, stake_coin, task, web_password
+from fogmoe_telegram_bot.features.economy.operations import bribe as bribe_operations
+from fogmoe_telegram_bot.features.economy.operations import charge as charge_operations
+from fogmoe_telegram_bot.features.economy.operations import checkin as checkin_operations
+from fogmoe_telegram_bot.features.economy.operations import coins as coin_operations
+from fogmoe_telegram_bot.features.economy.operations import invitations as invitation_operations
+from fogmoe_telegram_bot.features.economy.operations import lottery as lottery_operations
+from fogmoe_telegram_bot.features.economy.operations import stake as stake_operations
+from fogmoe_telegram_bot.features.economy.operations import task as task_operations
+from fogmoe_telegram_bot.features.economy.operations import web_password as web_password_operations
+from fogmoe_telegram_bot.features.economy.repositories.coins import RichEntry
+from fogmoe_telegram_bot.features.economy.repositories.invitations import InvitedUser, Referrer
+from fogmoe_telegram_bot.features.economy.repositories.web_passwords import WebPasswordRecord
 
 
 def raw(handler):

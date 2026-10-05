@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from features.media import pic
+from fogmoe_telegram_bot.features.media import pic
 
 USER_ID = 123
 CHAT_ID = 456

@@ -9,9 +9,9 @@ import pytest
 from economy_support import seed_user
 from mysql_support import execute, fetch_scalar, run
 
-from core import sql
-from features.crypto.repositories import predictions as predictions_repository
-from features.crypto.repositories import swaps as swaps_repository
+from fogmoe_telegram_bot.core import sql
+from fogmoe_telegram_bot.features.crypto.repositories import predictions as predictions_repository
+from fogmoe_telegram_bot.features.crypto.repositories import swaps as swaps_repository
 
 NOW = datetime(2026, 10, 5, 8, 30, 0)
 

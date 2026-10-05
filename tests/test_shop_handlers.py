@@ -8,9 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from features.economy import shop, shop_views
-from features.economy.operations import shop as shop_purchases
-from features.economy.operations.shop import (
+from fogmoe_telegram_bot.features.economy import shop, shop_views
+from fogmoe_telegram_bot.features.economy.operations import shop as shop_purchases
+from fogmoe_telegram_bot.features.economy.operations.shop import (
     MemoryLimitPurchase,
     MemoryLimitResult,
     PermissionUpgrade,
@@ -20,7 +20,7 @@ from features.economy.operations.shop import (
     TicketResult,
     UpgradeRefusal,
 )
-from features.economy.shop_views import Action
+from fogmoe_telegram_bot.features.economy.shop_views import Action
 
 
 class Recorder:

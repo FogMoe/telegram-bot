@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import command_cooldown
-from features.ai import conversation_locks
-from features.conversation import batching, handlers, lifecycle
+from fogmoe_telegram_bot.core import command_cooldown
+from fogmoe_telegram_bot.features.ai import conversation_locks
+from fogmoe_telegram_bot.features.conversation import batching, handlers, lifecycle
 
 BOT_ID = 4242
 

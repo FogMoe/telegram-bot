@@ -6,7 +6,7 @@ import threading
 
 import pytest
 
-from core import metrics
+from fogmoe_telegram_bot.core import metrics
 
 
 @pytest.fixture

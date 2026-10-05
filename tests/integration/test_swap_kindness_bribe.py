@@ -13,13 +13,13 @@ from economy_support import (
 )
 from mysql_support import execute, fetch, fetch_scalar, run
 
-from core import balance, mysql_connection, process_user
-from features.ai.tools import context as tool_context
-from features.ai.tools import user_tools
-from features.crypto import swap_fogmoe_solana_token as swap
-from features.crypto.swap_fogmoe_solana_token import SwapStatus
-from features.economy.operations import bribe
-from features.economy.operations.bribe import BribeStatus
+from fogmoe_telegram_bot.core import balance, mysql_connection, process_user
+from fogmoe_telegram_bot.features.ai.tools import context as tool_context
+from fogmoe_telegram_bot.features.ai.tools import user_tools
+from fogmoe_telegram_bot.features.crypto import swap_fogmoe_solana_token as swap
+from fogmoe_telegram_bot.features.crypto.swap_fogmoe_solana_token import SwapStatus
+from fogmoe_telegram_bot.features.economy.operations import bribe
+from fogmoe_telegram_bot.features.economy.operations.bribe import BribeStatus
 
 swap_command = swap.swap_command.__wrapped__
 WALLET = "5iz3epFDf9SKvLNHWQ42f4wMMrENaudE9eMkxfBLFd2n"

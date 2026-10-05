@@ -2,7 +2,7 @@
 
 from alembic import op
 
-from modules.core.migration_support import is_offline, table_exists
+from fogmoe_telegram_bot.core.migration_support import is_offline, table_exists
 
 # revision identifiers, used by Alembic.
 revision = "0005_add_ai_user_diary_pages"

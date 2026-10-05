@@ -15,10 +15,10 @@ from economy_support import (
 )
 from mysql_support import execute, fetch, fetch_scalar, run
 
-from core import balance, config
-from features.economy import charge_coin
-from features.economy.operations import charge as charge_operations
-from features.economy.operations.charge import RedeemStatus
+from fogmoe_telegram_bot.core import balance, config
+from fogmoe_telegram_bot.features.economy import charge_coin
+from fogmoe_telegram_bot.features.economy.operations import charge as charge_operations
+from fogmoe_telegram_bot.features.economy.operations.charge import RedeemStatus
 
 ADMIN_ID = 9000
 

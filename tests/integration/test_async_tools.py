@@ -9,9 +9,9 @@ from types import SimpleNamespace
 from economy_support import seed_user
 from mysql_support import execute, fetch, run
 
-from core import mysql_connection
-from features.ai import tool_runner
-from features.ai.tools import context as tool_context
+from fogmoe_telegram_bot.core import mysql_connection
+from fogmoe_telegram_bot.features.ai import tool_runner
+from fogmoe_telegram_bot.features.ai.tools import context as tool_context
 
 
 def _call(call_id: str, name: str, arguments: dict) -> dict:

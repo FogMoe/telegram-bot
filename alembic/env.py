@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from logging.config import fileConfig
-from pathlib import Path
 
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
@@ -12,11 +10,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 from alembic.script import ScriptDirectory
 
-# Ensure project root is on sys.path so `modules` can be imported.
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
-
-from modules.core import migration_support  # noqa: E402
+from fogmoe_telegram_bot.core import migration_support
 
 config = context.config
 
@@ -32,7 +26,7 @@ migration_support.install_wide_version_table()
 
 
 def _app_database_url() -> str | None:
-    from modules.core.config import SQLALCHEMY_DATABASE_URI
+    from fogmoe_telegram_bot.core.config import SQLALCHEMY_DATABASE_URI
 
     return SQLALCHEMY_DATABASE_URI
 

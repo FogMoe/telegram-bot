@@ -3,11 +3,11 @@ import json
 
 import pytest
 
-from core import background
+from fogmoe_telegram_bot.core import background
 
-from features.ai import summary
-from features.ai.tools.context import get_tool_request_context
-from features.ai.tools.schemas import OPENAI_TOOLS
+from fogmoe_telegram_bot.features.ai import summary
+from fogmoe_telegram_bot.features.ai.tools.context import get_tool_request_context
+from fogmoe_telegram_bot.features.ai.tools.schemas import OPENAI_TOOLS
 
 
 def test_generate_summary_counts_with_response_model(monkeypatch):

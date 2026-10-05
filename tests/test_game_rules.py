@@ -2,9 +2,9 @@
 
 import pytest
 
-from core import balance
-from features.games import gamble, gamble_rounds, rockpaperscissors_game as rps, rps_games
-from features.games.rpg import settlement
+from fogmoe_telegram_bot.core import balance
+from fogmoe_telegram_bot.features.games import gamble, gamble_rounds, rockpaperscissors_game as rps, rps_games
+from fogmoe_telegram_bot.features.games.rpg import settlement
 
 
 class TestGambleCallbackData:

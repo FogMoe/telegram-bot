@@ -14,11 +14,11 @@ from economy_support import (
 )
 from mysql_support import fetch, fetch_scalar, run
 
-from core import balance, mysql_connection, sql
-from core.command_identity import delegated_operation
-from features.economy import coins as coin_handlers
-from features.economy.operations import coins as coin_operations
-from features.economy.operations.coins import GiveStatus
+from fogmoe_telegram_bot.core import balance, mysql_connection, sql
+from fogmoe_telegram_bot.core.command_identity import delegated_operation
+from fogmoe_telegram_bot.features.economy import coins as coin_handlers
+from fogmoe_telegram_bot.features.economy.operations import coins as coin_operations
+from fogmoe_telegram_bot.features.economy.operations.coins import GiveStatus
 
 TODAY = date(2026, 10, 5)
 give_command = coin_handlers.give_command.__wrapped__

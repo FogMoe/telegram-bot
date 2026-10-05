@@ -23,8 +23,8 @@ from job_support import (
 )
 from mysql_support import execute, fetch, fetch_scalar, run
 
-from features.ai import conversation_locks, job_claims, scheduler
-from features.ai.tools import schedule_tools
+from fogmoe_telegram_bot.features.ai import conversation_locks, job_claims, scheduler
+from fogmoe_telegram_bot.features.ai.tools import schedule_tools
 
 REPLY = "drink some water"
 

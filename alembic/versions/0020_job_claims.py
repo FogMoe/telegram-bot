@@ -12,7 +12,7 @@
 
 from alembic import op
 
-from modules.core.migration_support import add_columns_if_missing, index_exists
+from fogmoe_telegram_bot.core.migration_support import add_columns_if_missing, index_exists
 
 revision = "0020_job_claims"
 down_revision = "0019_coin_ledger"

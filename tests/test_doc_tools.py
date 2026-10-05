@@ -1,7 +1,7 @@
-from core import config
-from features.ai.tools.doc_tools import read_doc_tool
-from features.ai.tools.registry import AI_TOOL_HANDLERS
-from features.ai.tools.schemas import OPENAI_TOOLS
+from fogmoe_telegram_bot.core import config
+from fogmoe_telegram_bot.features.ai.tools.doc_tools import read_doc_tool
+from fogmoe_telegram_bot.features.ai.tools.registry import AI_TOOL_HANDLERS
+from fogmoe_telegram_bot.features.ai.tools.schemas import OPENAI_TOOLS
 
 
 def test_read_doc_lists_every_document_without_a_topic(monkeypatch):

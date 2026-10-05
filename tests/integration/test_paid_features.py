@@ -18,8 +18,8 @@ from economy_support import (
 )
 from mysql_support import run
 
-from features.ai import translate_handlers
-from features.media import pic
+from fogmoe_telegram_bot.features.ai import translate_handlers
+from fogmoe_telegram_bot.features.media import pic
 
 # 绕过命令冷却装饰器（进程内状态），直接调用被装饰的函数。
 tl_command = translate_handlers.tl_command.__wrapped__

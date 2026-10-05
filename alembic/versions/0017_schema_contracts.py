@@ -18,7 +18,7 @@
 
 from alembic import op
 
-from modules.core import migration_support as ms
+from fogmoe_telegram_bot.core import migration_support as ms
 
 revision = "0017_schema_contracts"
 down_revision = "0016_add_ai_schedule_daily_limit"

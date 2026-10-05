@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import balance
-from features.media import pic
+from fogmoe_telegram_bot.core import balance
+from fogmoe_telegram_bot.features.media import pic
 
 
 class _FailingSession:

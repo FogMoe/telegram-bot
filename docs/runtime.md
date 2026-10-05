@@ -239,13 +239,13 @@ runtime metrics (last 300s): admission.admitted=118 admission.rejected{reason=qu
 
 `scripts/bench_runtime.py` 用 fake provider、fake 数据库与 fake Telegram（不连网）驱动 N 个并发对话走完整的
 `handlers._reply_locked` 入口：一次带可见文本与工具调用的模型回复 → 一个同步阻塞的工具 → 最终回复。
-同一份脚本可以指向不同版本的 `modules/` 目录，用来比较改造前后：
+同一份脚本可以用 `--src` 指向另一份检出的 `src/` 目录，用来比较两个版本：
 
 ```bash
-python scripts/bench_runtime.py --label after
-python scripts/bench_runtime.py --modules <改造前的 modules 目录> --label before
+uv run python scripts/bench_runtime.py --label after
+uv run python scripts/bench_runtime.py --src <另一份检出的 src 目录> --label before
 # 放宽准入，测原生 async 本身的吞吐：
-python scripts/bench_runtime.py --max-concurrent 256 --max-queued 1024 --queue-wait 60
+uv run python scripts/bench_runtime.py --max-concurrent 256 --max-queued 1024 --queue-wait 60
 ```
 
 **这是本地合成负载，不是生产测量。** 假设：每次模型调用 300 ms（两次），同步工具阻塞 50 ms，Telegram 每次调用 20 ms，

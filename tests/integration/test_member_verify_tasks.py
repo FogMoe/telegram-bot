@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 from mysql_support import fetch_scalar, run
 
-from features.moderation import member_verify
+from fogmoe_telegram_bot.features.moderation import member_verify
 
 CHAT = -100
 USER = 42

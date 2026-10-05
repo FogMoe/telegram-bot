@@ -6,7 +6,7 @@
 
 from alembic import op
 
-from modules.core.migration_support import add_columns_if_missing
+from fogmoe_telegram_bot.core.migration_support import add_columns_if_missing
 
 # revision identifiers, used by Alembic.
 revision = "0001_initial"
