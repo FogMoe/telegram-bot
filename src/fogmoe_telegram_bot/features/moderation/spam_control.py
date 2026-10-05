@@ -11,9 +11,9 @@ import threading
 from collections import defaultdict
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.redaction import report_error
-from fogmoe_telegram_bot.core.config import BASE_DIR
+from fogmoe_telegram_bot.core.config import RESOURCES_DIR
 
-SPAM_FILE_PATH = BASE_DIR / "resources" / "spam_words.txt"
+SPAM_FILE_PATH = RESOURCES_DIR / "spam_words.txt"
 # 垃圾信息过滤缓存 {group_id: enabled}
 spam_filter_cache = {}
 cache_lock = threading.Lock()  # 缓存操作锁

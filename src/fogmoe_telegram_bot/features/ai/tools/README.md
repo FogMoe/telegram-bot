@@ -18,7 +18,7 @@
 - `memory_tools.py`：群聊上下文、永久摘要与用户日记工具
 - `schedule_tools.py`：定时私聊消息的创建/查询/取消
 - `sticker_tools.py`：贴纸包与可用 emoji 查询
-- `doc_tools.py`：内部参考文档查阅（`resources/docs/*.md`）
+- `doc_tools.py`：内部参考文档查阅（`src/fogmoe_telegram_bot/resources/docs/*.md`）
 - `filename_utils.py`：文件名清理辅助函数（非工具）
 
 ## 添加新工具

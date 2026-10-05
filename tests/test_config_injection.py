@@ -163,11 +163,11 @@ def test_create_application_accepts_a_prebuilt_bot(settings_override):
 IMPORT_TIME_CONFIG_READS = {
     ("features/admin/announce.py", "ADMIN_USER_ID"),
     ("features/ai/prompts.py", "SYSTEM_PROMPT"),  # 来自 resources/ 的文本，不是设置
-    ("features/ai/tools/image_tools.py", "BASE_DIR"),  # 路径常量，不是设置
-    ("features/ai/tools/sticker_tools.py", "BASE_DIR"),
-    ("features/ai/tools/voice_tools.py", "BASE_DIR"),
+    ("features/ai/tools/image_tools.py", "LOG_DIR"),  # 路径常量，不是设置
+    ("features/ai/tools/sticker_tools.py", "RESOURCES_DIR"),
+    ("features/ai/tools/voice_tools.py", "LOG_DIR"),
     ("features/crypto/monitoring.py", "ADMIN_USER_ID"),
-    ("features/moderation/spam_control.py", "BASE_DIR"),
+    ("features/moderation/spam_control.py", "RESOURCES_DIR"),
 }
 
 
@@ -205,7 +205,7 @@ def _import_time_config_reads(tree: ast.Module) -> set[str]:
 def test_the_import_time_scan_sees_module_level_reads_and_ignores_function_bodies():
     tree = ast.parse(
         "from fogmoe_telegram_bot.core import config\n"
-        "from fogmoe_telegram_bot.core.config import BASE_DIR\n"
+        "from fogmoe_telegram_bot.core.config import RESOURCES_DIR\n"
         "TOKEN = config.TOKEN\n"
         "class Holder:\n"
         "    limit = config.LIMIT\n"
@@ -215,12 +215,12 @@ def test_the_import_time_scan_sees_module_level_reads_and_ignores_function_bodie
         "    return value\n"
     )
 
-    assert _import_time_config_reads(tree) == {"BASE_DIR", "TOKEN", "LIMIT", "DEFAULT"}
+    assert _import_time_config_reads(tree) == {"RESOURCES_DIR", "TOKEN", "LIMIT", "DEFAULT"}
 
 
 @pytest.mark.slow
 def test_no_new_module_reads_configuration_at_import_time():
-    package_dir = config.BASE_DIR / "src" / "fogmoe_telegram_bot"
+    package_dir = config.RESOURCES_DIR.parent
     found = set()
     for path in package_dir.rglob("*.py"):
         relative = path.relative_to(package_dir)

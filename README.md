@@ -9,7 +9,7 @@
 
 集 AI 助手、社区积分、娱乐互动和群组管理于一体的 Telegram 机器人。
 
-[体验机器人](https://t.me/FogMoeBot) · [查看命令说明](resources/telegram_help.md)
+[体验机器人](https://t.me/FogMoeBot) · [查看命令说明](src/fogmoe_telegram_bot/resources/telegram_help.md)
 
 </div>
 
@@ -126,6 +126,8 @@ CREATE DATABASE fogmoe_telegram_bot_db
 
 ### 4. 初始化数据库并启动
 
+在仓库根目录执行。程序从当前目录读取 `.env`，日志写到当前目录的 `logs/`。
+
 ```bash
 uv run alembic upgrade head
 uv run fogmoe-telegram-bot
@@ -166,7 +168,7 @@ docker compose up -d --build bot
 
 ## 📋 日志
 
-应用日志始终写入仓库下的 `logs/tgbot.log`（管理员的 `/logs` 命令也读取它）。是否同时输出到 stdout 由 `LOG_TO_STDOUT` 控制，日志级别由 `LOG_LEVEL` 控制，两者见 [.env.example](.env.example)。
+应用日志始终写入运行目录下的 `logs/tgbot.log`（管理员的 `/logs` 命令也读取它）：本地从仓库根目录启动时是仓库下的 `logs/`，镜像里是 `/app/logs`。是否同时输出到 stdout 由 `LOG_TO_STDOUT` 控制，日志级别由 `LOG_LEVEL` 控制，两者见 [.env.example](.env.example)。
 
 | 运行方式 | 实时查看 | 持久文件 |
 | --- | --- | --- |

@@ -4,7 +4,7 @@
 
 适用于：
 
-- `resources/prompts/system_prompt.md` 中的工具调用规则；
+- `src/fogmoe_telegram_bot/resources/prompts/system_prompt.md` 中的工具调用规则；
 - `src/fogmoe_telegram_bot/features/ai/tools/schemas.py` 中的工具描述；
 - `src/fogmoe_telegram_bot/features/ai/tools/models.py` 中的参数描述与约束；
 - 由工具调用其他模型时使用的独立 system prompt；
@@ -53,7 +53,7 @@
 
 ## 第一层：主助手 system prompt
 
-位置：`resources/prompts/system_prompt.md`
+位置：`src/fogmoe_telegram_bot/resources/prompts/system_prompt.md`
 
 ### 应该包含
 
@@ -146,10 +146,10 @@ task: str = Field(
 
 ## 第四层：工具独立 system prompt
 
-只有当工具内部还会调用一个模型时，才需要独立 system prompt。资源文件放在 `resources/prompts/`，例如：
+只有当工具内部还会调用一个模型时，才需要独立 system prompt。资源文件放在 `src/fogmoe_telegram_bot/resources/prompts/`，例如：
 
 ```text
-resources/prompts/advisor_system_prompt.md
+src/fogmoe_telegram_bot/resources/prompts/advisor_system_prompt.md
 ```
 
 它面向工具内部模型，而不是主助手，应定义：
@@ -202,7 +202,7 @@ Submit one complete reasoning task to a read-only senior advisor. Put the questi
 
 ### 独立 system prompt：约束内部 advisor 模型
 
-`resources/prompts/advisor_system_prompt.md` 定义 advisor 的分析职责、单轮限制、无工具/无行动权限，以及“输出给主助手而非直接回复用户”的要求。
+`src/fogmoe_telegram_bot/resources/prompts/advisor_system_prompt.md` 定义 advisor 的分析职责、单轮限制、无工具/无行动权限，以及“输出给主助手而非直接回复用户”的要求。
 
 ### Handler：执行硬约束
 
@@ -256,7 +256,7 @@ Submit one complete reasoning task to a read-only senior advisor. Put the questi
 3. 在主 `system_prompt.md` 仅增加必要的调用/不调用条件。
 4. 在 `registry.py` 注册 handler。
 5. 在 handler 中执行权限、资源、状态和安全限制。
-6. 如果工具内部调用模型，在 `resources/prompts/` 新增独立 prompt，并由 `config.py` 加载。
+6. 如果工具内部调用模型，在 `src/fogmoe_telegram_bot/resources/prompts/` 新增独立 prompt，并由 `config.py` 加载。
 7. 将运维配置记录在对应开发文档中。
 8. 按 `docs/testing-guidelines.md` 添加小而稳定的测试，不访问真实外部服务。
 

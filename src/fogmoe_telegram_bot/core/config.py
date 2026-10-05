@@ -16,19 +16,21 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
-# 仓库根目录（.env、resources/、logs/ 所在处）。项目以可编辑方式安装（uv sync 的默认行为，
-# 镜像里也是），这里的 __file__ 始终在 src/ 下，而不是 site-packages 里。
-BASE_DIR = Path(__file__).resolve().parents[3]
+# 包内只读数据（提示词、帮助文本、内部文档、贴纸包与垃圾词表），随包一起安装。
+RESOURCES_DIR = Path(__file__).resolve().parents[1] / "resources"
+# 运行目录：从这里读取 .env，日志和生成的媒体写到这里的 logs/。
+# 本地在仓库根目录用 uv run 启动，镜像里是 WORKDIR /app。
+RUNTIME_DIR = Path.cwd()
 
 ENV_FILE_VAR = "BOT_ENV_FILE"
 
 
 def resolve_env_file(environ: Mapping[str, str] | None = None) -> Path | None:
-    """决定从哪个文件读取配置：BOT_ENV_FILE 未设置时用仓库根的 .env，
+    """决定从哪个文件读取配置：BOT_ENV_FILE 未设置时用运行目录的 .env，
     设为路径则读取该文件，设为空字符串则完全不读 env 文件（只用进程环境变量）。"""
     override = (os.environ if environ is None else environ).get(ENV_FILE_VAR)
     if override is None:
-        return BASE_DIR / ".env"
+        return RUNTIME_DIR / ".env"
     override = override.strip()
     return Path(override) if override else None
 
@@ -448,30 +450,30 @@ SQLALCHEMY_DATABASE_URI = _DERIVED["SQLALCHEMY_DATABASE_URI"]
 LOG_LEVEL = SETTINGS.LOG_LEVEL
 # 日志始终写入轮转文件；容器场景同时输出到 stdout，供 docker logs 查看
 LOG_TO_STDOUT = SETTINGS.LOG_TO_STDOUT
-LOG_DIR = BASE_DIR / "logs"
+LOG_DIR = RUNTIME_DIR / "logs"
 LOG_FILE_PATH = LOG_DIR / "tgbot.log"
 
 
 def _read_text_resource(relative_path: str) -> str:
-    return (BASE_DIR / relative_path).read_text(encoding="utf-8")
+    return (RESOURCES_DIR / relative_path).read_text(encoding="utf-8")
 
 # help 命令的帮助信息
-HELP_TEXT = _read_text_resource("resources/telegram_help.md")
+HELP_TEXT = _read_text_resource("telegram_help.md")
 
 # AI 系统提示词
-SYSTEM_PROMPT = _read_text_resource("resources/prompts/system_prompt.md")
+SYSTEM_PROMPT = _read_text_resource("prompts/system_prompt.md")
 ADVISOR_SYSTEM_PROMPT = _read_text_resource(
-    "resources/prompts/advisor_system_prompt.md"
+    "prompts/advisor_system_prompt.md"
 )
 SUMMARY_SYSTEM_PROMPT = _read_text_resource(
-    "resources/prompts/summary_system_prompt.md"
+    "prompts/summary_system_prompt.md"
 )
 IDLE_RECAP_SYSTEM_PROMPT = _read_text_resource(
-    "resources/prompts/idle_recap_system_prompt.md"
+    "prompts/idle_recap_system_prompt.md"
 )
 
 # AI 可按主题查阅的内部文档库，文件名（不含扩展名）即主题名
-INTERNAL_DOCS_DIR = BASE_DIR / "resources" / "docs"
+INTERNAL_DOCS_DIR = RESOURCES_DIR / "docs"
 
 
 def _load_internal_docs() -> dict[str, str]:

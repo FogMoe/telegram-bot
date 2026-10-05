@@ -17,7 +17,7 @@ from fogmoe_telegram_bot.core import blocking, config
 from fogmoe_telegram_bot.features.ai import sticker_sender
 from fogmoe_telegram_bot.features.crypto import biance_api, crypto_predict, monitoring
 
-PACKAGE_DIR = config.BASE_DIR / "src" / "fogmoe_telegram_bot"
+PACKAGE_DIR = config.RESOURCES_DIR.parent
 
 
 def _parsed_modules():

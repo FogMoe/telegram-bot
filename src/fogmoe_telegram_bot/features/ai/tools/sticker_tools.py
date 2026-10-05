@@ -13,7 +13,7 @@ from fogmoe_telegram_bot.core import config
 logger = logging.getLogger(__name__)
 
 STICKER_CACHE_TTL_SECONDS = 24 * 60 * 60
-PACKS_CONFIG_PATH = config.BASE_DIR / "resources" / "ai_sticker_packs.json"
+PACKS_CONFIG_PATH = config.RESOURCES_DIR / "ai_sticker_packs.json"
 
 _CACHE_LOCK = threading.Lock()
 _STICKER_SET_CACHE: dict[str, dict[str, Any]] = {}

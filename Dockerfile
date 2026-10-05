@@ -1,6 +1,6 @@
 # Minimal image for running the Telegram bot (Python only, MySQL is external)
 
-# Build stage: install locked runtime dependencies into /opt/venv with uv
+# Build stage: install locked dependencies and the project into /opt/venv with uv
 FROM python:3.13-slim AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /usr/local/bin/uv
@@ -16,26 +16,23 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-# Install the project itself as an editable package pointing at /app/src. The runtime
-# stage copies the same source to the same path; config.BASE_DIR resolves /app from it.
+# The package (with its resources) is installed into site-packages, not linked to /app/src
 COPY README.md ./
 COPY src ./src
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --no-editable
 
-# Runtime stage: only the virtualenv and application code
+# Runtime stage: only the virtualenv and the files used at run time
 FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH"
 
+# The working directory is the runtime directory: .env is read from it and logs/ is written to it
 WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
 
-# Copy application code
-COPY src ./src
-COPY resources ./resources
 # 迁移脚本随镜像发布，便于在容器内执行 alembic upgrade head
 COPY alembic.ini ./alembic.ini
 COPY alembic ./alembic
