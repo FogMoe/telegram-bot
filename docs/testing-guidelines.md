@@ -15,7 +15,7 @@
 - `modules/app/` 是应用组装和 Telegram handler 注册层，测试重点放在较稳定的组装边界，避免启动真实 bot。
 - `modules/core/` 放跨功能共享逻辑，适合写小型单元测试。
 - `modules/features/` 放业务功能。优先把可测试的纯逻辑拆到独立函数或小模块，再让 Telegram handler 调用它们。
-- 外部服务调用、数据库读写、Telegram API 交互默认用替身对象或小范围集成测试，不在普通单元测试里访问真实网络或真实数据库。
+- 外部服务调用、数据库读写、Telegram API 交互默认用替身对象或小范围集成测试，不在普通单元测试里访问真实网络或真实数据库。`tests/conftest.py` 让 `tests/integration` 以外的测试里所有走到 `core.db` 的访问立即抛 `OperationalError`；单元测试里看到「单元测试不连接数据库」就是漏了打桩。
 
 ## 经济与游戏的测试
 

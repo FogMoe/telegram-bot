@@ -37,6 +37,27 @@ from features.conversation.history_hooks import install_history_hooks  # noqa: E
 
 install_history_hooks()
 
+_INTEGRATION_DIR = Path(__file__).resolve().parent / "integration"
+
+
+@pytest.fixture(autouse=True)
+def _no_database_in_unit_tests(request, monkeypatch):
+    """单元测试不连数据库：没打桩就走到 `core.db` 的访问立即按连接失败处理。
+
+    否则会真的去连配置里的默认地址，在 Windows 上连接被拒要等约 4 秒才失败。
+    tests/integration 用 TEST_MYSQL_URL 指向的真实库，不受影响。
+    """
+    if _INTEGRATION_DIR in request.node.path.parents:
+        return
+    from sqlalchemy.exc import OperationalError
+
+    from core import db
+
+    def refuse_connection():
+        raise OperationalError("单元测试不连接数据库", None, ConnectionRefusedError())
+
+    monkeypatch.setattr(db, "get_engine", refuse_connection)
+
 
 @pytest.fixture
 def settings_override():
