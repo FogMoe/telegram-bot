@@ -170,6 +170,7 @@ def test_register_handlers_preserves_handler_and_job_registration_order():
     assert [_job_signature(job) for job in application.job_queue.jobs] == [
         ("recover_gamble_rounds", 30, 5),
         ("cleanup_message_records_job", 3600, 10),
+        ("recover_verification_tasks", 30, 5),
         ("recover_rps_games", 30, 5),
         ("cleanup_expired_games", 300, None),
         ("refresh_cache_job", 1800, 10),
