@@ -175,7 +175,7 @@ MySQL 的 DDL 会隐式提交。迁移中途失败时，已执行的 DDL 保留�
 
 ## 运行集成测试
 
-集成测试在 `tests/integration/`，连接真实 MySQL。设置 `TEST_MYSQL_URL`（服务器地址，不带库名）才会运行，未设置时整个目录 skip。
+集成测试在 `tests/integration/`，连接真实 MySQL。设置 `TEST_MYSQL_URL`（服务器地址，不带库名）才会运行。未设置时，不带路径参数的 `pytest` 不收集这个目录，显式指定 `tests/integration` 时整个目录 skip。
 
 ```bash
 # Linux / macOS

@@ -40,6 +40,27 @@ install_history_hooks()
 _INTEGRATION_DIR = Path(__file__).resolve().parent / "integration"
 
 
+def _integration_requested(config):
+    base = config.invocation_params.dir
+    for arg in config.args:
+        path = (base / arg.split("::")[0]).resolve()
+        if path == _INTEGRATION_DIR or _INTEGRATION_DIR in path.parents:
+            return True
+    return False
+
+
+def pytest_ignore_collect(collection_path, config):
+    """没设 TEST_MYSQL_URL 时，不带参数的 pytest 不收集 tests/integration，省掉导入它们的时间。
+
+    显式指定 tests/integration 时照常收集，由那里的 conftest 整体 skip，CI 的「全部被跳过」检查仍然有效。
+    """
+    if collection_path.resolve() != _INTEGRATION_DIR:
+        return None
+    if os.environ.get("TEST_MYSQL_URL", "").strip() or _integration_requested(config):
+        return None
+    return True
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--run-slow",

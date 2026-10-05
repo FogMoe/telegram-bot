@@ -119,7 +119,7 @@ uv sync
 
 ### MySQL 集成测试
 
-集成测试放在 `tests/integration/`，需要环境变量 `TEST_MYSQL_URL`（形如 `mysql+asyncmy://root:<password>@127.0.0.1:3306`，不含库名），未设置时整体跳过。CI 用 `mysql:8.4` service 提供数据库。普通单元测试不访问真实数据库。
+集成测试放在 `tests/integration/`，需要环境变量 `TEST_MYSQL_URL`（形如 `mysql+asyncmy://root:<password>@127.0.0.1:3306`，不含库名）。未设置时，不带路径参数的 `pytest` 不收集这个目录；显式指定 `tests/integration` 时整体跳过。CI 用 `mysql:8.4` service 提供数据库。普通单元测试不访问真实数据库。
 夹具、运行方式和约定见 [database-migrations.md](database-migrations.md) 的「运行集成测试」。
 
 ### 启动冒烟检查
