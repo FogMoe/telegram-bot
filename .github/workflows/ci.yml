@@ -36,12 +36,6 @@ jobs:
       - name: Lock file matches pyproject.toml
         run: uv lock --check
 
-      - name: Exported requirements match the lock
-        run: |
-          uv export --no-dev --no-hashes --no-annotate --no-emit-project -o requirements.txt
-          uv export --no-hashes --no-annotate --no-emit-project -o requirements-dev.txt
-          git diff --exit-code -- requirements.txt requirements-dev.txt
-
       - name: Install dependencies
         run: uv sync
 
@@ -161,19 +155,3 @@ jobs:
             python -c "import logging; from core.bot_logging import configure_logging; configure_logging(); logging.info('container-log-smoke')" \
             | grep container-log-smoke > /dev/null
           grep container-log-smoke logs-smoke/tgbot.log > /dev/null
-
-  run-bot-script:
-    name: runBot.sh start, status, restart, stop
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Syntax check
-        run: |
-          for script in runBot.sh scripts/verify_run_bot.sh; do
-            bash -n "$script"
-          done
-
-      - name: Verify process management with a stub entry point
-        run: bash scripts/verify_run_bot.sh

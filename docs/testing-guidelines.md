@@ -58,21 +58,11 @@
 
 ## 运行方式
 
-项目虚拟环境是仓库根目录的 `.venv`，用 `uv sync` 或 `python -m venv` 创建都可以，安装步骤见 [README](../README.md)。
-
-在 Windows 上使用项目虚拟环境：
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest
-```
-
-在 Linux / macOS 上：
+项目虚拟环境是仓库根目录的 `.venv`，由 `uv sync` 按 `uv.lock` 创建，开发依赖（pytest、ruff、mypy）默认一并安装，步骤见 [README](../README.md)。命令都通过 `uv run` 执行，它会先按 `uv.lock` 同步环境：
 
 ```bash
-.venv/bin/python -m pytest
+uv run pytest
 ```
-
-使用 uv 时也可以直接运行 `uv run pytest`，它会先按 `uv.lock` 同步环境。
 
 ### 日常测试与 slow 测试
 
@@ -80,8 +70,8 @@
 
 单个超过约 0.1 秒的测试标记为 `@pytest.mark.slow`（真实等待的并发、超时测试，扫描整个源码目录的边界检查，组装 Application 的测试），本地默认跳过。要一起跑时加 `--run-slow`：
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest --run-slow
+```bash
+uv run pytest --run-slow
 ```
 
 CI 的 `test` 任务带 `--run-slow`，所以 slow 测试在每个 PR 和 main 上都会运行。新增测试如果超过 0.1 秒，同样加上 slow 标记；找慢测试用 `pytest --run-slow --durations=30`。
@@ -98,7 +88,7 @@ CI 的 `test` 任务带 `--run-slow`，所以 slow 测试在每个 PR 和 main �
 
 ```powershell
 $env:RUN_ENV_API_CONNECTIVITY_TESTS = "1"
-.\.venv\Scripts\python.exe -m pytest tests/test_env_api_connectivity.py -s
+uv run pytest tests/test_env_api_connectivity.py -s
 ```
 
 默认会按 `AI_CHAT_ORDER` 检查 chat provider。只检查指定 provider 时：
@@ -106,15 +96,7 @@ $env:RUN_ENV_API_CONNECTIVITY_TESTS = "1"
 ```powershell
 $env:RUN_ENV_API_CONNECTIVITY_TESTS = "1"
 $env:ENV_API_CONNECTIVITY_PROVIDERS = "gemini"
-.\.venv\Scripts\python.exe -m pytest tests/test_env_api_connectivity.py -s
-```
-
-开发依赖（pytest、ruff、mypy）安装：
-
-```powershell
-uv sync
-# 或者
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+uv run pytest tests/test_env_api_connectivity.py -s
 ```
 
 ### MySQL 集成测试
@@ -126,8 +108,8 @@ uv sync
 
 不连接 Telegram 和数据库，只确认依赖可导入、Application 能组装、handler 与 job 能注册：
 
-```powershell
-.\.venv\Scripts\python.exe modules/main.py --check
+```bash
+uv run python modules/main.py --check
 ```
 
 CI 在构建出的镜像里运行同一条命令，实现见 `modules/app/smoke_check.py`。
@@ -137,27 +119,17 @@ CI 在构建出的镜像里运行同一条命令，实现见 `modules/app/smoke_
 `scripts/bench_runtime.py` 用 fake provider 与 fake Telegram（不连网、不连数据库）测 N 个并发对话的整轮耗时，可以指向不同版本的
 `modules/` 目录做改造前后的对比。它测的是本地合成负载，不在 CI 里运行，结果与解读见 [runtime.md](runtime.md) 的「基准」：
 
-```powershell
-.\.venv\Scripts\python.exe scripts/bench_runtime.py --label after --concurrency 10,50,200
-```
-
-### 验证 runBot.sh
-
-`scripts/verify_run_bot.sh` 在临时目录里复制 `runBot.sh`，用替身入口验证 start、status、restart、stop 使用同一套进程识别，包括 PID 文件过期、PID 指向无关进程和旧式启动的进程：
-
 ```bash
-bash scripts/verify_run_bot.sh
+uv run python scripts/bench_runtime.py --label after --concurrency 10,50,200
 ```
-
-Windows 的 Git Bash 没有 Linux 的进程模型，需要用 bash 替身代替 Python 进程：`VERIFY_BASH_STUB=1 bash scripts/verify_run_bot.sh`。CI 在 ubuntu 上直接运行。
 
 ## 静态检查
 
 用 ruff 做静态检查，配置在仓库根的 `ruff.toml`：
 
-```powershell
-.\.venv\Scripts\python.exe -m ruff check .
-.\.venv\Scripts\python.exe -m ruff check . --fix
+```bash
+uv run ruff check .
+uv run ruff check . --fix
 ```
 
 当前只启用 `E4` / `E7` / `E9` / `F` 四组规则，盯的是真问题——未使用的 import、
@@ -172,8 +144,8 @@ Windows 的 Git Bash 没有 Linux 的进程模型，需要用 bash 替身代替 
 
 用 mypy 做增量类型检查，只检查 `pyproject.toml` 里 `[tool.mypy]` 的 `files` 列出的模块：
 
-```powershell
-.\.venv\Scripts\python.exe -m mypy
+```bash
+uv run mypy
 ```
 
 没有列入的模块只提供类型信息，不报告它们自己的错误（`follow_imports = "silent"`），所以存量代码不需要为此改动。列入的模块按 `disallow_untyped_defs` 检查：函数签名必须完整标注。
@@ -190,10 +162,9 @@ Windows 的 Git Bash 没有 Linux 的进程模型，需要用 bash 替身代替 
 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) 在每个 pull request 和推送到 `main` 时运行：
 
-- `lint`：`uv lock --check`（锁与 `pyproject.toml` 一致）、导出的 `requirements*.txt` 与锁一致、ruff、mypy。
+- `lint`：`uv lock --check`（锁与 `pyproject.toml` 一致）、ruff、mypy。
 - `test`：除 `tests/integration` 以外的 pytest，包括 slow 测试（`--run-slow`）。
 - `integration`：`mysql:8.4` service 上的 `tests/integration`；目录里还没有测试时不算失败，但全部被跳过会失败。
 - `image`：构建镜像并运行启动冒烟检查，确认日志同时进入 stdout 和挂载的日志目录。
-- `run-bot-script`：运行 `scripts/verify_run_bot.sh`。
 
 本地想复现某一项时，运行上面各节对应的命令即可。

@@ -12,10 +12,10 @@
 按 README 的「创建数据库」建好 `utf8mb4` 的空库，在 `.env` 里配置连接信息，然后：
 
 ```bash
-.venv/bin/python -m alembic upgrade head
+uv run alembic upgrade head
 ```
 
-Windows 下把 `.venv/bin/python` 换成 `.\.venv\Scripts\python.exe`。连接信息来自 `modules/core/config.py` 中的 `SQLALCHEMY_DATABASE_URI`（`DATABASE_URL` 或 `MYSQL_*`）。
+连接信息来自 `modules/core/config.py` 中的 `SQLALCHEMY_DATABASE_URI`（`DATABASE_URL` 或 `MYSQL_*`）。
 
 全新库在 strict 模式下可以直接迁移到 head，之后可以写入第一条对话，也可以反复更新抽奖日期。
 
@@ -31,7 +31,7 @@ Windows 下把 `.venv/bin/python` 换成 `.\.venv\Scripts\python.exe`。连接�
 只要前两项之一存在，就不会读取应用配置。对一个临时库升级或 stamp 时用 `-x`：
 
 ```bash
-.venv/bin/python -m alembic -x db_url='mysql+asyncmy://user:pass@host:3306/dbname?charset=utf8mb4' upgrade head
+uv run alembic -x db_url='mysql+asyncmy://user:pass@host:3306/dbname?charset=utf8mb4' upgrade head
 ```
 
 ## 既有安装升级
@@ -58,7 +58,7 @@ SELECT version_num FROM alembic_version;
 ### 升级
 
 ```bash
-.venv/bin/python -m alembic upgrade head
+uv run alembic upgrade head
 ```
 
 升级自动完成这些事：
@@ -122,7 +122,7 @@ MySQL 的 DDL 会隐式提交。迁移中途失败时，已执行的 DDL 保留�
 **所有 revision 都是可重入的**：建表用 `CREATE TABLE IF NOT EXISTS`，加列和加索引前先查 `information_schema`，数据回填写成幂等形式。恢复时直接重跑：
 
 ```bash
-.venv/bin/python -m alembic upgrade head
+uv run alembic upgrade head
 ```
 
 回填的幂等规则：
@@ -179,13 +179,13 @@ MySQL 的 DDL 会隐式提交。迁移中途失败时，已执行的 DDL 保留�
 
 ```bash
 # Linux / macOS
-TEST_MYSQL_URL=mysql+asyncmy://root@127.0.0.1:3306 .venv/bin/python -m pytest tests/integration
+TEST_MYSQL_URL=mysql+asyncmy://root@127.0.0.1:3306 uv run pytest tests/integration
 ```
 
 ```powershell
 # Windows PowerShell
 $env:TEST_MYSQL_URL = "mysql+asyncmy://root@127.0.0.1:3306"
-.\.venv\Scripts\python.exe -m pytest tests/integration
+uv run pytest tests/integration
 ```
 
 约定：

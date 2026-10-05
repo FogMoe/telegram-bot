@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13,<3.14"
 
 # 运行时依赖：modules/ 里直接 import 的第三方包都要在这里声明，不能只靠传递依赖。
-# 锁定版本以 uv.lock 为准；requirements.txt / requirements-dev.txt 由锁导出，不要手改。
+# 锁定版本以 uv.lock 为准，用 uv add / uv remove 修改依赖。
 dependencies = [
     "python-telegram-bot[job-queue]",
     "litellm>=1.80.5",
