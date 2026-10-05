@@ -6,7 +6,7 @@ import json
 from economy_support import gather_all
 from mysql_support import fetch, run
 
-from core import chat_records, db, sql
+from fogmoe_telegram_bot.core import chat_records, db, sql
 
 
 def stored_messages(url, conversation_id):

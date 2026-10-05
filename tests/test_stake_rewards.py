@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from features.economy.operations import stake
-from features.economy.repositories.stake import StakeRecord
+from fogmoe_telegram_bot.features.economy.operations import stake
+from fogmoe_telegram_bot.features.economy.repositories.stake import StakeRecord
 
 
 def _stake(amount, stake_time, last_reward_time=None):

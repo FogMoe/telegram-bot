@@ -1,4 +1,4 @@
-from features.ai.tools import http_tools
+from fogmoe_telegram_bot.features.ai.tools import http_tools
 
 
 class _FakeResponse:

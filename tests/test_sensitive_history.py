@@ -2,12 +2,12 @@
 
 import asyncio
 import base64
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 
-from core import group_chat_history, redaction, telegram_history
+from fogmoe_telegram_bot.core import group_chat_history, redaction, telegram_history
 
 SECRET = "top-secret-0001"
 
@@ -60,7 +60,7 @@ def _message(text, *, chat, message_id=88, from_id=123):
         reply_to_message=None,
         chat=chat,
         from_user=SimpleNamespace(id=from_id),
-        date=datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc),
+        date=datetime(2026, 7, 29, 12, 0, tzinfo=UTC),
         message_id=message_id,
     )
 

@@ -1,10 +1,13 @@
 import re
+from pathlib import Path
 
-from core import config
+from fogmoe_telegram_bot.core import config
+
+ENV_EXAMPLE = Path(__file__).resolve().parents[1] / ".env.example"
 
 
 def test_env_example_documents_advisor_settings():
-    env_example = (config.BASE_DIR / ".env.example").read_text(encoding="utf-8")
+    env_example = ENV_EXAMPLE.read_text(encoding="utf-8")
     expected_names = {
         "AI_ADVISOR_PROVIDER",
         "AI_ADVISOR_FALLBACK_PROVIDER",
@@ -21,7 +24,7 @@ def test_env_example_documents_advisor_settings():
 
 
 def test_env_example_documents_recap_settings():
-    env_example = (config.BASE_DIR / ".env.example").read_text(encoding="utf-8")
+    env_example = ENV_EXAMPLE.read_text(encoding="utf-8")
     expected_names = {
         "AI_RECAP_PROVIDER",
         "AI_RECAP_FALLBACK_PROVIDER",
@@ -52,7 +55,7 @@ RUNTIME_SETTINGS = (
 
 
 def test_env_example_documents_every_runtime_setting_with_its_code_default():
-    env_example = (config.BASE_DIR / ".env.example").read_text(encoding="utf-8")
+    env_example = ENV_EXAMPLE.read_text(encoding="utf-8")
 
     for name in RUNTIME_SETTINGS:
         match = re.search(rf"^# {name}=(\S+)$", env_example, re.MULTILINE)

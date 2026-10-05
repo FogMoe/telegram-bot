@@ -1,6 +1,6 @@
 import pytest
 
-from features.ai.context_budget import (
+from fogmoe_telegram_bot.features.ai.context_budget import (
     ContextBudgetExceededError,
     enforce_messages_context_budget,
 )

@@ -1,7 +1,7 @@
 import pytest
 
-from app import smoke_check
-from core import config
+from fogmoe_telegram_bot.app import smoke_check
+from fogmoe_telegram_bot.core import config
 
 pytestmark = pytest.mark.slow
 

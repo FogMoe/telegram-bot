@@ -1,5 +1,5 @@
-from core import chat_records, token_estimator
-from core.token_estimator import (
+from fogmoe_telegram_bot.core import chat_records, token_estimator
+from fogmoe_telegram_bot.core.token_estimator import (
     DEFAULT_MESSAGE_OVERHEAD,
     estimate_conversation_tokens,
     estimate_message_tokens,

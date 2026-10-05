@@ -6,7 +6,7 @@ import pytest
 from economy_support import gather_all, pool_balance, pool_rows, seed_user
 from mysql_support import execute, run
 
-from core import balance, mysql_connection, stake_reward_pool
+from fogmoe_telegram_bot.core import balance, mysql_connection, stake_reward_pool
 
 
 def credit(amount, key, **kwargs):

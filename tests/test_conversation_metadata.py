@@ -1,8 +1,8 @@
 import asyncio
 
-from core import telegram_history
-from core.telegram_history import format_user_message
-from features.conversation import turn_services
+from fogmoe_telegram_bot.core import telegram_history
+from fogmoe_telegram_bot.core.telegram_history import format_user_message
+from fogmoe_telegram_bot.features.conversation import turn_services
 
 
 def test_format_xml_message_includes_current_message_id():

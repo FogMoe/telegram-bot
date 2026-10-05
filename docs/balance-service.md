@@ -1,7 +1,7 @@
 # 余额服务契约
 
 本页是金币变动的契约：所有改动用户余额或奖池的代码都按这里的规则写。实现在
-`modules/core/balance.py`（用户余额）与 `modules/core/stake_reward_pool.py`（奖池），
+`src/fogmoe_telegram_bot/core/balance.py`（用户余额）与 `src/fogmoe_telegram_bot/core/stake_reward_pool.py`（奖池），
 账本表由迁移 `0019_coin_ledger` 创建。
 
 ## 规则
@@ -269,7 +269,7 @@ await balance.credit(connection, user_id, 50, op_key=balance.make_op_key("topup"
 
 `process_user` 的 `add_free_coins`、`add_paid_coins`、`spend_user_coins`、`update_user_coins`、
 `async_update_user_coins`，以及 `stake_reward_pool` 的 `add_to_pool`、`subtract_from_pool` 已经删除，没有保留兼容层。
-`modules/` 里既没有它们的定义也没有调用，`tests/test_games_balance_boundary.py` 会在它们重新出现时失败。替代：
+`src/` 里既没有它们的定义也没有调用，`tests/test_games_balance_boundary.py` 会在它们重新出现时失败。替代：
 
 | 已删除的函数 | 现在用 |
 |---|---|

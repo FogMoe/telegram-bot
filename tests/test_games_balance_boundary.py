@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-MODULES_DIR = Path(__file__).resolve().parents[1] / "modules"
-GAMES_DIR = MODULES_DIR / "features" / "games"
-ECONOMY_DIR = MODULES_DIR / "features" / "economy"
+PACKAGE_DIR = Path(__file__).resolve().parents[1] / "src" / "fogmoe_telegram_bot"
+GAMES_DIR = PACKAGE_DIR / "features" / "games"
+ECONOMY_DIR = PACKAGE_DIR / "features" / "economy"
 
 # 已删除的旧接口（process_user 的金币函数与奖池的 legacy 委托）：模块里既不能再定义，也不能再调用。
 REMOVED_BALANCE_FUNCTIONS = (
@@ -29,10 +29,10 @@ def sources(directory: Path):
 @pytest.mark.slow
 def test_the_removed_balance_functions_are_neither_defined_nor_called():
     offenders = {
-        str(path.relative_to(MODULES_DIR)): [
+        str(path.relative_to(PACKAGE_DIR)): [
             name for name in REMOVED_BALANCE_FUNCTIONS if re.search(rf"\b{name}\b", text)
         ]
-        for path, text in sources(MODULES_DIR).items()
+        for path, text in sources(PACKAGE_DIR).items()
     }
 
     assert {path: names for path, names in offenders.items() if names} == {}
@@ -40,7 +40,7 @@ def test_the_removed_balance_functions_are_neither_defined_nor_called():
 
 def test_games_and_economy_do_not_write_user_balances_directly():
     offenders = [
-        str(path.relative_to(MODULES_DIR))
+        str(path.relative_to(PACKAGE_DIR))
         for directory in (GAMES_DIR, ECONOMY_DIR)
         for path, text in sources(directory).items()
         if DIRECT_BALANCE_WRITE.search(text)

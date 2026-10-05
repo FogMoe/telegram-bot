@@ -5,7 +5,7 @@
 
 ## 单一来源
 
-策略只定义在 `modules/core/redaction.py`。新增敏感命令、凭据格式或脱敏规则只改这个文件，
+策略只定义在 `src/fogmoe_telegram_bot/core/redaction.py`。新增敏感命令、凭据格式或脱敏规则只改这个文件，
 各路径通过下表的入口调用它，不各自实现。
 
 | 能力 | 符号 |

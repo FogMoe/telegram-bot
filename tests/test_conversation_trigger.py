@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from features.conversation import lifecycle, triggers
+from fogmoe_telegram_bot.features.conversation import lifecycle, triggers
 
 
 def test_photo_caption_mention_triggers_group_ai_response(monkeypatch):

@@ -4,21 +4,18 @@
 """
 
 import io
-import sys
 from argparse import Namespace
 from pathlib import Path
 
 import pytest
-from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy.engine import make_url
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+from alembic import command
+from fogmoe_telegram_bot.core import migration_support
 
-from modules.core import migration_support  # noqa: E402
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 # 只用来决定 SQL 方言，离线模式不会连接。
 OFFLINE_URL = "mysql+asyncmy://user:secret@localhost/offline_only"

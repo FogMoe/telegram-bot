@@ -2,7 +2,7 @@
 
 from alembic import op
 
-from modules.core.migration_support import add_columns_if_missing
+from fogmoe_telegram_bot.core.migration_support import add_columns_if_missing
 
 revision = "0014_add_ai_user_diary_page_index"
 down_revision = "0013_add_ai_schedule_recurrence"

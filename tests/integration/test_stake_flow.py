@@ -18,10 +18,14 @@ from economy_support import (
 )
 from mysql_support import execute, fetch, run
 
-from core import balance, sql, stake_reward_pool
-from features.economy import stake_coin
-from features.economy.operations import stake as stake_operations
-from features.economy.operations.stake import CollectStatus, OpenStatus, WithdrawStatus
+from fogmoe_telegram_bot.core import balance, sql, stake_reward_pool
+from fogmoe_telegram_bot.features.economy import stake_coin
+from fogmoe_telegram_bot.features.economy.operations import stake as stake_operations
+from fogmoe_telegram_bot.features.economy.operations.stake import (
+    CollectStatus,
+    OpenStatus,
+    WithdrawStatus,
+)
 
 NOW = datetime.now().replace(microsecond=0)
 EIGHT_DAYS_AGO = NOW - timedelta(days=8)

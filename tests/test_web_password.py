@@ -3,7 +3,7 @@ import hashlib
 
 import pytest
 
-from features.economy.operations import web_password
+from fogmoe_telegram_bot.features.economy.operations import web_password
 
 
 @pytest.mark.slow

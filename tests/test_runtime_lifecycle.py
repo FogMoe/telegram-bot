@@ -6,11 +6,19 @@ import time
 import pytest
 from telegram.ext import Application
 
-from app import bot_app, runtime_lifecycle
-from core import admission, background, blocking, config, db, http_sessions, metrics
-from core.admission import AdmissionSettings, Overloaded, OverloadReason
-from core.deadline import REASON_SHUTDOWN, Deadline, DeadlineExceeded
-from core.telegram_history import HistoryTrackingExtBot
+from fogmoe_telegram_bot.app import bot_app, runtime_lifecycle
+from fogmoe_telegram_bot.core import (
+    admission,
+    background,
+    blocking,
+    config,
+    db,
+    http_sessions,
+    metrics,
+)
+from fogmoe_telegram_bot.core.admission import AdmissionSettings, Overloaded, OverloadReason
+from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline, DeadlineExceeded
+from fogmoe_telegram_bot.core.telegram_history import HistoryTrackingExtBot
 
 
 @pytest.fixture(autouse=True)
@@ -101,7 +109,7 @@ def test_a_failing_step_is_logged_and_the_remaining_steps_still_run(recorded, mo
 
 
 def test_litellm_clients_are_closed_through_litellm(monkeypatch):
-    from features.ai import litellm_client
+    from fogmoe_telegram_bot.features.ai import litellm_client
 
     closed = []
 
@@ -116,7 +124,7 @@ def test_litellm_clients_are_closed_through_litellm(monkeypatch):
 
 
 def test_a_litellm_close_failure_never_breaks_shutdown(monkeypatch):
-    from features.ai import litellm_client
+    from fogmoe_telegram_bot.features.ai import litellm_client
 
     async def broken():
         raise RuntimeError("client already closed")

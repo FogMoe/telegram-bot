@@ -12,7 +12,7 @@ fixture 定义在同目录的 conftest.py；测试里直接用的函数从这里
 - 应用代码与 alembic 只会拿到显式传入的测试 URL，永远不会回落到 `.env` 里的数据库。
 - 会话统一追加 STRICT_TRANS_TABLES，不依赖服务器默认 sql_mode。
 - asyncmy 的连接绑定创建它的事件循环，所以每个异步片段都通过 `run()` 在独立的事件循环里执行，
-  结束时会处置应用引擎（`core.db`）及额外传入的引擎。
+  结束时会处置应用引擎（`fogmoe_telegram_bot.core.db`）及额外传入的引擎。
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import importlib
 import os
-import sys
 import uuid
 from collections.abc import Coroutine, Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -28,18 +27,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from alembic import command
 from alembic.config import Config
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from alembic import command
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MODULES_DIR = PROJECT_ROOT / "modules"
-# 迁移脚本以 `modules.core...` 导入，应用代码以 `core...` 导入。
-for _path in (str(PROJECT_ROOT), str(MODULES_DIR)):
-    if _path not in sys.path:
-        sys.path.insert(0, _path)
 
 TEST_MYSQL_URL_ENV = "TEST_MYSQL_URL"
 DATABASE_PREFIX = "it_"
@@ -141,7 +136,7 @@ def drop_all_created_databases() -> None:
 
 
 async def _dispose_app_engine() -> None:
-    from core import db
+    from fogmoe_telegram_bot.core import db
 
     engine = db._ENGINE
     if engine is not None:
@@ -321,8 +316,8 @@ def current_versions(url: str) -> list[str]:
 
 
 def _config_modules() -> list[Any]:
-    """应用的两份配置模块：应用代码用 `core.config`，迁移脚本用 `modules.core.config`。"""
-    return [importlib.import_module(name) for name in ("core.config", "modules.core.config")]
+    """应用的配置模块（应用代码与迁移脚本共用同一份）。"""
+    return [importlib.import_module("fogmoe_telegram_bot.core.config")]
 
 
 @contextmanager
@@ -345,7 +340,7 @@ def bind_app_engine(url: str) -> Iterator[AsyncEngine]:
     退出时处置引擎并还原 `core.db._ENGINE`；配置里的数据库地址同时指向 `url`，
     即使有代码绕过 `get_engine()` 自己建引擎，也只会连到测试库。
     """
-    from core import db
+    from fogmoe_telegram_bot.core import db
 
     previous_engine = db._ENGINE
     previous_loop = db._MAIN_LOOP

@@ -9,10 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import admission, command_cooldown, metrics
-from core.deadline import Deadline
-from features.ai import conversation_locks
-from features.conversation import batching, handlers, lifecycle
+from fogmoe_telegram_bot.core import admission, command_cooldown, metrics
+from fogmoe_telegram_bot.core.deadline import Deadline
+from fogmoe_telegram_bot.features.ai import conversation_locks
+from fogmoe_telegram_bot.features.conversation import batching, handlers, lifecycle
 
 BOT_ID = 4242
 

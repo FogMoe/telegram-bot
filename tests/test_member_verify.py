@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import pytest
 from telegram.constants import ChatMemberStatus
 
-from features.moderation import member_verify
-from features.moderation.member_verify import is_own_verify_button
+from fogmoe_telegram_bot.features.moderation import member_verify
+from fogmoe_telegram_bot.features.moderation.member_verify import is_own_verify_button
 
 CHAT_ID = -100
 USER_ID = 42

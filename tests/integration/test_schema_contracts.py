@@ -6,19 +6,19 @@ from datetime import datetime
 import pytest
 from legacy_data import first_message_content, seed_duplicate_rows
 from mysql_support import (
-    head_revision,
     bind_app_engine,
     current_versions,
     execute,
     fetch,
     fetch_scalar,
+    head_revision,
     run,
     upgrade,
 )
 from sqlalchemy.exc import IntegrityError
 
-from core import sql
-from features.economy.repositories import lottery as lottery_repository
+from fogmoe_telegram_bot.core import sql
+from fogmoe_telegram_bot.features.economy.repositories import lottery as lottery_repository
 
 REV_0016 = "0016_add_ai_schedule_daily_limit"
 HEAD = head_revision()
@@ -32,7 +32,7 @@ async def save_lottery_date(user_id):
 
 class TestFreshDatabase:
     def test_first_conversation_insert_succeeds(self, app_database):
-        from core import chat_records
+        from fogmoe_telegram_bot.core import chat_records
 
         run(chat_records.insert_chat_record(1001, "user", "hello"))
 
@@ -43,7 +43,7 @@ class TestFreshDatabase:
         assert "hello" in rows[0]["messages"]
 
     def test_later_turns_extend_the_same_row(self, app_database):
-        from core import chat_records
+        from fogmoe_telegram_bot.core import chat_records
 
         run(chat_records.insert_chat_record(1001, "user", "first"))
         run(chat_records.insert_chat_record(1001, "assistant", "second"))
@@ -152,7 +152,7 @@ class TestLegacyDatabaseWithDuplicates:
             execute(upgraded_legacy_database, "INSERT INTO user_lottery (user_id) VALUES (7)")
 
     def test_application_keeps_working_on_the_upgraded_database(self, upgraded_legacy_database):
-        from core import chat_records
+        from fogmoe_telegram_bot.core import chat_records
 
         with bind_app_engine(upgraded_legacy_database):
             run(chat_records.insert_chat_record(1, "user", "after the upgrade"))

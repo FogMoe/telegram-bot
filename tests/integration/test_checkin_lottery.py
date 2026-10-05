@@ -6,12 +6,12 @@ import pytest
 from economy_support import gather_all, ledger_rows, seed_user, user_state
 from mysql_support import execute, fetch, fetch_scalar, run
 
-from core import balance
-from features.economy import coins as coins_handlers
-from features.economy.operations import checkin, lottery
-from features.economy.operations.checkin import CheckinStatus
-from features.economy.operations.lottery import LotteryStatus
-from features.economy.repositories import lottery as lottery_repository
+from fogmoe_telegram_bot.core import balance
+from fogmoe_telegram_bot.features.economy import coins as coins_handlers
+from fogmoe_telegram_bot.features.economy.operations import checkin, lottery
+from fogmoe_telegram_bot.features.economy.operations.checkin import CheckinStatus
+from fogmoe_telegram_bot.features.economy.operations.lottery import LotteryStatus
+from fogmoe_telegram_bot.features.economy.repositories import lottery as lottery_repository
 
 TODAY = date(2026, 10, 5)
 

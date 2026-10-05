@@ -1,15 +1,8 @@
 import os
-import sys
 from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
-
-
-MODULES_DIR = Path(__file__).resolve().parents[1] / "modules"
-if str(MODULES_DIR) not in sys.path:
-    sys.path.insert(0, str(MODULES_DIR))
-
 
 # 测试默认不读开发者的 .env（BOT_ENV_FILE 为空即不读 env 文件）；只有显式开启真实连通性
 # 检查时才保留默认行为，让 tests/test_env_api_connectivity.py 拿到 .env 里的真实配置。
@@ -27,13 +20,15 @@ else:
 
 # 基线配置只有代码默认值：开发者 shell 里的环境变量也不会影响测试。
 # 单个测试要改配置，用下面的 `settings_override` 夹具（或 monkeypatch 个别 `config.<NAME>`）。
-from core import config  # noqa: E402
+from fogmoe_telegram_bot.core import config  # noqa: E402
 
 if _HERMETIC_SETTINGS:
     config.install_settings(config.AppSettings.from_values())
 
 # 组装层在启动时注入历史回调，测试沿用同一份装配，避免测到未装配的降级路径。
-from features.conversation.history_hooks import install_history_hooks  # noqa: E402
+from fogmoe_telegram_bot.features.conversation.history_hooks import (
+    install_history_hooks,  # noqa: E402
+)
 
 install_history_hooks()
 
@@ -95,7 +90,7 @@ def _no_database_in_unit_tests(request, monkeypatch):
         return
     from sqlalchemy.exc import OperationalError
 
-    from core import db
+    from fogmoe_telegram_bot.core import db
 
     def refuse_connection():
         raise OperationalError("单元测试不连接数据库", None, ConnectionRefusedError())

@@ -5,14 +5,14 @@ import time
 
 import pytest
 
-from core import metrics
-from core.admission import (
+from fogmoe_telegram_bot.core import metrics
+from fogmoe_telegram_bot.core.admission import (
     AdmissionController,
     AdmissionSettings,
     Overloaded,
     OverloadReason,
 )
-from core.deadline import REASON_SHUTDOWN, Deadline, DeadlineExceeded
+from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline, DeadlineExceeded
 
 
 def make_controller(**overrides):

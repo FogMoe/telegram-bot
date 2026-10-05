@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
 
-from features.ai import schedule_limits, scheduler
+from fogmoe_telegram_bot.features.ai import schedule_limits, scheduler
 
 
 def _claim(schedule_id, **overrides):

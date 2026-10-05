@@ -1,9 +1,9 @@
 """本地合成负载基准：N 个并发对话的整轮耗时与事件循环延迟（fake provider + fake Telegram，不连网）。
 
-用途：比较执行模型改造前后的行为。同一份脚本可以指向不同版本的 `modules/` 目录运行：
+用途：比较执行模型改造前后的行为。同一份脚本可以指向另一份检出的 `src/` 目录运行：
 
-    python scripts/bench_runtime.py --label after
-    python scripts/bench_runtime.py --modules <旧版本的 modules 目录> --label before
+    uv run python scripts/bench_runtime.py --label after
+    uv run python scripts/bench_runtime.py --src <另一份检出的 src 目录> --label before
 
 结果是**本地合成负载**的测量：provider 与工具用固定延迟的替身，数据库与 Telegram 全部是替身，
 不代表生产环境的吞吐。数字只用来比较两种执行模型在同一假设下的相对行为。
@@ -39,7 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    parser.add_argument("--modules", type=Path, default=REPO_ROOT / "modules", help="要测量的 modules 目录")
+    parser.add_argument("--src", type=Path, default=REPO_ROOT / "src", help="要测量的 src 目录（包含 fogmoe_telegram_bot）")
     parser.add_argument("--label", default="run", help="结果标签（before / after）")
     parser.add_argument("--concurrency", default="10,50,200", help="并发对话数，逗号分隔")
     parser.add_argument("--provider-ms", type=float, default=300.0, help="每次模型调用的延迟（毫秒）")
@@ -65,13 +65,20 @@ def percentile(values: list[float], fraction: float) -> float:
 class Bench:
     def __init__(self, args: argparse.Namespace) -> None:
         os.environ["BOT_ENV_FILE"] = ""
-        sys.path.insert(0, str(args.modules.resolve()))
+        # 排在可编辑安装的路径前面，让指定目录里的 fogmoe_telegram_bot 优先被导入。
+        sys.path.insert(0, str(args.src.resolve()))
         self.args = args
 
         import litellm
-        from core import config
-        from features.ai import litellm_client, router, tool_runner
-        from features.conversation import handlers, lifecycle, turn, turn_services
+
+        from fogmoe_telegram_bot.core import config
+        from fogmoe_telegram_bot.features.ai import litellm_client, router, tool_runner
+        from fogmoe_telegram_bot.features.conversation import (
+            handlers,
+            lifecycle,
+            turn,
+            turn_services,
+        )
 
         self.litellm = litellm
         self.config = config
@@ -144,7 +151,7 @@ class Bench:
 
         self.tool_runner.AI_TOOL_HANDLERS["google_search"] = blocking_tool
 
-        from core import command_cooldown
+        from fogmoe_telegram_bot.core import command_cooldown
 
         async def allow(update):
             return True
@@ -158,8 +165,11 @@ class Bench:
             await asyncio.sleep(db_s)
             return None
 
-        from features.conversation import billing
-        from features.conversation.turn_types import HistoryInsert, UserStateRecord
+        from fogmoe_telegram_bot.features.conversation import billing
+        from fogmoe_telegram_bot.features.conversation.turn_types import (
+            HistoryInsert,
+            UserStateRecord,
+        )
 
         async def charge(user_id, messages):
             await asyncio.sleep(db_s)
@@ -297,7 +307,7 @@ class Bench:
         stop.set()
         await watcher
 
-        from features.conversation.turn_types import Stage
+        from fogmoe_telegram_bot.features.conversation.turn_types import Stage
 
         # 被准入拒绝的对话（收到「繁忙」提示）几乎立刻返回，不计入整轮耗时的分位数。
         completed = [latency for user_id, latency in latencies.items() if user_id not in notices]
@@ -335,7 +345,7 @@ def main() -> None:
     rows = asyncio.run(bench.run())
 
     header = (
-        f"label={args.label} modules={args.modules} native_async={bench.native_async} "
+        f"label={args.label} src={args.src} native_async={bench.native_async} "
         f"admission={bench.has_admission} settings={bench.settings_values}\n"
         f"provider={args.provider_ms:g}ms x2 calls, tool={args.tool_ms:g}ms (sync, blocking), "
         f"telegram={args.telegram_ms:g}ms/call, db={args.db_ms:g}ms/call, repeat={args.repeat} (median)"

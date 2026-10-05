@@ -3,11 +3,11 @@ import asyncio
 import pytest
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 
-from core import config
-from core.litellm_models import litellm_model_name
-from features.ai import context_budget, litellm_client
-from features.ai.litellm_message_sanitizer import sanitize_message_for_provider
-from features.ai.litellm_provider_config import (
+from fogmoe_telegram_bot.core import config
+from fogmoe_telegram_bot.core.litellm_models import litellm_model_name
+from fogmoe_telegram_bot.features.ai import context_budget, litellm_client
+from fogmoe_telegram_bot.features.ai.litellm_message_sanitizer import sanitize_message_for_provider
+from fogmoe_telegram_bot.features.ai.litellm_provider_config import (
     azure_api_base,
     gemini_native_api_base,
     openai_compatible_api_base,

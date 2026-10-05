@@ -3,18 +3,21 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import telegram_history
-from features.ai import telegram_command_executor
-from features.ai.telegram_command_executor import _execute_on_telegram_loop
-from features.ai.tools import telegram_command_tools
-from features.ai.tools.context import (
+from fogmoe_telegram_bot.core import telegram_history
+from fogmoe_telegram_bot.features.ai import telegram_command_executor
+from fogmoe_telegram_bot.features.ai.telegram_command_executor import _execute_on_telegram_loop
+from fogmoe_telegram_bot.features.ai.tools import telegram_command_tools
+from fogmoe_telegram_bot.features.ai.tools.context import (
     clear_tool_request_context,
     set_tool_request_context,
 )
-from features.ai.tools.models import ExecuteTelegramCommandArgs, parameters_schema
-from features.ai.tools.schemas import OPENAI_TOOLS
-from features.ai.types import TOOL_CONTEXT_MESSAGES_KEY
-from features.economy.operations.coins import give_op_key
+from fogmoe_telegram_bot.features.ai.tools.models import (
+    ExecuteTelegramCommandArgs,
+    parameters_schema,
+)
+from fogmoe_telegram_bot.features.ai.tools.schemas import OPENAI_TOOLS
+from fogmoe_telegram_bot.features.ai.types import TOOL_CONTEXT_MESSAGES_KEY
+from fogmoe_telegram_bot.features.economy.operations.coins import give_op_key
 
 
 @pytest.fixture(autouse=True)

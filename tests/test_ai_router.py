@@ -2,11 +2,11 @@ import asyncio
 
 import pytest
 
-from core import config
-from features.ai import chat_provider, router
-from features.ai.context_budget import ContextBudgetExceededError
-from features.ai.errors import SafetyBlockError
-from features.ai.types import PartialAIResponseError
+from fogmoe_telegram_bot.core import config
+from fogmoe_telegram_bot.features.ai import chat_provider, router
+from fogmoe_telegram_bot.features.ai.context_budget import ContextBudgetExceededError
+from fogmoe_telegram_bot.features.ai.errors import SafetyBlockError
+from fogmoe_telegram_bot.features.ai.types import PartialAIResponseError
 
 
 @pytest.fixture(autouse=True)

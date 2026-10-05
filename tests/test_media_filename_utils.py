@@ -1,4 +1,4 @@
-from features.ai.tools.filename_utils import (
+from fogmoe_telegram_bot.features.ai.tools.filename_utils import (
     MAX_MEDIA_FILENAME_CHARS,
     prompt_to_filename,
 )

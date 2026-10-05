@@ -1,11 +1,11 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 
-from core import telegram_history
-from features.conversation import clear as conversation_clear
+from fogmoe_telegram_bot.core import telegram_history
+from fogmoe_telegram_bot.features.conversation import clear as conversation_clear
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +41,7 @@ def _message(**changes):
         "contact": None,
         "dice": None,
         "reply_to_message": None,
-        "date": datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc),
+        "date": datetime(2026, 7, 29, 12, 0, tzinfo=UTC),
         "message_id": 88,
     }
     values.update(changes)
@@ -568,7 +568,7 @@ def test_fogmoebot_command_is_recorded_before_ai_handler(monkeypatch):
 
 
 def test_private_command_invalidates_recap_before_waiting_for_history_lock(monkeypatch):
-    from features.ai import conversation_locks, idle_followup
+    from fogmoe_telegram_bot.features.ai import conversation_locks, idle_followup
 
     events = []
 
@@ -614,7 +614,7 @@ def test_private_command_invalidates_recap_before_waiting_for_history_lock(monke
 
 
 def test_delegated_private_command_does_not_invalidate_or_wait_for_lock(monkeypatch):
-    from features.ai import conversation_locks, idle_followup
+    from fogmoe_telegram_bot.features.ai import conversation_locks, idle_followup
 
     events = []
 

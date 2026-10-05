@@ -1,4 +1,4 @@
-from features.ai.tool_history import (
+from fogmoe_telegram_bot.features.ai.tool_history import (
     tool_logs_completed_clear,
     tool_logs_to_record_entries,
 )

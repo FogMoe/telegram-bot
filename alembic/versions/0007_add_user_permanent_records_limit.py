@@ -2,7 +2,7 @@
 
 from alembic import op
 
-from modules.core.migration_support import add_columns_if_missing
+from fogmoe_telegram_bot.core.migration_support import add_columns_if_missing
 
 revision = "0007_add_user_permanent_records_limit"
 down_revision = "0006_drop_ai_user_diary"

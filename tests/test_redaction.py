@@ -3,7 +3,7 @@ import logging
 
 import pytest
 
-from core import config, redaction
+from fogmoe_telegram_bot.core import config, redaction
 
 
 @pytest.mark.parametrize(
@@ -209,7 +209,7 @@ def test_logging_filter_does_not_swallow_malformed_log_calls():
 
 
 def test_logging_filter_is_shared_by_every_handler(tmp_path, monkeypatch):
-    from core import bot_logging
+    from fogmoe_telegram_bot.core import bot_logging
 
     monkeypatch.setattr(config, "LOG_DIR", tmp_path)
     monkeypatch.setattr(config, "LOG_FILE_PATH", tmp_path / "bot.log")

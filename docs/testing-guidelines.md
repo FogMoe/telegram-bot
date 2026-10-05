@@ -11,10 +11,10 @@
 
 ## 分层约定
 
-- `modules/main.py` 只作为进程入口，不写单元测试。
-- `modules/app/` 是应用组装和 Telegram handler 注册层，测试重点放在较稳定的组装边界，避免启动真实 bot。
-- `modules/core/` 放跨功能共享逻辑，适合写小型单元测试。
-- `modules/features/` 放业务功能。优先把可测试的纯逻辑拆到独立函数或小模块，再让 Telegram handler 调用它们。
+- `src/fogmoe_telegram_bot/main.py` 只作为进程入口，不写单元测试。
+- `src/fogmoe_telegram_bot/app/` 是应用组装和 Telegram handler 注册层，测试重点放在较稳定的组装边界，避免启动真实 bot。
+- `src/fogmoe_telegram_bot/core/` 放跨功能共享逻辑，适合写小型单元测试。
+- `src/fogmoe_telegram_bot/features/` 放业务功能。优先把可测试的纯逻辑拆到独立函数或小模块，再让 Telegram handler 调用它们。
 - 外部服务调用、数据库读写、Telegram API 交互默认用替身对象或小范围集成测试，不在普通单元测试里访问真实网络或真实数据库。`tests/conftest.py` 让 `tests/integration` 以外的测试里所有走到 `core.db` 的访问立即抛 `OperationalError`；单元测试里看到「单元测试不连接数据库」就是漏了打桩。
 
 ## 经济与游戏的测试
@@ -51,28 +51,18 @@
 - 默认使用 `pytest`，测试代码保持轻量，优先使用普通 `assert`。
 - 测试文件放在 `tests/`，命名为 `test_*.py`。
 - 每个测试聚焦一个行为，断言结果而不是实现细节。
-- 永远不要测试或断言 `resources/` 目录中的文件内容、文案、格式或条目，也不要通过配置加载结果间接断言这些内容；测试资源消费逻辑时使用测试内 fixture 或 monkeypatch。
+- 永远不要测试或断言 `src/fogmoe_telegram_bot/resources/` 目录中的文件内容、文案、格式或条目，也不要通过配置加载结果间接断言这些内容；测试资源消费逻辑时使用测试内 fixture 或 monkeypatch。
 - 测试数据尽量小，避免读取 `.env`、真实资源文件或网络。
 - 新增业务逻辑时，优先让核心判断函数不依赖 Telegram Update、数据库 session 或外部 client。
 - 需要替身对象时，用简单 fake/stub 类，不引入复杂 mock 层。
 
 ## 运行方式
 
-项目虚拟环境是仓库根目录的 `.venv`，用 `uv sync` 或 `python -m venv` 创建都可以，安装步骤见 [README](../README.md)。
-
-在 Windows 上使用项目虚拟环境：
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest
-```
-
-在 Linux / macOS 上：
+项目虚拟环境是仓库根目录的 `.venv`，由 `uv sync` 按 `uv.lock` 创建，开发依赖（pytest、ruff、mypy）默认一并安装，步骤见 [README](../README.md)。命令都通过 `uv run` 执行，它会先按 `uv.lock` 同步环境：
 
 ```bash
-.venv/bin/python -m pytest
+uv run pytest
 ```
-
-使用 uv 时也可以直接运行 `uv run pytest`，它会先按 `uv.lock` 同步环境。
 
 ### 日常测试与 slow 测试
 
@@ -80,8 +70,8 @@
 
 单个超过约 0.1 秒的测试标记为 `@pytest.mark.slow`（真实等待的并发、超时测试，扫描整个源码目录的边界检查，组装 Application 的测试），本地默认跳过。要一起跑时加 `--run-slow`：
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest --run-slow
+```bash
+uv run pytest --run-slow
 ```
 
 CI 的 `test` 任务带 `--run-slow`，所以 slow 测试在每个 PR 和 main 上都会运行。新增测试如果超过 0.1 秒，同样加上 slow 标记；找慢测试用 `pytest --run-slow --durations=30`。
@@ -98,7 +88,7 @@ CI 的 `test` 任务带 `--run-slow`，所以 slow 测试在每个 PR 和 main �
 
 ```powershell
 $env:RUN_ENV_API_CONNECTIVITY_TESTS = "1"
-.\.venv\Scripts\python.exe -m pytest tests/test_env_api_connectivity.py -s
+uv run pytest tests/test_env_api_connectivity.py -s
 ```
 
 默认会按 `AI_CHAT_ORDER` 检查 chat provider。只检查指定 provider 时：
@@ -106,15 +96,7 @@ $env:RUN_ENV_API_CONNECTIVITY_TESTS = "1"
 ```powershell
 $env:RUN_ENV_API_CONNECTIVITY_TESTS = "1"
 $env:ENV_API_CONNECTIVITY_PROVIDERS = "gemini"
-.\.venv\Scripts\python.exe -m pytest tests/test_env_api_connectivity.py -s
-```
-
-开发依赖（pytest、ruff、mypy）安装：
-
-```powershell
-uv sync
-# 或者
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+uv run pytest tests/test_env_api_connectivity.py -s
 ```
 
 ### MySQL 集成测试
@@ -126,44 +108,33 @@ uv sync
 
 不连接 Telegram 和数据库，只确认依赖可导入、Application 能组装、handler 与 job 能注册：
 
-```powershell
-.\.venv\Scripts\python.exe modules/main.py --check
+```bash
+uv run fogmoe-telegram-bot --check
 ```
 
-CI 在构建出的镜像里运行同一条命令，实现见 `modules/app/smoke_check.py`。
+CI 在构建出的镜像里运行同一条命令，实现见 `src/fogmoe_telegram_bot/app/smoke_check.py`。
 
 ### 运行时基准
 
-`scripts/bench_runtime.py` 用 fake provider 与 fake Telegram（不连网、不连数据库）测 N 个并发对话的整轮耗时，可以指向不同版本的
-`modules/` 目录做改造前后的对比。它测的是本地合成负载，不在 CI 里运行，结果与解读见 [runtime.md](runtime.md) 的「基准」：
-
-```powershell
-.\.venv\Scripts\python.exe scripts/bench_runtime.py --label after --concurrency 10,50,200
-```
-
-### 验证 runBot.sh
-
-`scripts/verify_run_bot.sh` 在临时目录里复制 `runBot.sh`，用替身入口验证 start、status、restart、stop 使用同一套进程识别，包括 PID 文件过期、PID 指向无关进程和旧式启动的进程：
+`scripts/bench_runtime.py` 用 fake provider 与 fake Telegram（不连网、不连数据库）测 N 个并发对话的整轮耗时，可以用 `--src` 指向另一份检出的
+`src/` 目录做对比。它测的是本地合成负载，不在 CI 里运行，结果与解读见 [runtime.md](runtime.md) 的「基准」：
 
 ```bash
-bash scripts/verify_run_bot.sh
+uv run python scripts/bench_runtime.py --label after --concurrency 10,50,200
 ```
-
-Windows 的 Git Bash 没有 Linux 的进程模型，需要用 bash 替身代替 Python 进程：`VERIFY_BASH_STUB=1 bash scripts/verify_run_bot.sh`。CI 在 ubuntu 上直接运行。
 
 ## 静态检查
 
 用 ruff 做静态检查，配置在仓库根的 `ruff.toml`：
 
-```powershell
-.\.venv\Scripts\python.exe -m ruff check .
-.\.venv\Scripts\python.exe -m ruff check . --fix
+```bash
+uv run ruff check .
+uv run ruff check . --fix
 ```
 
-当前只启用 `E4` / `E7` / `E9` / `F` 四组规则，盯的是真问题——未使用的 import、
-未定义的名字、语法错误——而不是代码风格。`ruff.toml` 里注释掉了 `I`（import 排序）、
-`W`（空白）、`UP`（语法现代化）、`BLE`（裸 except）、`LOG`（logging 用法）几组，
-想扩展时打开一组、修一组，别一次全开。
+启用的规则见 `ruff.toml` 的 `select`：pyflakes 与基础错误（`E4` / `E7` / `E9` / `F`），
+加上 import 排序（`I`）、空白（`W`）和语法现代化（`UP`），后三组基本都能用 `--fix` 自动修。
+`BLE`（裸 except）、`LOG`（logging 用法）还没打开；想扩展时打开一组、修一组，别一次全开。
 
 `ruff check` 报出的问题应该清零后再提交；确实需要保留的写 `per-file-ignores`，
 不要用零散的 `# noqa`。
@@ -172,8 +143,8 @@ Windows 的 Git Bash 没有 Linux 的进程模型，需要用 bash 替身代替 
 
 用 mypy 做增量类型检查，只检查 `pyproject.toml` 里 `[tool.mypy]` 的 `files` 列出的模块：
 
-```powershell
-.\.venv\Scripts\python.exe -m mypy
+```bash
+uv run mypy
 ```
 
 没有列入的模块只提供类型信息，不报告它们自己的错误（`follow_imports = "silent"`），所以存量代码不需要为此改动。列入的模块按 `disallow_untyped_defs` 检查：函数签名必须完整标注。
@@ -190,10 +161,9 @@ Windows 的 Git Bash 没有 Linux 的进程模型，需要用 bash 替身代替 
 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) 在每个 pull request 和推送到 `main` 时运行：
 
-- `lint`：`uv lock --check`（锁与 `pyproject.toml` 一致）、导出的 `requirements*.txt` 与锁一致、ruff、mypy。
+- `lint`：`uv lock --check`（锁与 `pyproject.toml` 一致）、ruff、mypy。
 - `test`：除 `tests/integration` 以外的 pytest，包括 slow 测试（`--run-slow`）。
 - `integration`：`mysql:8.4` service 上的 `tests/integration`；目录里还没有测试时不算失败，但全部被跳过会失败。
 - `image`：构建镜像并运行启动冒烟检查，确认日志同时进入 stdout 和挂载的日志目录。
-- `run-bot-script`：运行 `scripts/verify_run_bot.sh`。
 
 本地想复现某一项时，运行上面各节对应的命令即可。

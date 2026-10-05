@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from features.ai import idle_followup
-from features.ai.tools import get_tool_request_context
+from fogmoe_telegram_bot.features.ai import idle_followup
+from fogmoe_telegram_bot.features.ai.tools import get_tool_request_context
 
 
 def test_claim_due_followups_skips_registered_users_without_coins(monkeypatch):

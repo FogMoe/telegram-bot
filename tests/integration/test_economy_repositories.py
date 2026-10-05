@@ -10,16 +10,18 @@ from economy_support import seed_user
 from mysql_support import execute, fetch, fetch_scalar, run
 from sqlalchemy.exc import IntegrityError
 
-from core import sql, user_records
-from features.economy.repositories import charge as charge_repository
-from features.economy.repositories import checkin as checkin_repository
-from features.economy.repositories import coins as coins_repository
-from features.economy.repositories import invitations as invitations_repository
-from features.economy.repositories import lottery as lottery_repository
-from features.economy.repositories import shop as shop_repository
-from features.economy.repositories import stake as stake_repository
-from features.economy.repositories import tasks as tasks_repository
-from features.economy.repositories import web_passwords as web_password_repository
+from fogmoe_telegram_bot.core import sql, user_records
+from fogmoe_telegram_bot.features.economy.repositories import charge as charge_repository
+from fogmoe_telegram_bot.features.economy.repositories import checkin as checkin_repository
+from fogmoe_telegram_bot.features.economy.repositories import coins as coins_repository
+from fogmoe_telegram_bot.features.economy.repositories import invitations as invitations_repository
+from fogmoe_telegram_bot.features.economy.repositories import lottery as lottery_repository
+from fogmoe_telegram_bot.features.economy.repositories import shop as shop_repository
+from fogmoe_telegram_bot.features.economy.repositories import stake as stake_repository
+from fogmoe_telegram_bot.features.economy.repositories import tasks as tasks_repository
+from fogmoe_telegram_bot.features.economy.repositories import (
+    web_passwords as web_password_repository,
+)
 
 
 def in_transaction(work):

@@ -6,8 +6,8 @@ import logging
 
 import requests
 
-from features.ai import tool_runner
-from features.ai.tool_history import tool_logs_to_record_entries
+from fogmoe_telegram_bot.features.ai import tool_runner
+from fogmoe_telegram_bot.features.ai.tool_history import tool_logs_to_record_entries
 
 CODE = "123e4567-e89b-12d3-a456-426614174000"
 SECRET = "SECRETVALUE123"
@@ -210,7 +210,7 @@ def _assert_safe_tool_error(result, caplog, expected_prefix):
 
 
 def test_code_tool_connection_error_is_safe(monkeypatch, caplog):
-    from features.ai.tools import code_tools
+    from fogmoe_telegram_bot.features.ai.tools import code_tools
 
     error = requests.ConnectionError(f"cannot reach https://judge.test/?auth_token={SECRET}")
     monkeypatch.setattr(code_tools, "JUDGE0_API_URL", "https://judge.test")
@@ -223,7 +223,7 @@ def test_code_tool_connection_error_is_safe(monkeypatch, caplog):
 
 
 def test_image_tool_connection_error_is_safe(monkeypatch, caplog):
-    from features.ai.tools import image_tools
+    from fogmoe_telegram_bot.features.ai.tools import image_tools
 
     error = requests.ConnectionError(f"cannot reach https://img.test/?api_key={SECRET}")
     monkeypatch.setattr(image_tools, "_get_session", lambda: _FailingSession(error))
@@ -240,7 +240,7 @@ def test_image_tool_connection_error_is_safe(monkeypatch, caplog):
 
 
 def test_voice_tool_connection_error_is_safe(monkeypatch, caplog):
-    from features.ai.tools import voice_tools
+    from fogmoe_telegram_bot.features.ai.tools import voice_tools
 
     error = requests.ConnectionError(f"cannot reach https://voice.test/?key={SECRET}")
     monkeypatch.setattr(voice_tools, "_get_session", lambda: _FailingSession(error))
@@ -258,7 +258,7 @@ def test_voice_tool_connection_error_is_safe(monkeypatch, caplog):
 
 
 def test_upstream_error_body_is_redacted_in_tool_details(monkeypatch):
-    from features.ai.tools import code_tools
+    from fogmoe_telegram_bot.features.ai.tools import code_tools
 
     class _Response:
         status_code = 401

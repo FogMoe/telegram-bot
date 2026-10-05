@@ -7,7 +7,7 @@ import pytest
 import telegram.error
 from telegram.warnings import PTBDeprecationWarning
 
-from core import telegram_utils
+from fogmoe_telegram_bot.core import telegram_utils
 
 
 def test_safe_send_markdown_does_not_replace_empty_text_errors(monkeypatch):

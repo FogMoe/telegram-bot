@@ -3,12 +3,10 @@
 from argparse import Namespace
 
 import pytest
-from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from legacy_data import first_message_content, seed_duplicate_rows
 from mysql_support import (
-    head_revision,
     PROJECT_ROOT,
     alembic_config,
     current_versions,
@@ -16,8 +14,11 @@ from mysql_support import (
     execute,
     fetch,
     fetch_scalar,
+    head_revision,
     upgrade,
 )
+
+from alembic import command
 
 HEAD = head_revision()
 REV_0016 = "0016_add_ai_schedule_daily_limit"
@@ -169,7 +170,7 @@ class TestExistingVersionTable:
 class TestExplicitUrl:
     def test_explicit_attribute_wins_over_the_configured_database(self, mysql_database):
         """集成测试期间配置里的库地址是不可达的占位值，升级成功就说明用的是显式 URL。"""
-        from core import config
+        from fogmoe_telegram_bot.core import config
 
         assert "invalid.invalid" in config.SQLALCHEMY_DATABASE_URI
 
@@ -252,7 +253,7 @@ class FailOnce:
 
 class TestPartialFailureRecovery:
     def test_crash_after_chat_records_id_ddl_is_recoverable(self, mysql_database, monkeypatch):
-        from modules.core import migration_support as ms
+        from fogmoe_telegram_bot.core import migration_support as ms
 
         upgrade(mysql_database, REV_0016)
         seed_duplicate_rows(mysql_database)
@@ -288,7 +289,7 @@ class TestPartialFailureRecovery:
     def test_crash_with_the_temporary_lottery_column_in_place_is_recoverable(
         self, mysql_database, monkeypatch
     ):
-        from modules.core import migration_support as ms
+        from fogmoe_telegram_bot.core import migration_support as ms
 
         upgrade(mysql_database, REV_0016)
         seed_duplicate_rows(mysql_database)

@@ -6,7 +6,7 @@ provider 特有的协议要求由什么承载。权威定义是代码，本页�
 
 ## 单一声明表
 
-所有 provider 只在 `modules/core/ai_providers.py` 的 `PROVIDERS` 里声明一次，任务在同一文件的
+所有 provider 只在 `src/fogmoe_telegram_bot/core/ai_providers.py` 的 `PROVIDERS` 里声明一次，任务在同一文件的
 `TASK_SPECS` 里声明。其他代码都从这里读取，不再各自维护 provider 表：
 
 | 用途 | 入口 | 从声明表读取 |

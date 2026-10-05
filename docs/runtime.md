@@ -79,7 +79,7 @@ PTB handler（concurrent_updates 有界）
 | `BLOCKING_TOOL_THREADS` | 8 | 同步工具线程池大小 |
 | `BLOCKING_IO_THREADS` | 4 | 事件循环回调里零星同步网络调用的线程池大小 |
 | `RUNTIME_METRICS_LOG_INTERVAL_SECONDS` | 300 | 指标汇总日志间隔，0 关闭 |
-| `RUNTIME_SHUTDOWN_GRACE_SECONDS` | 8 | 收到停止信号后给在途轮次的宽限；要小于进程管理器的停止超时（Compose 的 `stop_grace_period` 已设为 30 秒，`runBot.sh` 的 `BOT_STOP_TIMEOUT` 默认 15 秒） |
+| `RUNTIME_SHUTDOWN_GRACE_SECONDS` | 8 | 收到停止信号后给在途轮次的宽限；要小于进程管理器的停止超时（Compose 的 `stop_grace_period` 已设为 30 秒） |
 
 **`TELEGRAM_CONCURRENT_UPDATES` 的取值依据。** 这个值限制「同时在执行的 handler」。被准入挂起的对话 handler 也占着名额
 （等槽位、等会话锁、等批处理窗口），如果名额被它们占满，`/lottery`、`/me` 这类与 AI 无关的命令也会排队。
@@ -239,13 +239,13 @@ runtime metrics (last 300s): admission.admitted=118 admission.rejected{reason=qu
 
 `scripts/bench_runtime.py` 用 fake provider、fake 数据库与 fake Telegram（不连网）驱动 N 个并发对话走完整的
 `handlers._reply_locked` 入口：一次带可见文本与工具调用的模型回复 → 一个同步阻塞的工具 → 最终回复。
-同一份脚本可以指向不同版本的 `modules/` 目录，用来比较改造前后：
+同一份脚本可以用 `--src` 指向另一份检出的 `src/` 目录，用来比较两个版本：
 
 ```bash
-python scripts/bench_runtime.py --label after
-python scripts/bench_runtime.py --modules <改造前的 modules 目录> --label before
+uv run python scripts/bench_runtime.py --label after
+uv run python scripts/bench_runtime.py --src <另一份检出的 src 目录> --label before
 # 放宽准入，测原生 async 本身的吞吐：
-python scripts/bench_runtime.py --max-concurrent 256 --max-queued 1024 --queue-wait 60
+uv run python scripts/bench_runtime.py --max-concurrent 256 --max-queued 1024 --queue-wait 60
 ```
 
 **这是本地合成负载，不是生产测量。** 假设：每次模型调用 300 ms（两次），同步工具阻塞 50 ms，Telegram 每次调用 20 ms，

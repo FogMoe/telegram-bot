@@ -1,0 +1,45 @@
+from collections.abc import Callable
+
+from .advisor_tools import advisor_tool
+from .code_tools import execute_python_code_tool
+from .doc_tools import read_doc_tool
+from .http_tools import fetch_url_tool, google_search_tool
+from .image_tools import generate_image_tool
+from .memory_tools import (
+    fetch_group_context_tool,
+    fetch_permanent_summaries_tool,
+    get_help_text_tool,
+    search_permanent_records_tool,
+    user_diary_tool,
+)
+from .models import AI_TOOL_ARG_MODELS
+from .sandbox_tools import linux_sandbox_tool
+from .schedule_tools import schedule_ai_message_tool
+from .schemas import OPENAI_TOOLS
+from .sticker_tools import list_available_stickers_tool
+from .telegram_command_tools import execute_telegram_command_tool
+from .user_tools import kindness_gift_tool, update_impression_tool
+from .voice_tools import generate_voice_tool
+
+AI_TOOL_HANDLERS: dict[str, Callable[..., dict]] = {
+    "get_help_text": get_help_text_tool,
+    "execute_telegram_command": execute_telegram_command_tool,
+    "read_doc": read_doc_tool,
+    "google_search": google_search_tool,
+    "advisor": advisor_tool,
+    "fetch_group_context": fetch_group_context_tool,
+    "kindness_gift": kindness_gift_tool,
+    "fetch_url": fetch_url_tool,
+    "execute_python_code": execute_python_code_tool,
+    "linux_sandbox": linux_sandbox_tool,
+    "generate_image": generate_image_tool,
+    "generate_voice": generate_voice_tool,
+    "update_impression": update_impression_tool,
+    "fetch_permanent_summaries": fetch_permanent_summaries_tool,
+    "search_permanent_records": search_permanent_records_tool,
+    "user_diary": user_diary_tool,
+    "schedule_ai_message": schedule_ai_message_tool,
+    "list_available_stickers": list_available_stickers_tool,
+}
+
+__all__ = ["OPENAI_TOOLS", "AI_TOOL_HANDLERS", "AI_TOOL_ARG_MODELS"]

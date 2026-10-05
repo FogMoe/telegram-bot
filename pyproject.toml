@@ -5,8 +5,8 @@ description = "雾萌 · 多功能 Telegram 机器人"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 
-# 运行时依赖：modules/ 里直接 import 的第三方包都要在这里声明，不能只靠传递依赖。
-# 锁定版本以 uv.lock 为准；requirements.txt / requirements-dev.txt 由锁导出，不要手改。
+# 运行时依赖：src/ 里直接 import 的第三方包都要在这里声明，不能只靠传递依赖。
+# 锁定版本以 uv.lock 为准，用 uv add / uv remove 修改依赖。
 dependencies = [
     "python-telegram-bot[job-queue]",
     "litellm>=1.80.5",
@@ -39,9 +39,14 @@ dev = [
     "mypy>=1.13",
 ]
 
+[project.scripts]
+fogmoe-telegram-bot = "fogmoe_telegram_bot.main:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13"]
+build-backend = "uv_build"
+
 [tool.uv]
-# 这是应用而不是可安装的包：代码靠 modules/ 进入 sys.path，不走打包。
-package = false
 required-version = ">=0.12.5"
 
 [tool.pytest.ini_options]
@@ -51,71 +56,71 @@ testpaths = ["tests"]
 # 新边界模块通过 files 加入，规则见 docs/testing-guidelines.md。
 [tool.mypy]
 python_version = "3.13"
-mypy_path = "modules"
+mypy_path = "src"
 explicit_package_bases = true
 files = [
-    "modules/core/sql.py",
-    "modules/core/db.py",
-    "modules/core/ai_providers.py",
-    "modules/core/litellm_models.py",
-    "modules/features/ai/provider_resolver.py",
-    "modules/features/ai/litellm_provider_config.py",
-    "modules/features/ai/litellm_message_sanitizer.py",
-    "modules/features/ai/chat_capabilities.py",
-    "modules/features/ai/chat_provider.py",
-    "modules/core/balance.py",
-    "modules/core/stake_reward_pool.py",
-    "modules/features/conversation/billing.py",
-    "modules/features/conversation/turn_types.py",
-    "modules/features/conversation/turn_services.py",
-    "modules/features/conversation/turn.py",
-    "modules/features/conversation/handlers.py",
-    "modules/app/smoke_check.py",
-    "modules/features/ai/job_claims.py",
-    "modules/features/games/gamble_rounds.py",
-    "modules/features/games/rps_games.py",
-    "modules/features/games/panels.py",
-    "modules/features/games/rpg/settlement.py",
-    "modules/core/metrics.py",
-    "modules/core/deadline.py",
-    "modules/core/command_identity.py",
-    "modules/core/admission.py",
-    "modules/core/blocking.py",
-    "modules/core/background.py",
-    "modules/core/http_sessions.py",
-    "modules/features/ai/tools/dispatch.py",
-    "modules/app/runtime_lifecycle.py",
-    "modules/core/user_records.py",
-    "modules/features/economy/repositories/__init__.py",
-    "modules/features/economy/repositories/shop.py",
-    "modules/features/economy/repositories/stake.py",
-    "modules/features/economy/repositories/invitations.py",
-    "modules/features/economy/repositories/tasks.py",
-    "modules/features/economy/repositories/checkin.py",
-    "modules/features/economy/repositories/coins.py",
-    "modules/features/economy/repositories/charge.py",
-    "modules/features/economy/repositories/web_passwords.py",
-    "modules/features/economy/repositories/lottery.py",
-    "modules/features/economy/operations/__init__.py",
-    "modules/features/economy/operations/shop.py",
-    "modules/features/economy/operations/stake.py",
-    "modules/features/economy/operations/coins.py",
-    "modules/features/economy/operations/lottery.py",
-    "modules/features/economy/operations/checkin.py",
-    "modules/features/economy/operations/task.py",
-    "modules/features/economy/operations/invitations.py",
-    "modules/features/economy/operations/charge.py",
-    "modules/features/economy/operations/web_password.py",
-    "modules/features/economy/operations/bribe.py",
-    "modules/features/economy/shop_views.py",
-    "modules/features/games/repositories/__init__.py",
-    "modules/features/games/repositories/gamble.py",
-    "modules/features/games/repositories/rps.py",
-    "modules/features/games/repositories/omikuji.py",
-    "modules/features/games/repositories/rpg.py",
-    "modules/features/crypto/repositories/__init__.py",
-    "modules/features/crypto/repositories/predictions.py",
-    "modules/features/crypto/repositories/swaps.py",
+    "src/fogmoe_telegram_bot/core/sql.py",
+    "src/fogmoe_telegram_bot/core/db.py",
+    "src/fogmoe_telegram_bot/core/ai_providers.py",
+    "src/fogmoe_telegram_bot/core/litellm_models.py",
+    "src/fogmoe_telegram_bot/features/ai/provider_resolver.py",
+    "src/fogmoe_telegram_bot/features/ai/litellm_provider_config.py",
+    "src/fogmoe_telegram_bot/features/ai/litellm_message_sanitizer.py",
+    "src/fogmoe_telegram_bot/features/ai/chat_capabilities.py",
+    "src/fogmoe_telegram_bot/features/ai/chat_provider.py",
+    "src/fogmoe_telegram_bot/core/balance.py",
+    "src/fogmoe_telegram_bot/core/stake_reward_pool.py",
+    "src/fogmoe_telegram_bot/features/conversation/billing.py",
+    "src/fogmoe_telegram_bot/features/conversation/turn_types.py",
+    "src/fogmoe_telegram_bot/features/conversation/turn_services.py",
+    "src/fogmoe_telegram_bot/features/conversation/turn.py",
+    "src/fogmoe_telegram_bot/features/conversation/handlers.py",
+    "src/fogmoe_telegram_bot/app/smoke_check.py",
+    "src/fogmoe_telegram_bot/features/ai/job_claims.py",
+    "src/fogmoe_telegram_bot/features/games/gamble_rounds.py",
+    "src/fogmoe_telegram_bot/features/games/rps_games.py",
+    "src/fogmoe_telegram_bot/features/games/panels.py",
+    "src/fogmoe_telegram_bot/features/games/rpg/settlement.py",
+    "src/fogmoe_telegram_bot/core/metrics.py",
+    "src/fogmoe_telegram_bot/core/deadline.py",
+    "src/fogmoe_telegram_bot/core/command_identity.py",
+    "src/fogmoe_telegram_bot/core/admission.py",
+    "src/fogmoe_telegram_bot/core/blocking.py",
+    "src/fogmoe_telegram_bot/core/background.py",
+    "src/fogmoe_telegram_bot/core/http_sessions.py",
+    "src/fogmoe_telegram_bot/features/ai/tools/dispatch.py",
+    "src/fogmoe_telegram_bot/app/runtime_lifecycle.py",
+    "src/fogmoe_telegram_bot/core/user_records.py",
+    "src/fogmoe_telegram_bot/features/economy/repositories/__init__.py",
+    "src/fogmoe_telegram_bot/features/economy/repositories/shop.py",
+    "src/fogmoe_telegram_bot/features/economy/repositories/stake.py",
+    "src/fogmoe_telegram_bot/features/economy/repositories/invitations.py",
+    "src/fogmoe_telegram_bot/features/economy/repositories/tasks.py",
+    "src/fogmoe_telegram_bot/features/economy/repositories/checkin.py",
+    "src/fogmoe_telegram_bot/features/economy/repositories/coins.py",
+    "src/fogmoe_telegram_bot/features/economy/repositories/charge.py",
+    "src/fogmoe_telegram_bot/features/economy/repositories/web_passwords.py",
+    "src/fogmoe_telegram_bot/features/economy/repositories/lottery.py",
+    "src/fogmoe_telegram_bot/features/economy/operations/__init__.py",
+    "src/fogmoe_telegram_bot/features/economy/operations/shop.py",
+    "src/fogmoe_telegram_bot/features/economy/operations/stake.py",
+    "src/fogmoe_telegram_bot/features/economy/operations/coins.py",
+    "src/fogmoe_telegram_bot/features/economy/operations/lottery.py",
+    "src/fogmoe_telegram_bot/features/economy/operations/checkin.py",
+    "src/fogmoe_telegram_bot/features/economy/operations/task.py",
+    "src/fogmoe_telegram_bot/features/economy/operations/invitations.py",
+    "src/fogmoe_telegram_bot/features/economy/operations/charge.py",
+    "src/fogmoe_telegram_bot/features/economy/operations/web_password.py",
+    "src/fogmoe_telegram_bot/features/economy/operations/bribe.py",
+    "src/fogmoe_telegram_bot/features/economy/shop_views.py",
+    "src/fogmoe_telegram_bot/features/games/repositories/__init__.py",
+    "src/fogmoe_telegram_bot/features/games/repositories/gamble.py",
+    "src/fogmoe_telegram_bot/features/games/repositories/rps.py",
+    "src/fogmoe_telegram_bot/features/games/repositories/omikuji.py",
+    "src/fogmoe_telegram_bot/features/games/repositories/rpg.py",
+    "src/fogmoe_telegram_bot/features/crypto/repositories/__init__.py",
+    "src/fogmoe_telegram_bot/features/crypto/repositories/predictions.py",
+    "src/fogmoe_telegram_bot/features/crypto/repositories/swaps.py",
 ]
 # 其余模块只用来取类型信息，不报告它们自己的错误。
 follow_imports = "silent"

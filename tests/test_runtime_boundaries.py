@@ -13,16 +13,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import blocking, config
-from features.ai import sticker_sender
-from features.crypto import biance_api, crypto_predict, monitoring
+from fogmoe_telegram_bot.core import blocking, config
+from fogmoe_telegram_bot.features.ai import sticker_sender
+from fogmoe_telegram_bot.features.crypto import biance_api, crypto_predict, monitoring
 
-MODULES = config.BASE_DIR / "modules"
+PACKAGE_DIR = config.RESOURCES_DIR.parent
 
 
 def _parsed_modules():
-    for path in sorted(MODULES.rglob("*.py")):
-        yield path.relative_to(MODULES).as_posix(), ast.parse(path.read_text(encoding="utf-8"))
+    for path in sorted(PACKAGE_DIR.rglob("*.py")):
+        yield path.relative_to(PACKAGE_DIR).as_posix(), ast.parse(path.read_text(encoding="utf-8"))
 
 
 def _dotted(node: ast.AST) -> str:

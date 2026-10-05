@@ -1,8 +1,9 @@
 import asyncio
+
 import pytest
 
-from core import config
-from features.ai import provider_resolver, task_runner
+from fogmoe_telegram_bot.core import config
+from fogmoe_telegram_bot.features.ai import provider_resolver, task_runner
 
 
 def test_get_provider_order_for_chat_returns_configured_order_copy(monkeypatch):
@@ -173,7 +174,7 @@ def test_run_ai_task_uses_resolved_models_with_fallback_and_kwarg_override(monke
 
 
 def test_run_ai_task_does_not_retry_provider_independent_context_error(monkeypatch):
-    from features.ai.context_budget import ContextBudgetExceededError
+    from fogmoe_telegram_bot.features.ai.context_budget import ContextBudgetExceededError
 
     calls = []
     monkeypatch.setattr(

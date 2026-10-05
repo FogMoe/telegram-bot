@@ -7,10 +7,10 @@ from types import SimpleNamespace
 import pytest
 from telegram.error import Forbidden
 
-from core import process_user, redaction, sql, telegram_history, user_records
-from features.economy import charge_coin, web_password
-from features.economy.operations import charge as charge_operations
-from features.economy.operations import web_password as web_password_operations
+from fogmoe_telegram_bot.core import process_user, redaction, sql, telegram_history, user_records
+from fogmoe_telegram_bot.features.economy import charge_coin, web_password
+from fogmoe_telegram_bot.features.economy.operations import charge as charge_operations
+from fogmoe_telegram_bot.features.economy.operations import web_password as web_password_operations
 
 CODE = "123e4567-e89b-12d3-a456-426614174000"
 

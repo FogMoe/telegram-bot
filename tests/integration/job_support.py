@@ -115,7 +115,7 @@ def seed_history(url: str, user_id: int) -> None:
     """空闲跟进需要有可回顾的对话。"""
     from mysql_support import run
 
-    from core import chat_records
+    from fogmoe_telegram_bot.core import chat_records
 
     run(chat_records.insert_chat_record(user_id, "user", "hello there"))
     run(chat_records.insert_chat_record(user_id, "assistant", "hi, how can I help?"))
@@ -170,12 +170,12 @@ def history_messages(url: str, user_id: int) -> list[dict]:
 
 
 async def a_execute(sql: str, params: tuple = ()) -> int:
-    from core import sql as core_sql
+    from fogmoe_telegram_bot.core import sql as core_sql
 
     return await core_sql.execute(sql, params)
 
 
 async def a_fetch(sql: str, params: tuple = ()) -> list[Any]:
-    from core import sql as core_sql
+    from fogmoe_telegram_bot.core import sql as core_sql
 
     return list(await core_sql.fetch_all(sql, params))

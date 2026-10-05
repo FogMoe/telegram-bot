@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-from core import group_chat_history
-from core.prompt_utils import remove_xml_tags
+from fogmoe_telegram_bot.core import group_chat_history
+from fogmoe_telegram_bot.core.prompt_utils import remove_xml_tags
 
 
 def test_remove_xml_tags_keeps_plain_text_and_comparison_symbols():

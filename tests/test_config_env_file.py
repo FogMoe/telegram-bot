@@ -4,13 +4,13 @@ import sys
 
 import pytest
 
-from core import config
+from fogmoe_telegram_bot.core import config
 
 ENV_FILE_VAR = config.ENV_FILE_VAR
 
 
-def test_env_file_defaults_to_repo_dotenv():
-    assert config.resolve_env_file({}) == config.BASE_DIR / ".env"
+def test_env_file_defaults_to_the_runtime_directory():
+    assert config.resolve_env_file({}) == config.RUNTIME_DIR / ".env"
 
 
 def test_blank_override_disables_env_file():
@@ -29,12 +29,12 @@ def test_pytest_session_does_not_load_dotenv():
     assert config.AppSettings.model_config["env_file"] is None
 
 
-def _read_admin_user_id(env: dict[str, str]) -> str:
-    code = "from core import config; print(config.ADMIN_USER_ID)"
+def _read_admin_user_id(env: dict[str, str], cwd) -> str:
+    code = "from fogmoe_telegram_bot.core import config; print(config.ADMIN_USER_ID)"
     result = subprocess.run(
         [sys.executable, "-c", code],
         env=env,
-        cwd=config.BASE_DIR / "modules",
+        cwd=cwd,
         capture_output=True,
         text=True,
         check=True,
@@ -52,5 +52,17 @@ def test_import_reads_only_the_selected_env_file(tmp_path):
         if key not in {"ADMIN_USER_ID", ENV_FILE_VAR}
     }
 
-    assert _read_admin_user_id({**base_env, ENV_FILE_VAR: str(env_file)}) == "424242"
-    assert _read_admin_user_id({**base_env, ENV_FILE_VAR: ""}) != "424242"
+    assert _read_admin_user_id({**base_env, ENV_FILE_VAR: str(env_file)}, tmp_path) == "424242"
+    assert _read_admin_user_id({**base_env, ENV_FILE_VAR: ""}, tmp_path) != "424242"
+
+
+@pytest.mark.slow
+def test_import_reads_dotenv_from_the_working_directory(tmp_path):
+    (tmp_path / ".env").write_text("ADMIN_USER_ID=515151\n", encoding="utf-8")
+    base_env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"ADMIN_USER_ID", ENV_FILE_VAR}
+    }
+
+    assert _read_admin_user_id(base_env, tmp_path) == "515151"

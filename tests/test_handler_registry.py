@@ -6,7 +6,7 @@ from telegram.ext import (
     TypeHandler,
 )
 
-from app.handler_registry import REGISTRATION_STEPS, register_handlers
+from fogmoe_telegram_bot.app.handler_registry import REGISTRATION_STEPS, register_handlers
 
 
 class FakeJobQueue:

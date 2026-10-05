@@ -5,7 +5,12 @@ import time
 
 import pytest
 
-from core.deadline import REASON_DEADLINE, REASON_SHUTDOWN, Deadline, DeadlineExceeded
+from fogmoe_telegram_bot.core.deadline import (
+    REASON_DEADLINE,
+    REASON_SHUTDOWN,
+    Deadline,
+    DeadlineExceeded,
+)
 
 
 def test_remaining_time_counts_down_on_the_injected_clock():

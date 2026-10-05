@@ -22,8 +22,8 @@ from game_support import (
 )
 from mysql_support import execute, fetch, fetch_scalar, run
 
-from core import balance
-from features.games import gamble, gamble_rounds
+from fogmoe_telegram_bot.core import balance
+from fogmoe_telegram_bot.features.games import gamble, gamble_rounds
 
 CHAT = -100
 PANEL = 50

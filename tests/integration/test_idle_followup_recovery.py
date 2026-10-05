@@ -24,8 +24,8 @@ from job_support import (
 )
 from mysql_support import execute, run
 
-from features.ai import conversation_locks, idle_followup, job_claims
-from features.ai.router import AI_SERVICE_ERROR_MESSAGE
+from fogmoe_telegram_bot.features.ai import conversation_locks, idle_followup, job_claims
+from fogmoe_telegram_bot.features.ai.router import AI_SERVICE_ERROR_MESSAGE
 
 REPLY = "just checking in"
 USER_ID = 1

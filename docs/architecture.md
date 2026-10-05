@@ -7,10 +7,10 @@ app → features → core
 app → core
 ```
 
-- `modules/main.py` 只负责进程入口。
-- `modules/app/` 负责组装 Telegram Application、注册 handler 和 job，并在启动时把业务回调注入 `core`。
-- `modules/core/` 只放跨功能共享能力，禁止 import `features` 和 `app`。
-- `modules/features/` 放业务功能。功能之间默认不互相 import；必须共享的能力抽到 `core`，或由 `app` 在启动时注入回调。
+- `src/fogmoe_telegram_bot/main.py` 只负责进程入口。
+- `src/fogmoe_telegram_bot/app/` 负责组装 Telegram Application、注册 handler 和 job，并在启动时把业务回调注入 `core`。
+- `src/fogmoe_telegram_bot/core/` 只放跨功能共享能力，禁止 import `features` 和 `app`。
+- `src/fogmoe_telegram_bot/features/` 放业务功能。功能之间默认不互相 import；必须共享的能力抽到 `core`，或由 `app` 在启动时注入回调。
 
 每个功能模块对外提供 `setup_*_handlers(application)`。组装层只决定注册顺序，不实现业务。
 

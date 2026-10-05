@@ -3,7 +3,7 @@ import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
-from core import chat_records
+from fogmoe_telegram_bot.core import chat_records
 
 
 def test_new_session_event_follows_first_user_action(monkeypatch):

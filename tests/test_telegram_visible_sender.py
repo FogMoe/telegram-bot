@@ -3,7 +3,7 @@ import logging
 
 import pytest
 
-from features.ai import telegram_visible_sender
+from fogmoe_telegram_bot.features.ai import telegram_visible_sender
 
 
 class _Bot:
@@ -80,7 +80,7 @@ def test_no_response_sentinel_is_removed_before_visible_content_is_sent(monkeypa
 def test_a_lease_lost_while_the_send_is_being_prepared_still_stops_the_delivery(monkeypatch):
     import threading
 
-    from features.ai.types import JobAbortedError
+    from fogmoe_telegram_bot.features.ai.types import JobAbortedError
 
     sent_texts = []
     event = threading.Event()

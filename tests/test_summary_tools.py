@@ -1,15 +1,15 @@
 import asyncio
 from datetime import datetime
 
-from features.ai.tools.context import (
+from fogmoe_telegram_bot.features.ai.tools import summary_tools
+from fogmoe_telegram_bot.features.ai.tools.context import (
     clear_tool_request_context,
     set_tool_request_context,
 )
-from features.ai.tools.schemas import (
+from fogmoe_telegram_bot.features.ai.tools.schemas import (
     OPENAI_TOOLS,
     SUMMARY_SEARCH_PRIOR_CONTEXT_TOOL,
 )
-from features.ai.tools import summary_tools
 
 
 def test_summary_search_schema_is_not_exposed_to_main_ai():

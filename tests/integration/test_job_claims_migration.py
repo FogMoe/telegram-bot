@@ -120,7 +120,7 @@ def test_rows_left_executing_by_the_old_version_become_expired_interrupted_claim
 def test_the_first_poll_closes_legacy_executing_rows_as_unknown_without_rerunning(
     mysql_database,
 ):
-    from features.ai import idle_followup, scheduler
+    from fogmoe_telegram_bot.features.ai import idle_followup, scheduler
 
     upgrade(mysql_database, REV_0018)
     seed_legacy_rows(mysql_database)

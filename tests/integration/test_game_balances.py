@@ -19,10 +19,10 @@ from economy_support import (
 from game_support import seed_character
 from mysql_support import execute, fetch, fetch_scalar, run
 
-from core import balance
-from features.games import omikuji, sicbo
-from features.games.rpg import battles, monsters, settlement
-from features.games.rpg.characters import heal_character
+from fogmoe_telegram_bot.core import balance
+from fogmoe_telegram_bot.features.games import omikuji, sicbo
+from fogmoe_telegram_bot.features.games.rpg import battles, monsters, settlement
+from fogmoe_telegram_bot.features.games.rpg.characters import heal_character
 
 TODAY = date(2026, 10, 5)
 

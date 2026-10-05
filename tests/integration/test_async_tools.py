@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from economy_support import seed_user
 from mysql_support import execute, fetch, run
 
-from core import mysql_connection
-from features.ai import tool_runner
-from features.ai.tools import context as tool_context
+from fogmoe_telegram_bot.core import mysql_connection
+from fogmoe_telegram_bot.features.ai import tool_runner
+from fogmoe_telegram_bot.features.ai.tools import context as tool_context
 
 
 def _call(call_id: str, name: str, arguments: dict) -> dict:
@@ -49,7 +49,7 @@ def test_diary_and_schedule_tools_write_to_the_real_database_inside_the_tool_loo
 ):
     seed_user(app_database, 7, free=10)
     _forbid_run_sync(monkeypatch)
-    run_at = (datetime.now(timezone.utc) + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    run_at = (datetime.now(UTC) + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     monkeypatch.setattr(
         tool_runner,
         "create_chat_completion",

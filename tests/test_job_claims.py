@@ -6,8 +6,8 @@ import threading
 
 import pytest
 
-from features.ai import job_claims, telegram_visible_sender, tool_runner
-from features.ai.types import ABORT_EVENT_KEY, JobAbortedError, raise_if_aborted
+from fogmoe_telegram_bot.features.ai import job_claims, telegram_visible_sender, tool_runner
+from fogmoe_telegram_bot.features.ai.types import ABORT_EVENT_KEY, JobAbortedError, raise_if_aborted
 
 
 def run(coro):
