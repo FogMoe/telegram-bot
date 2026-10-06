@@ -64,7 +64,7 @@ app → core
 | `economy/` | 金币相关：`/lottery` `/give` `/rich`、商店、签到、质押、充值、邀请、任务、网页密码；按适配层、`operations/`、`repositories/` 分层，见「经济与游戏的分层」 |
 | `crypto/` | 行情、图表、预测、swap，以及管理员的行情监控命令；预测与 swap 的 SQL 在 `crypto/repositories/` |
 | `admin/` | 开发者命令与 `/admin_announce` |
-| `xfeed/` | `/xfeed`：群管理员绑定一个 X 账号，轮询任务把新帖子（原创与引用）以全文引用加原链接发到群里，超过 24 小时的不补发；数据源是 FxTwitter API v2（`source.py`），首次开通的扣费与同步进度在 `operations.py`，SQL 在 `repositories/feeds.py`，分层同「经济与游戏的分层」 |
+| `xfeed/` | `/xfeed`：群管理员绑定一个 X 账号，轮询任务把新帖子（原创与引用）以原链接发到群里（内容靠链接预览展示），超过 24 小时的不补发；数据源是 FxTwitter API v2（`source.py`），首次开通的扣费与同步进度在 `operations.py`，SQL 在 `repositories/feeds.py`，分层同「经济与游戏的分层」 |
 | `games/` `media/` `moderation/` | 玩法、媒体、群管；游戏里持有金币的状态（下注轮次、石头剪刀布对局）持久化在 MySQL，恢复策略见 [job-recovery.md](job-recovery.md) 的「游戏状态」；`games/` 的 SQL 都在 `games/repositories/`，见「经济与游戏的分层」 |
 
 `features/conversation/` 内部：

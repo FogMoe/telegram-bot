@@ -34,11 +34,10 @@ NOW = 1_800_000_000.0
 HOUR = 3600
 
 
-def post(post_id, *, author="alice", text="hi", reply=False, repost=False, quoted=None, age=60):
+def post(post_id, *, author="alice", reply=False, repost=False, quoted=None, age=60):
     return XPost(
         post_id,
         author,
-        text,
         is_reply=reply,
         is_repost=repost,
         quoted_author=quoted,
@@ -69,7 +68,7 @@ def test_normalize_handle(raw, expected):
     assert source.normalize_handle(raw) == expected
 
 
-def test_parse_statuses_maps_reposts_replies_quotes_and_media():
+def test_parse_statuses_maps_reposts_replies_and_quotes():
     payload = {
         "code": 200,
         "results": [
@@ -94,7 +93,6 @@ def test_parse_statuses_maps_reposts_replies_quotes_and_media():
         (4, False, True, None),
         (5, False, False, "carol"),
     ]
-    assert posts[0].has_photo and posts[3].has_video
     assert posts[0].created_at == 1791208802 and posts[1].created_at is None
     assert posts[0].url == "https://x.com/alice/status/3"
 
@@ -183,7 +181,7 @@ def test_plan_does_not_backfill_posts_older_than_a_day():
 
 
 def test_plan_sends_posts_without_a_timestamp():
-    undated = XPost(9, "alice", "hi", is_reply=False, is_repost=False)
+    undated = XPost(9, "alice", is_reply=False, is_repost=False)
 
     assert plan([undated], 5) == ([9], None)
 
@@ -210,33 +208,16 @@ def test_activation_op_key_comes_from_the_command_message():
 # ---------------------------------------------------------------------------
 
 
-def test_format_post_quotes_the_escaped_full_text_and_links_the_original():
-    text = handlers.format_post(post(42, author="alice", text="a < b & <i>c</i>\n" + "字" * 500))
-
-    assert text == (
-        "<b>@alice</b> 发布了新帖子\n"
-        "<blockquote expandable>a &lt; b &amp; &lt;i&gt;c&lt;/i&gt;\n" + "字" * 500 + "</blockquote>\n"
-        "https://x.com/alice/status/42"
+def test_format_post_names_the_author_and_links_the_original():
+    assert handlers.format_post(post(42, author="alice")) == (
+        "<b>@alice</b> 发布了新帖子\nhttps://x.com/alice/status/42"
     )
 
 
 def test_format_post_names_the_quoted_account():
-    assert handlers.format_post(post(1, quoted="bob")).startswith("<b>@alice</b> 引用了 @bob 的帖子\n")
-
-
-def test_very_long_text_is_cut_to_fit_one_message():
-    # 表情占两个 UTF-16 码元，Telegram 按码元计数
-    text = handlers.format_post(post(1, text="😀" * 3000))
-    body = text.split("<blockquote expandable>")[1].split("</blockquote>")[0]
-
-    assert body.endswith("…")
-    assert len(body.encode("utf-16-le")) // 2 <= handlers.TEXT_LIMIT
-
-
-def test_format_post_describes_media_only_posts():
-    media_only = XPost(1, "alice", "", is_reply=False, is_repost=False, has_video=True)
-
-    assert "<blockquote expandable>[视频]</blockquote>" in handlers.format_post(media_only)
+    assert handlers.format_post(post(1, quoted="bob")) == (
+        "<b>@alice</b> 引用了 @bob 的帖子\nhttps://x.com/alice/status/1"
+    )
 
 
 # ---------------------------------------------------------------------------

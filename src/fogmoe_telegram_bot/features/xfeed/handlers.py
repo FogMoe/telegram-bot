@@ -1,4 +1,4 @@
-"""/xfeed：群管理员绑定一个 X 账号，机器人定时把它的新帖子（原创与引用）以「全文引用 + 原链接」发到群里。
+"""/xfeed：群管理员绑定一个 X 账号，机器人定时把它的新帖子（原创与引用）以「标题 + 原链接」发到群里，帖子内容由链接预览展示。
 
 适配层：解析命令、检查群与管理员身份、把业务操作的结果映射成回复；轮询任务负责取帖与发送。
 规则与扣费在 `operations.py`，数据源在 `source.py`。
@@ -28,14 +28,12 @@ from .source import XAccountNotFound, XPost, XSourceError
 
 logger = logging.getLogger(__name__)
 
-# 帖子正文最多占多少（Telegram 按 UTF-16 码元计数，一条消息上限 4096），给标题和链接留出余量
-TEXT_LIMIT = 3800
 FETCH_CONCURRENCY = 4
 POLL_MINUTES = operations.POLL_INTERVAL_SECONDS // 60
 MAX_AGE_HOURS = operations.MAX_POST_AGE_SECONDS // 3600
 
 USAGE = (
-    f"X 账号同步：机器人每 {POLL_MINUTES} 分钟检查一次绑定账号的新帖子（原创与引用），把全文和原链接发到本群。\n\n"
+    f"X 账号同步：机器人每 {POLL_MINUTES} 分钟检查一次绑定账号的新帖子（原创与引用），把原链接发到本群。\n\n"
     "/xfeed - 查看本群的同步状态\n"
     "/xfeed bind <X用户名> - 绑定或更换账号（管理员）\n"
     "/xfeed unbind - 暂停同步（管理员）\n\n"
@@ -163,42 +161,15 @@ async def xfeed_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 # ---------------------------------------------------------------------------
 
 
-def _truncate(text: str, limit: int) -> str:
-    """截到 `limit` 个 UTF-16 码元以内（Telegram 的计数方式），超出时以省略号结尾。"""
-    if len(text.encode("utf-16-le")) // 2 <= limit:
-        return text
-    units = 0
-    for index, char in enumerate(text):
-        units += 2 if ord(char) > 0xFFFF else 1
-        if units > limit - 1:  # 留一个码元给省略号
-            return text[:index].rstrip() + "…"
-    return text
-
-
-def _body(post: XPost) -> str:
-    text = _truncate(post.text.strip(), TEXT_LIMIT)
-    if text:
-        return text
-    if post.has_video:
-        return "[视频]"
-    if post.has_photo:
-        return "[图片]"
-    return "（无文字）"
-
-
 def format_post(post: XPost) -> str:
-    """一条帖子的群消息（HTML）：谁发的、可展开的全文引用、原链接。"""
+    """一条帖子的群消息（HTML）：谁发的、原链接；内容由链接预览展示。"""
     if post.quoted_author:
         headline = (
             f"<b>@{html.escape(post.author)}</b> 引用了 @{html.escape(post.quoted_author)} 的帖子"
         )
     else:
         headline = f"<b>@{html.escape(post.author)}</b> 发布了新帖子"
-    return (
-        f"{headline}\n"
-        f"<blockquote expandable>{html.escape(_body(post))}</blockquote>\n"
-        f"{post.url}"
-    )
+    return f"{headline}\n{post.url}"
 
 
 async def _deliver(context: ContextTypes.DEFAULT_TYPE, feed: ActiveFeed, posts: list[XPost]) -> None:
@@ -211,7 +182,7 @@ async def _deliver(context: ContextTypes.DEFAULT_TYPE, feed: ActiveFeed, posts: 
                 feed.chat_id,
                 format_post(post),
                 parse_mode=ParseMode.HTML,
-                # 正文里可能有别的链接，预览固定用这条帖子的链接
+                # 帖子内容全靠预览展示，固定用这条帖子的链接
                 link_preview_options=LinkPreviewOptions(url=post.url),
             )
         except ChatMigrated as exc:

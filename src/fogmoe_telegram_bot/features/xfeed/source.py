@@ -47,12 +47,9 @@ class XAccountNotFound(Exception):
 class XPost:
     id: int
     author: str  # 作者的 screen_name
-    text: str
     is_reply: bool
     is_repost: bool  # 出现在时间线上是因为被这个账号转帖
     quoted_author: str | None = None
-    has_photo: bool = False
-    has_video: bool = False
     created_at: float | None = None  # unix 秒；响应里没有时为 None
 
     @property
@@ -84,18 +81,13 @@ def _post_from_status(status: Mapping[str, Any]) -> XPost | None:
         quote_author = quote.get("author")
         if isinstance(quote_author, Mapping) and quote_author.get("screen_name"):
             quoted_author = str(quote_author["screen_name"])
-    media = status.get("media")
-    media = media if isinstance(media, Mapping) else {}
     created = status.get("created_timestamp")
     return XPost(
         id=post_id,
         author=author,
-        text=str(status.get("text") or ""),
         is_reply=status.get("replying_to") is not None,
         is_repost=status.get("reposted_by") is not None,
         quoted_author=quoted_author,
-        has_photo=bool(media.get("photos")),
-        has_video=bool(media.get("videos")),
         created_at=float(created) if isinstance(created, (int, float)) else None,
     )
 
