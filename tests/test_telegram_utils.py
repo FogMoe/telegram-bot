@@ -53,6 +53,80 @@ def test_safe_send_markdown_retries_timed_out(monkeypatch):
     assert sleeps == [telegram_utils.TELEGRAM_SEND_RETRY_INITIAL_DELAY_SECONDS]
 
 
+def test_send_markdown_entities_sends_rendered_text_with_entities():
+    calls = []
+
+    async def fake_send(text, **kwargs):
+        calls.append((text, kwargs))
+        return object()
+
+    asyncio.run(
+        telegram_utils.send_markdown_entities(
+            fake_send,
+            "**注意**：`user_id` 和 snake_case_name",
+            reply_to_message_id=7,
+        )
+    )
+
+    [(text, kwargs)] = calls
+    assert text == "注意：user_id 和 snake_case_name"
+    assert "parse_mode" not in kwargs
+    assert kwargs["reply_to_message_id"] == 7
+    assert [(e.type, e.offset, e.length) for e in kwargs["entities"]] == [
+        (telegram.MessageEntity.BOLD, 0, 2),
+        (telegram.MessageEntity.CODE, 3, 7),
+    ]
+
+
+def test_send_markdown_entities_falls_back_to_rendered_plain_text():
+    calls = []
+
+    async def fake_send(text, **kwargs):
+        calls.append((text, kwargs))
+        if "entities" in kwargs:
+            raise telegram.error.BadRequest("Can't parse entities")
+        return object()
+
+    asyncio.run(telegram_utils.send_markdown_entities(fake_send, "**粗体**"))
+
+    assert [(text, "entities" in kwargs) for text, kwargs in calls] == [
+        ("粗体", True),
+        ("粗体", False),
+    ]
+
+
+def test_send_markdown_entities_splits_long_text_and_reports_partial_send():
+    calls = []
+
+    async def fake_send(text, **kwargs):
+        calls.append((text, kwargs))
+        if len(calls) > 1:
+            raise telegram.error.BadRequest("Message is too long")
+        return object()
+
+    markdown = "\n".join(f"第{i}行 **粗体** " + "字" * 40 for i in range(120))
+
+    with pytest.raises(telegram_utils.PartialTelegramSendError) as exc_info:
+        asyncio.run(
+            telegram_utils.send_markdown_entities(
+                fake_send,
+                markdown,
+                reply_to_message_id=7,
+            )
+        )
+
+    first_text, first_kwargs = calls[0]
+    assert first_kwargs["reply_to_message_id"] == 7
+    assert all("reply_to_message_id" not in kwargs for _, kwargs in calls[1:])
+    assert all(
+        len(text.encode("utf-16-le")) // 2 <= telegram_utils.TELEGRAM_MAX_MESSAGE_LENGTH
+        for text, _ in calls
+    )
+    assert "**" not in first_text
+    assert exc_info.value.sent_text == first_text.strip()
+    assert len(exc_info.value.sent_messages) == 1
+
+
 def test_retry_telegram_send_uses_retry_after_delay(monkeypatch):
     attempts = 0
     sleeps = []

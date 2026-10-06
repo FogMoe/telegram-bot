@@ -424,6 +424,58 @@ def split_ai_reply(text: str) -> list[str]:
     return [segment for segment in segments if segment] or [text]
 
 
+_REPLY_KWARGS = ("reply_to_message_id", "reply_to_message", "quote")
+
+
+def _without_reply(kwargs: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in kwargs.items() if key not in _REPLY_KWARGS}
+
+
+async def _send_with_reply_fallback(
+    send_func: AsyncSendFunc,
+    payload: str,
+    *,
+    fallback_send: AsyncSendFunc | None,
+    send_kwargs: dict[str, Any],
+) -> Any:
+    """Send once; if the replied-to message is gone, resend once through ``fallback_send``."""
+    if send_func is fallback_send:
+        send_kwargs = _without_reply(send_kwargs)
+    try:
+        return await send_func(payload, **send_kwargs)
+    except telegram.error.BadRequest as exc:
+        if (
+            fallback_send is None
+            or send_func is fallback_send
+            or "message to be replied not found" not in str(exc).lower()
+        ):
+            raise
+    return await fallback_send(payload, **_without_reply(send_kwargs))
+
+
+async def _send_chunks(
+    chunks: list[str],
+    send_chunk: Callable[[int, dict[str, Any]], Awaitable[Any]],
+    kwargs: dict[str, Any],
+) -> list[Any]:
+    """Send chunks in order; only the first one replies to the original message."""
+    results: list[Any] = []
+    for index in range(len(chunks)):
+        chunk_kwargs = dict(kwargs) if index == 0 else _without_reply(kwargs)
+        try:
+            result = await send_chunk(index, chunk_kwargs)
+        except Exception as exc:
+            if results:
+                raise PartialTelegramSendError(
+                    str(exc),
+                    results,
+                    "\n".join(chunks[:index]).strip(),
+                ) from exc
+            raise
+        results.append(result)
+    return results
+
+
 async def safe_send_markdown(
     send_func: AsyncSendFunc,
     text: str,
@@ -434,6 +486,9 @@ async def safe_send_markdown(
     **kwargs: Any,
 ) -> list[Any]:
     """Send text using Telegram Markdown with graceful fallbacks.
+
+    For hand-written messages in Telegram's legacy Markdown. AI replies are
+    standard Markdown and go through ``send_markdown_entities`` instead.
 
     Args:
         send_func: Awaitable function that accepts ``text`` as first arg.
@@ -446,56 +501,27 @@ async def safe_send_markdown(
         A list of Telegram API responses, one per sent chunk.
     """
 
-    def _is_missing_reply_error(error: telegram.error.BadRequest) -> bool:
-        return "message to be replied not found" in str(error).lower()
+    async def _send(payload: str, chunk_kwargs: dict[str, Any], action: str) -> Any:
+        return await retry_telegram_send(
+            lambda: _send_with_reply_fallback(
+                send_func,
+                payload,
+                fallback_send=fallback_send,
+                send_kwargs=chunk_kwargs,
+            ),
+            logger=logger,
+            action=action,
+        )
 
-    async def _attempt_send(
-        target: AsyncSendFunc,
-        payload: str,
-        *,
-        mode: str | None,
-        send_kwargs: dict[str, Any],
-    ) -> Any:
-        current_func = target
-        attempted_fallback = False
+    chunks = _split_text_segments(text)
 
-        while True:
-            call_kwargs = dict(send_kwargs)
-            if current_func is fallback_send:
-                call_kwargs.pop("reply_to_message_id", None)
-                call_kwargs.pop("reply_to_message", None)
-                call_kwargs.pop("quote", None)
-            try:
-                if mode is not None:
-                    result = await current_func(payload, parse_mode=mode, **call_kwargs)
-                else:
-                    call_kwargs.pop("parse_mode", None)
-                    result = await current_func(payload, **call_kwargs)
-                return result
-            except telegram.error.BadRequest as exc:
-                if (
-                    not attempted_fallback
-                    and fallback_send is not None
-                    and _is_missing_reply_error(exc)
-                ):
-                    current_func = fallback_send
-                    attempted_fallback = True
-                    continue
-                raise
-            except ValueError:
-                raise
-
-    async def _send_single_chunk(chunk_text: str, chunk_kwargs: dict[str, Any]) -> Any:
+    async def _send_single_chunk(index: int, chunk_kwargs: dict[str, Any]) -> Any:
+        chunk_text = chunks[index]
         try:
-            return await retry_telegram_send(
-                lambda: _attempt_send(
-                    send_func,
-                    chunk_text,
-                    mode=parse_mode,
-                    send_kwargs=chunk_kwargs,
-                ),
-                logger=logger,
-                action="send text message",
+            return await _send(
+                chunk_text,
+                {**chunk_kwargs, "parse_mode": parse_mode},
+                "send text message",
             )
         except telegram.error.BadRequest as exc:
             if logger:
@@ -508,15 +534,10 @@ async def safe_send_markdown(
                     max_line_length=None,
                     normalize_whitespace=False,
                 )
-                return await retry_telegram_send(
-                    lambda: _attempt_send(
-                        send_func,
-                        converted,
-                        mode=ParseMode.MARKDOWN_V2,
-                        send_kwargs=chunk_kwargs,
-                    ),
-                    logger=logger,
-                    action="send MarkdownV2 text message",
+                return await _send(
+                    converted,
+                    {**chunk_kwargs, "parse_mode": ParseMode.MARKDOWN_V2},
+                    "send MarkdownV2 text message",
                 )
             except telegram.error.BadRequest as conv_exc:
                 if logger:
@@ -525,41 +546,97 @@ async def safe_send_markdown(
                         conv_exc,
                     )
 
+        return await _send(chunk_text, chunk_kwargs, "send plain text message")
+
+    return await _send_chunks(chunks, _send_single_chunk, kwargs)
+
+
+def render_markdown_chunks(
+    text: str,
+    *,
+    logger: logging.Logger | None = None,
+) -> list[tuple[str, list[telegram.MessageEntity]]]:
+    """Render standard Markdown to Telegram text plus entities, split to the length limit."""
+    if telegramify_markdown is not None:
+        try:
+            rendered, entities = telegramify_markdown.convert(text)
+        except Exception:
+            if logger:
+                logger.warning("Markdown render failed; sending source text.", exc_info=True)
+        else:
+            # Markdown that renders to nothing (only HTML tags, say) is sent as its source text.
+            if rendered.strip():
+                return [
+                    (
+                        chunk_text,
+                        [
+                            telegram.MessageEntity.de_json(entity.to_dict())
+                            for entity in chunk_entities
+                        ],
+                    )
+                    for chunk_text, chunk_entities in telegramify_markdown.split_entities(
+                        rendered,
+                        entities,
+                        TELEGRAM_MAX_MESSAGE_LENGTH,
+                    )
+                    if chunk_text.strip()
+                ]
+    return [(chunk, []) for chunk in _split_text_segments(text)]
+
+
+async def send_markdown_entities(
+    send_func: AsyncSendFunc,
+    text: str,
+    *,
+    logger: logging.Logger = logging.getLogger(__name__),
+    fallback_send: AsyncSendFunc | None = None,
+    **kwargs: Any,
+) -> list[Any]:
+    """Send standard Markdown as plain text with MessageEntity formatting.
+
+    No parse_mode is involved, so there is no escaping to get wrong. A chunk is
+    resent without entities only if Telegram rejects them. The text recorded in
+    ``PartialTelegramSendError.sent_text`` is the rendered text, not Markdown.
+
+    Returns:
+        A list of Telegram API responses, one per sent chunk.
+    """
+    rendered_chunks = render_markdown_chunks(text, logger=logger)
+
+    async def _send(chunk_text: str, send_kwargs: dict[str, Any], action: str) -> Any:
         return await retry_telegram_send(
-            lambda: _attempt_send(
+            lambda: _send_with_reply_fallback(
                 send_func,
                 chunk_text,
-                mode=None,
-                send_kwargs=chunk_kwargs,
+                fallback_send=fallback_send,
+                send_kwargs=send_kwargs,
             ),
             logger=logger,
-            action="send plain text message",
+            action=action,
         )
 
-    chunks = _split_text_segments(text)
+    async def _send_single_chunk(index: int, chunk_kwargs: dict[str, Any]) -> Any:
+        chunk_text, entities = rendered_chunks[index]
+        if entities:
+            try:
+                return await _send(
+                    chunk_text,
+                    {**chunk_kwargs, "entities": entities},
+                    "send formatted text message",
+                )
+            except telegram.error.BadRequest as exc:
+                if logger:
+                    logger.warning(
+                        "Formatted send failed (%s). Falling back to plain text.",
+                        exc,
+                    )
+        return await _send(chunk_text, chunk_kwargs, "send plain text message")
 
-    results: list[Any] = []
-    sent_chunks: list[str] = []
-    for index, chunk in enumerate(chunks):
-        chunk_kwargs = dict(kwargs)
-        if index > 0:
-            chunk_kwargs.pop("reply_to_message_id", None)
-            chunk_kwargs.pop("reply_to_message", None)
-            chunk_kwargs.pop("quote", None)
-        try:
-            result = await _send_single_chunk(chunk, chunk_kwargs)
-        except Exception as exc:
-            if results:
-                raise PartialTelegramSendError(
-                    str(exc),
-                    results,
-                    "\n".join(sent_chunks).strip(),
-                ) from exc
-            raise
-        results.append(result)
-        sent_chunks.append(chunk)
-
-    return results
+    return await _send_chunks(
+        [chunk_text for chunk_text, _ in rendered_chunks],
+        _send_single_chunk,
+        kwargs,
+    )
 
 
 def partial_send(bot_method: AsyncSendFunc, /, *args: Any, **kwargs: Any) -> AsyncSendFunc:

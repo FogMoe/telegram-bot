@@ -24,8 +24,8 @@ dependencies = [
     "requests",
     "urllib3",
     "binance-futures-connector",
-    # 1.x 的 markdownify 输出与 0.5 不同，保持在已验证的 0.5 系列。
-    "telegramify-markdown>=0.5,<1",
+    # AI 回复用 1.x 的 convert() 渲染成 MessageEntity；2.x 需要单独评估。
+    "telegramify-markdown>=1.4,<2",
     "trafilatura>=2.2.0",
     "e2b",
     # 网页密码哈希（Argon2id）。

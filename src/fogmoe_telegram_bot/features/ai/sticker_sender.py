@@ -9,7 +9,7 @@ from fogmoe_telegram_bot.core import blocking
 from fogmoe_telegram_bot.core.telegram_utils import (
     PartialTelegramSendError,
     retry_telegram_send,
-    safe_send_markdown,
+    send_markdown_entities,
     split_ai_reply,
     telegram_error_summary,
 )
@@ -120,7 +120,7 @@ async def send_ai_reply_with_stickers(
 
         send_func = first_text_send if not text_has_been_sent else fallback_send
         try:
-            results = await safe_send_markdown(
+            results = await send_markdown_entities(
                 send_func,
                 payload,
                 logger=logger,
