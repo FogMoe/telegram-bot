@@ -39,6 +39,7 @@ from fogmoe_telegram_bot.features.moderation import (
     spam_control,
 )
 from fogmoe_telegram_bot.features.profile import handlers as profile
+from fogmoe_telegram_bot.features.xfeed import handlers as xfeed
 
 from .error_handler import error_handler
 
@@ -100,6 +101,7 @@ def register_translation_handlers(application) -> None:
 def register_moderation_handlers(application) -> None:
     keyword_handler.setup_keyword_handlers(application)
     spam_control.setup_spam_control_handlers(application)
+    xfeed.setup_xfeed_handlers(application)
 
 
 def register_game_and_recharge_handlers(application) -> None:

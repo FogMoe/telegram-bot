@@ -64,6 +64,7 @@ app → core
 | `economy/` | 金币相关：`/lottery` `/give` `/rich`、商店、签到、质押、充值、邀请、任务、网页密码；按适配层、`operations/`、`repositories/` 分层，见「经济与游戏的分层」 |
 | `crypto/` | 行情、图表、预测、swap，以及管理员的行情监控命令；预测与 swap 的 SQL 在 `crypto/repositories/` |
 | `admin/` | 开发者命令与 `/admin_announce` |
+| `xfeed/` | `/xfeed`：群管理员绑定一个 X 账号，轮询任务把新帖子（原创与引用）以全文引用加原链接发到群里，超过 24 小时的不补发；数据源是 FxTwitter API v2（`source.py`），首次开通的扣费与同步进度在 `operations.py`，SQL 在 `repositories/feeds.py`，分层同「经济与游戏的分层」 |
 | `games/` `media/` `moderation/` | 玩法、媒体、群管；游戏里持有金币的状态（下注轮次、石头剪刀布对局）持久化在 MySQL，恢复策略见 [job-recovery.md](job-recovery.md) 的「游戏状态」；`games/` 的 SQL 都在 `games/repositories/`，见「经济与游戏的分层」 |
 
 `features/conversation/` 内部：
@@ -179,7 +180,7 @@ BTC 价格预测（`crypto_predict.py` 的 `create_prediction`、`check_predicti
 
 新增或修改一个会改余额的操作时：SQL 写进对应 repository；操作持有事务并把余额变动放进去，`op_key` 登记到
 [balance-service.md](balance-service.md)；适配层只做映射；新的操作与 repository 模块加入 `pyproject.toml` 的 mypy `files`。
-`tests/test_persistence_boundary.py` 用 AST 检查适配层与操作里没有 SQL、repository 不持有事务也不含业务，违反时会失败。
+`tests/test_persistence_boundary.py` 用 AST 检查适配层与操作里没有 SQL、repository 不持有事务也不含业务，违反时会失败；`features/xfeed/` 也在检查范围内。
 各层的测试方式见 [testing-guidelines.md](testing-guidelines.md) 的「经济与游戏的测试」。
 
 ## core 与业务之间的回调

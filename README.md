@@ -70,7 +70,7 @@ AI 搜索、代码执行、图片生成和语音生成等扩展能力需要配�
 - AI 对话：`/fogmoebot`、`/setmyinfo`、`/clear`
 - 个人与积分：`/me`、`/checkin`、`/lottery`、`/task`、`/shop`、`/give`、`/rich`、`/stake`、`/ref`、`/charge`
 - 娱乐：`/omikuji`、`/rps_game`、`/gamble`、`/sicbo`、`/btc_predict`、`/rpg`
-- 群组管理：`/verify`、`/spam`、`/keyword`、`/report`
+- 群组管理：`/verify`、`/spam`、`/keyword`、`/report`、`/xfeed`（同步 X 账号的帖子到群组）
 - 实用工具：`/tl`、`/music`、`/pic`、`/chart`
 
 部分命令仅适用于群聊、管理员或已配置相应第三方服务的部署。

@@ -142,6 +142,7 @@ await balance.credit(connection, user_id, 50, op_key=balance.make_op_key("topup"
 | `/bribe` | `bribe:<chat_id>:<message_id>` | `bribe` |
 | BTC 预测：下注 / 中奖 / 过期退款 | `btc:<uid>:<开始时间>:bet` / `:win` / `:expired`（见下） | `btc_bet` / `btc_win` / `btc_expired`，退款 op_key 为 `refund:btc:<uid>:<开始时间>:bet` |
 | `/swap` 兑换 | `swap:<chat_id>:<message_id>` | `swap` |
+| `/xfeed bind` 群组首次开通 X 同步 | `xfeed:<chat_id>:<message_id>` | `xfeed_activation` |
 | AI 善意赠币 | `kindness:<收款人 uid>:<上一次赠币时间，从未赠过为 never>` | `kindness` |
 | 多人下注，每人每轮一笔 | `gamble:<gamble_rounds.id>:bet:<uid>`，同时记在 `gamble_bets.op_key` | `gamble_bet`，中奖者账户不存在而改为全额退款时 `gamble_refund` |
 | 多人下注的奖金 | `gamble:<round_id>:payout` | `gamble_win` |
@@ -208,7 +209,7 @@ await balance.credit(connection, user_id, 50, op_key=balance.make_op_key("topup"
 任何一步失败整体回滚，所以失败不需要退款；只有「先扣费、再做事务之外的交付」的路径才有 `refund`。
 `debit` 余额不足都发生在写入之前，调用方据此直接返回，不继续后面的步骤，也不贡献奖池。
 
-### 商店、质押、转账、奖励（`features/economy/`、`features/crypto/`、`features/ai/tools/`、`features/profile/`）
+### 商店、质押、转账、奖励（`features/economy/`、`features/crypto/`、`features/xfeed/`、`features/ai/tools/`、`features/profile/`）
 
 | 入口 | 变动 | op_key | 事务边界 |
 |---|---|---|---|
@@ -230,6 +231,7 @@ await balance.credit(connection, user_id, 50, op_key=balance.make_op_key("topup"
 | 预测结算（`check_prediction_result`） | 中奖入账 | `btc:<uid>:<开始时间>:win` | 取价在事务外；标记完成与入账同事务，锁内重新确认预测仍未结算 |
 | 过期未结算预测（`create_prediction` 内） | 退回下注 | `refund:btc:<uid>:<开始时间>:bet`（旧预测兜底 `…:expired`） | 退款、标记完成与新一轮下注同事务 |
 | `/swap`（`crypto/swap_fogmoe_solana_token.py` `submit_swap_request`） | 扣款 | `swap:<chat>:<msg>` | 扣款与 `token_swap_requests` 记录同事务；待处理请求与余额都在锁内确认 |
+| `/xfeed bind`（`xfeed/operations.py` `bind_feed`） | 扣开通费 | `xfeed:<chat>:<msg>` | 群还没开通时：锁用户行 → 确认余额 → 插入 `group_x_feeds`（主键冲突说明别人先开通了，改按换绑处理）→ 扣款，同事务；已开通的群换绑不碰余额；扣费后不退款 |
 | AI `kindness_gift` 工具（`ai/tools/user_tools.py` `grant_kindness`） | 入账 | `kindness:<uid>:<上一次赠币时间>` | 先锁收款人，冷却检查（数据库时钟）、入账、`kindness_gifts` 记录同事务 |
 
 ### 游戏（`features/games/`）
