@@ -125,6 +125,11 @@ files = [
     "src/fogmoe_telegram_bot/features/xfeed/operations.py",
     "src/fogmoe_telegram_bot/features/xfeed/repositories/__init__.py",
     "src/fogmoe_telegram_bot/features/xfeed/repositories/feeds.py",
+    "src/fogmoe_telegram_bot/features/moderation/spam_ai/judge.py",
+    "src/fogmoe_telegram_bot/features/moderation/spam_ai/operations.py",
+    "src/fogmoe_telegram_bot/features/moderation/spam_ai/repositories/__init__.py",
+    "src/fogmoe_telegram_bot/features/moderation/spam_ai/repositories/groups.py",
+    "src/fogmoe_telegram_bot/features/moderation/spam_strikes.py",
 ]
 # 其余模块只用来取类型信息，不报告它们自己的错误。
 follow_imports = "silent"

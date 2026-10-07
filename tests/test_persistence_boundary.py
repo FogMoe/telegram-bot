@@ -14,6 +14,7 @@ ECONOMY_DIR = PACKAGE_DIR / "features" / "economy"
 GAMES_DIR = PACKAGE_DIR / "features" / "games"
 CRYPTO_DIR = PACKAGE_DIR / "features" / "crypto"
 XFEED_DIR = PACKAGE_DIR / "features" / "xfeed"
+SPAM_AI_DIR = PACKAGE_DIR / "features" / "moderation" / "spam_ai"
 # crypto 里只有这两个入口持有金币，SQL 已收拢到 crypto/repositories；其余模块（图表设置等）不在范围内。
 CRYPTO_COVERED = ("crypto_predict.py", "swap_fogmoe_solana_token.py")
 
@@ -43,7 +44,7 @@ def non_repository_files(directory: Path):
 def repository_files():
     return [
         path
-        for directory in (ECONOMY_DIR, GAMES_DIR, CRYPTO_DIR, XFEED_DIR)
+        for directory in (ECONOMY_DIR, GAMES_DIR, CRYPTO_DIR, XFEED_DIR, SPAM_AI_DIR)
         for path in python_files(directory / "repositories")
         if path.name != "__init__.py"
     ]
@@ -94,7 +95,9 @@ def relative(path: Path) -> str:
 
 
 @pytest.mark.parametrize(
-    "directory", [ECONOMY_DIR, GAMES_DIR, XFEED_DIR], ids=["economy", "games", "xfeed"]
+    "directory",
+    [ECONOMY_DIR, GAMES_DIR, XFEED_DIR, SPAM_AI_DIR],
+    ids=["economy", "games", "xfeed", "spam_ai"],
 )
 def test_handlers_and_operations_contain_no_sql(directory):
     offenders = {}
@@ -128,6 +131,7 @@ def test_every_repository_is_covered_by_the_scan():
     assert "features/games/repositories/gamble.py" in names
     assert "features/crypto/repositories/predictions.py" in names
     assert "features/xfeed/repositories/feeds.py" in names
+    assert "features/moderation/spam_ai/repositories/groups.py" in names
     assert len(names) >= 12
 
 
@@ -160,14 +164,17 @@ def test_economy_operations_do_not_import_telegram():
     assert offenders == []
 
 
-def test_xfeed_operations_and_source_do_not_import_telegram():
-    offenders = [
-        relative(XFEED_DIR / name)
-        for name in ("operations.py", "source.py")
-        if any(
-            module.split(".")[0] == "telegram"
-            for module in imported_modules(parse(XFEED_DIR / name))
-        )
-    ]
-
-    assert offenders == []
+@pytest.mark.parametrize(
+    "path",
+    [
+        XFEED_DIR / "operations.py",
+        XFEED_DIR / "source.py",
+        SPAM_AI_DIR / "operations.py",
+        SPAM_AI_DIR / "judge.py",
+    ],
+    ids=relative,
+)
+def test_feature_rules_and_sources_do_not_import_telegram(path):
+    assert not any(
+        module.split(".")[0] == "telegram" for module in imported_modules(parse(path))
+    )

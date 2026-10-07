@@ -82,6 +82,7 @@ uv run alembic upgrade head
   不会迁移：它们随旧进程消失，已扣的金币不会自动退还，升级尽量选在没有进行中的游戏时，
   详见 [job-recovery.md](job-recovery.md) 的「升级时正在进行的游戏」。旧版本发出的下注与选择按钮升级后失效。
 - **0022 `group_x_feeds`。** 新建 `group_x_feeds`（群组的 X 账号同步与开通记录），不改动已有表。
+- **0023 `group_spam_ai`。** 新建 `group_spam_ai`（群组 AI 垃圾识别的有效期与到期提醒）和 `group_spam_ai_members`（成员已通过检查的消息条数），不改动已有表。
 
 0018 删除的是旧哈希。先部署会写入 Argon2id 的代码，再执行 0018；否则迁移之后用旧代码设置的 SHA-256 哈希会再次留在库里。
 
@@ -163,6 +164,7 @@ uv run alembic upgrade head
 | `0020_job_claims` | `ai_schedules` / `ai_idle_followups` 的 `claim_token` / `claim_attempts` / `stage`（`ai_schedules` 另有 `claim_until`）、索引 `idx_ai_schedules_claim`、表 `ai_job_attempts` | 旧版本留下的 `executing` 行：`stage` 设为 `generating`，`ai_schedules.claim_until` 设为当前时间（语义见 [job-recovery.md](job-recovery.md)） |
 | `0021_game_state` | `gamble_rounds`、`gamble_bets`、`rps_games` | — |
 | `0022_group_x_feeds` | `group_x_feeds` | — |
+| `0023_group_spam_ai` | `group_spam_ai`、`group_spam_ai_members` | — |
 
 ## 离线 SQL
 

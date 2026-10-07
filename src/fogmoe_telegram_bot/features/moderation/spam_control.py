@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 import os
 import re
@@ -14,6 +15,9 @@ from fogmoe_telegram_bot.core import mysql_connection
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.config import RESOURCES_DIR
 from fogmoe_telegram_bot.core.redaction import report_error
+from fogmoe_telegram_bot.features.moderation import spam_strikes
+from fogmoe_telegram_bot.features.moderation.spam_ai import handlers as spam_ai_handlers
+from fogmoe_telegram_bot.features.moderation.spam_ai import operations as spam_ai_operations
 
 SPAM_FILE_PATH = RESOURCES_DIR / "spam_words.txt"
 # 垃圾信息过滤缓存 {group_id: enabled}
@@ -64,12 +68,24 @@ SPAM_CONTROL_HELP_TEXT = (
     "/spam add &lt;关键词&gt; - 添加自定义垃圾词\n"
     "/spam add //&lt;正则表达式&gt; - 添加正则表达式匹配\n"
     "/spam del &lt;关键词&gt; - 删除自定义垃圾词\n\n"
+    "<b>AI 识别（付费）：</b>\n"
+    "/spam ai - 查看 AI 识别状态\n"
+    "/spam ai on - 开启 AI 识别\n"
+    "/spam ai off - 暂停 AI 识别\n"
+    f"/spam ai renew - 续费 {spam_ai_operations.PERIOD_DAYS} 天\n\n"
     "<b>注意事项：</b>\n"
     "• 启用链接过滤后，所有包含链接的消息将被自动删除\n"
     "• 启用@提及过滤后，所有包含@用户名的消息将被自动删除\n"
     "• 每个群组最多可设置10个自定义垃圾词\n"
     "• 有自定义垃圾词时，全局垃圾词库将不生效\n"
     "• 管理员发送的消息不会被检测\n"
+    "• 图片和视频的说明文字也会被检测\n"
+    f"• {spam_strikes.WINDOW_TEXT}因自定义垃圾词或 AI 识别被删除 {spam_strikes.STRIKES_TO_KICK} 条消息的成员会被移出群组，"
+    f"{spam_strikes.BAN_SECONDS // 3600} 小时内无法重新加入（需要机器人有封禁成员的权限）；全局垃圾词库命中只警告\n"
+    f"• AI 识别每 {spam_ai_operations.PERIOD_DAYS} 天 {spam_ai_operations.PERIOD_PRICE} 金币，"
+    "由开通或续费的管理员支付，到期不会自动扣费\n"
+    f"• 开启 AI 识别后，每位成员接下来在本群发的 {spam_ai_operations.CHECKED_MESSAGES_PER_MEMBER} 条消息会由 AI 检查，"
+    "被检查的消息会发送给第三方 AI 服务判断\n"
     "• 使用前请确保机器人有删除消息的权限"
 )
 
@@ -85,7 +101,11 @@ SPAM_CONTROL_HELP_TEXT_PLAIN = (
     "自定义垃圾词：\n"
     "/spam list - 列出自定义垃圾词\n"
     "/spam add <词> - 添加垃圾词\n"
-    "/spam del <词> - 删除垃圾词\n"
+    "/spam del <词> - 删除垃圾词\n\n"
+    "AI 识别（付费）：\n"
+    "/spam ai - 查看 AI 识别状态\n"
+    "/spam ai on/off - 开启/暂停 AI 识别\n"
+    f"/spam ai renew - 续费 {spam_ai_operations.PERIOD_DAYS} 天\n"
 )
 
 # 从数据库加载群组的垃圾信息过滤状态
@@ -463,6 +483,15 @@ async def toggle_spam_control(update: Update, context: ContextTypes.DEFAULT_TYPE
             await show_spam_control_help(update)
             return
 
+        elif sub_command == "ai":
+            await spam_ai_handlers.spam_ai_command(
+                update,
+                context,
+                context.args[1:],
+                filter_enabled=await is_spam_control_enabled(chat_id),
+            )
+            return
+
     # 如果没有子命令或子命令不是add/del/list，切换垃圾信息过滤状态
     # 检查机器人是否有必要的权限
     try:
@@ -814,8 +843,8 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 获取有效消息
     effective_message = get_effective_message(update)
 
-    # 提前检查消息是否为空或是否为文本消息
-    if not effective_message or not effective_message.text:
+    # 文本消息检查正文，图片、视频等检查说明文字
+    if not effective_message or not (effective_message.text or effective_message.caption):
         return
 
     # 仅在群组中处理消息
@@ -823,7 +852,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
-    message_text = effective_message.text
+    message_text = effective_message.text or effective_message.caption
 
     # 性能优化：对于很短的消息可以跳过复杂的检测
     if len(message_text) < 2:
@@ -933,32 +962,39 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 继续检查是否为垃圾信息
     is_spam, trigger_word = await is_spam_message(message_text, chat_id)
     if is_spam:
-        user_mention = effective_message.from_user.mention_html()
-        warning_count = update_warning_count(chat_id, user_id)
-
         try:
-            # 删除垃圾消息
             await context.bot.delete_message(
                 chat_id=chat_id,
                 message_id=effective_message.message_id
             )
+        except Exception as e:
+            logging.error(f"删除垃圾消息时出错: {e}")
+            return
 
-            # 发送警告，包含触发的关键词（使用隐藏文字格式）
-            warning_message = (
-                f"⚠️ 注意: {user_mention} 发送的消息包含垃圾内容 <tg-spoiler>{trigger_word}</tg-spoiler>，已被自动删除。\n"
-                f"这是第 {warning_count} 次警告。持续发送垃圾信息可能导致被禁言或移出群组。"
-            )
+        logging.info(f"已删除垃圾消息 - 群组: {chat_id}, 用户: {user_id}, 触发词: {trigger_word}, 内容: {message_text[:50]}...")
+        reason_html = f"发送的消息包含垃圾内容 <tg-spoiler>{html.escape(trigger_word)}</tg-spoiler>"
+        if await has_custom_spam_keywords(chat_id):
+            # 管理员自己设的垃圾词：和 AI 识别共用计数，满次数移出群组
+            await spam_strikes.penalize(context.bot, effective_message, reason_html=reason_html)
+            return
+
+        # 全局词库按子串匹配，收录了不少常用词，命中只警告，不计入移出次数
+        warning_count = update_warning_count(chat_id, user_id)
+        try:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=warning_message,
+                text=(
+                    f"⚠️ 注意: {spam_strikes.sender_html(effective_message)} {reason_html}，已被自动删除。\n"
+                    f"这是第 {warning_count} 次警告。持续发送垃圾信息可能导致被禁言或移出群组。"
+                ),
                 parse_mode='HTML'
             )
-
-            # 记录日志
-            logging.info(f"已删除垃圾消息 - 群组: {chat_id}, 用户: {user_id}, 触发词: {trigger_word}, 内容: {message_text[:50]}...")
-
         except Exception as e:
-            logging.error(f"处理垃圾消息时出错: {e}")
+            logging.error(f"发送垃圾信息警告时出错: {e}")
+        return
+
+    # 关键词没有命中：开了 AI 识别的群再交给 AI 检查
+    await spam_ai_handlers.maybe_review(effective_message, context.bot)
 
 def setup_spam_control_handlers(dispatcher):
     """注册垃圾信息过滤处理器，不再尝试创建数据库表"""
@@ -975,11 +1011,23 @@ def setup_spam_control_handlers(dispatcher):
     # 修改过滤器以包含编辑后的消息
     dispatcher.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS &
+            (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & filters.ChatType.GROUPS &
             (filters.UpdateType.MESSAGE | filters.UpdateType.EDITED_MESSAGE),
             process_message
         ),
         group=5  # 优先级高于关键词处理
+    )
+    # 普通群升级成超级群：AI 识别的付费状态跟着搬到新的 chat id
+    dispatcher.add_handler(
+        MessageHandler(filters.StatusUpdate.MIGRATE, spam_ai_handlers.migrate_chat),
+        group=5,
+    )
+
+    # AI 识别的到期提醒
+    dispatcher.job_queue.run_repeating(
+        spam_ai_handlers.remind_expiry_job,
+        interval=spam_ai_operations.REMINDER_INTERVAL_SECONDS,
+        first=120,
     )
 
     # 定期清理警告计数器
