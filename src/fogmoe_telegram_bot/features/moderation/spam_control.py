@@ -47,7 +47,22 @@ callback_lock = threading.Lock()
 CALLBACK_COOLDOWN_TIME = 3  # 按钮冷却时间（秒）
 
 # URL检测正则表达式 - 匹配大多数常见的URL格式
-URL_PATTERN = re.compile(r'https?://\S+|www\.\S+|t\.me/\S+|\S+\.\S*|\S+\.(com|org|net|io|co|ru|cn|me|app|xyz|gov|edu)\b', re.IGNORECASE)
+# 只认明确的链接写法：带协议、www. 开头，或「域名.常见后缀」（可以接路径）。
+# 后缀限定在这张表里，「Nice view.」「1.5」「config.py」这类带点的普通文字不算链接；
+# 前后用 ASCII 字符类而不是 \b，因为中文也算 \w，「访问abc.com看看」里的域名两侧没有 \b。
+LINK_TLDS = (
+    "com", "net", "org", "info", "biz", "pro", "io", "co", "me", "cc", "tv", "ai", "app", "dev",
+    "xyz", "top", "vip", "icu", "cyou", "buzz", "club", "shop", "site", "online", "store", "tech",
+    "live", "fun", "win", "bet", "link", "ly", "gg", "tk", "ml", "ga", "cf", "gq", "pw", "ws", "la",
+    "cn", "hk", "tw", "jp", "kr", "sg", "ru", "uk", "de", "wang", "xin", "ren", "gov", "edu",
+)
+URL_PATTERN = re.compile(
+    r"https?://\S+"
+    r"|www\.\S+"
+    r"|(?<![a-z0-9.-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:" + "|".join(LINK_TLDS) + r")"
+    r"(?![a-z0-9-])(?:[/?#]\S*)?",
+    re.IGNORECASE,
+)
 
 # @mention检测正则表达式 - 匹配Telegram的@username格式
 MENTION_PATTERN = re.compile(r'@[a-zA-Z0-9_]+')
@@ -896,6 +911,10 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 首先检查链接过滤设置
     if await is_link_blocking_enabled(chat_id):
         has_url, found_url = contains_url(message_text)
+        if not has_url:
+            # 文字链接（「点击这里」背后的网址）不出现在正文里
+            links = spam_ai_handlers.hidden_links(effective_message)
+            has_url, found_url = bool(links), (links[0] if links else None)
         if has_url:
             user_mention = effective_message.from_user.mention_html()
             warning_count = update_warning_count(chat_id, user_id)
@@ -909,7 +928,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 # 发送警告，使用隐藏文字格式
                 warning_message = (
-                    f"⚠️ 注意: {user_mention} 发送的消息包含链接 <tg-spoiler>{found_url}</tg-spoiler>，已被自动删除。\n"
+                    f"⚠️ 注意: {user_mention} 发送的消息包含链接 <tg-spoiler>{html.escape(found_url)}</tg-spoiler>，已被自动删除。\n"
                     f"本群组禁止发送链接。这是第 {warning_count} 次警告。"
                 )
                 await context.bot.send_message(

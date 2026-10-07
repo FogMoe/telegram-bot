@@ -202,7 +202,8 @@ async def spam_ai_command(
 # ---------------------------------------------------------------------------
 
 
-def _hidden_links(message: Message) -> tuple[str, ...]:
+def hidden_links(message: Message) -> tuple[str, ...]:
+    """文字链接背后的网址（正文里看不到）。"""
     entities = message.caption_entities if message.caption else message.entities
     return tuple(
         entity.url for entity in entities or () if entity.type == MessageEntity.TEXT_LINK and entity.url
@@ -234,7 +235,7 @@ def review_input(message: Message) -> judge.MessageForReview:
         sender_username=user.username if user else None,
         group_title=message.chat.title,
         forwarded_from=_origin_name(message),
-        hidden_links=_hidden_links(message),
+        hidden_links=hidden_links(message),
         reply_to_text=reply_text,
     )
 

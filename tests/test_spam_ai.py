@@ -861,3 +861,44 @@ def test_messages_the_keywords_miss_go_to_the_ai(monkeypatch):
 
     assert bot.deleted == [] and punish.calls == []
     assert ai.calls == [((msg, bot), {})]
+
+
+@pytest.mark.parametrize(
+    ("text", "link"),
+    [
+        ("看这个 https://example.com/a?b=1", "https://example.com/a?b=1"),
+        ("www.abc.net 有好东西", "www.abc.net"),
+        ("加我t.me/abc123", "t.me/abc123"),
+        ("访问abc.xyz看看", "abc.xyz"),
+        ("福利 spam.vip", "spam.vip"),
+        ("sub.domain.co/path", "sub.domain.co/path"),
+        ("联系 abc@gmail.com", "gmail.com"),
+        ("Nice view.", None),
+        ("版本 1.5.2 发布了", None),
+        ("e.g. this one", None),
+        ("改一下 config.py 和 node.js", None),
+        ("看 readme.md", None),
+        ("哈哈...好吧", None),
+        ("abc.community", None),
+    ],
+)
+def test_the_link_filter_only_matches_real_links(text, link):
+    assert spam_control.contains_url(text) == (link is not None, link)
+
+
+def test_the_link_filter_catches_hidden_text_links(monkeypatch):
+    async def enabled(chat_id):
+        return True
+
+    monkeypatch.setattr(spam_control, "is_spam_control_enabled", enabled)
+    monkeypatch.setattr(spam_control, "is_link_blocking_enabled", enabled)
+    bot = FakeBot()
+    msg = message(
+        text="点击领取福利",
+        entities=(MessageEntity(MessageEntity.TEXT_LINK, 0, 4, url="https://spam.example/<x>"),),
+    )
+
+    asyncio.run(spam_control.process_message(group_message_update(msg), filter_context(bot)))
+
+    assert bot.deleted == [55]
+    assert "<tg-spoiler>https://spam.example/&lt;x&gt;</tg-spoiler>" in bot.sent[0]
