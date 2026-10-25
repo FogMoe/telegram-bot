@@ -12,6 +12,9 @@ app → core
 - `src/fogmoe_telegram_bot/core/` 只放跨功能共享能力，禁止 import `features` 和 `app`。
 - `src/fogmoe_telegram_bot/features/` 放业务功能。功能之间默认不互相 import；必须共享的能力抽到 `core`，或由 `app` 在启动时注入回调。
 
+`tests/test_import_boundaries.py` 用 AST 检查 core 和 features 这两条规则（函数里的延迟 import 也算）。仍然存在的跨功能 import 登记在
+它的 `ALLOWED_CROSS_FEATURE` 里，见「已知遗留」；某一处解耦之后要把对应条目一起删掉，否则测试会失败。
+
 每个功能模块对外提供 `setup_*_handlers(application)`。组装层只决定注册顺序，不实现业务。
 
 用户可见行为（命令名、过滤器、handler group、job 间隔、扣费和触发规则）不属于架构整理范围，改动前需要单独确认。
@@ -252,7 +255,7 @@ economy 的 `ADMIN_USER_ID`（`charge_coin.py`）与 `NEW_USER_BONUS_COINS`（�
 - `features/games/rpg/` 的 `characters.py` 与 `equipment/` 仍把操作、事务和给用户的文案混在同一批函数里（SQL 已在 `games/repositories/rpg.py`，
   金币相关的结算已经独立在 `rpg/settlement.py`）。
 - `features/profile/handlers.py` 的 `/start` 直接 import `features.economy.ref` 处理推广邀请码，
-  是目前唯一一处非 `conversation → ai` 的跨功能 import，待后续用启动参数回调解耦。
+  是目前唯一一处非 `conversation → ai` 的跨功能 import，待后续用启动参数回调解耦（解耦时同时删掉 `ALLOWED_CROSS_FEATURE` 里的对应条目）。
 - `features/conversation` 依赖 `features/ai` 是有意为之：对话是 AI 业务的调用方，AI 不反向依赖对话。
 - `features/conversation/triggers.py` 的 classifier 路径（`should_trigger_ai_response`）当前没有调用者，
   群聊触发只走「回复 bot」和「直接触发词」两条。代码保留待定。
