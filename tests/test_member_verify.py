@@ -7,6 +7,8 @@ from telegram.constants import ChatMemberStatus
 
 from fogmoe_telegram_bot.features.moderation import member_verify
 from fogmoe_telegram_bot.features.moderation.member_verify import is_own_verify_button
+from fogmoe_telegram_bot.features.moderation.operations import member_verify as verification
+from fogmoe_telegram_bot.features.moderation.repositories.verification import VerificationTask
 
 CHAT_ID = -100
 USER_ID = 42
@@ -29,13 +31,13 @@ def test_malformed_callback_data_is_rejected():
 
 
 class _FakeTasks:
-    """verification_tasks 的内存替身：(user_id, chat_id) -> (message_id, expire_time)。"""
+    """验证记录的内存替身：(user_id, chat_id) -> (message_id, expire_time)。"""
 
     def __init__(self):
         self.rows = {}
 
-    async def save(self, user_id, chat_id, message_id, expire_time):
-        self.rows[(user_id, chat_id)] = (message_id, expire_time)
+    async def open(self, user_id, chat_id, message_id):
+        self.rows[(user_id, chat_id)] = (message_id, _later())
 
     async def claim(self, user_id, chat_id, message_id):
         row = self.rows.get((user_id, chat_id))
@@ -48,9 +50,10 @@ class _FakeTasks:
         row = self.rows.get((user_id, chat_id))
         return row[0] if row else None
 
-    async def due(self, now):
+    async def due(self):
+        now = datetime.now()
         return [
-            (user_id, chat_id, message_id)
+            VerificationTask(user_id, chat_id, message_id)
             for (user_id, chat_id), (message_id, expire_time) in self.rows.items()
             if expire_time <= now
         ]
@@ -59,10 +62,10 @@ class _FakeTasks:
 @pytest.fixture
 def tasks(monkeypatch):
     fake = _FakeTasks()
-    monkeypatch.setattr(member_verify, "save_verification_task", fake.save)
-    monkeypatch.setattr(member_verify, "claim_verification_task", fake.claim)
-    monkeypatch.setattr(member_verify, "find_verification_message", fake.find)
-    monkeypatch.setattr(member_verify, "due_verification_tasks", fake.due)
+    monkeypatch.setattr(verification, "open_round", fake.open)
+    monkeypatch.setattr(verification, "claim_round", fake.claim)
+    monkeypatch.setattr(verification, "find_round_message", fake.find)
+    monkeypatch.setattr(verification, "due_rounds", fake.due)
     return fake
 
 

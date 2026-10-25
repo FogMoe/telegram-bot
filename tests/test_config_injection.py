@@ -167,7 +167,6 @@ IMPORT_TIME_CONFIG_READS = {
     ("features/ai/tools/sticker_tools.py", "RESOURCES_DIR"),
     ("features/ai/tools/voice_tools.py", "LOG_DIR"),
     ("features/crypto/monitoring.py", "ADMIN_USER_ID"),
-    ("features/moderation/spam_control.py", "RESOURCES_DIR"),
 }
 
 

@@ -1,4 +1,4 @@
-"""经济与游戏的分层边界：SQL 只在 repository 里，repository 不持有事务也不含业务，操作与适配层不碰 SQL。
+"""经济、游戏与群管的分层边界：SQL 只在 repository 里，repository 不持有事务也不含业务，操作与适配层不碰 SQL。
 
 见 docs/architecture.md 的「经济与游戏的分层」。检查的是代码结构（AST），不运行任何业务。
 """
@@ -14,7 +14,8 @@ ECONOMY_DIR = PACKAGE_DIR / "features" / "economy"
 GAMES_DIR = PACKAGE_DIR / "features" / "games"
 CRYPTO_DIR = PACKAGE_DIR / "features" / "crypto"
 XFEED_DIR = PACKAGE_DIR / "features" / "xfeed"
-SPAM_AI_DIR = PACKAGE_DIR / "features" / "moderation" / "spam_ai"
+MODERATION_DIR = PACKAGE_DIR / "features" / "moderation"
+SPAM_AI_DIR = MODERATION_DIR / "spam_ai"
 # crypto 里只有这两个入口持有金币，SQL 已收拢到 crypto/repositories；其余模块（图表设置等）不在范围内。
 CRYPTO_COVERED = ("crypto_predict.py", "swap_fogmoe_solana_token.py")
 
@@ -44,7 +45,7 @@ def non_repository_files(directory: Path):
 def repository_files():
     return [
         path
-        for directory in (ECONOMY_DIR, GAMES_DIR, CRYPTO_DIR, XFEED_DIR, SPAM_AI_DIR)
+        for directory in (ECONOMY_DIR, GAMES_DIR, CRYPTO_DIR, XFEED_DIR, MODERATION_DIR, SPAM_AI_DIR)
         for path in python_files(directory / "repositories")
         if path.name != "__init__.py"
     ]
@@ -96,8 +97,8 @@ def relative(path: Path) -> str:
 
 @pytest.mark.parametrize(
     "directory",
-    [ECONOMY_DIR, GAMES_DIR, XFEED_DIR, SPAM_AI_DIR],
-    ids=["economy", "games", "xfeed", "spam_ai"],
+    [ECONOMY_DIR, GAMES_DIR, XFEED_DIR, MODERATION_DIR],
+    ids=["economy", "games", "xfeed", "moderation"],
 )
 def test_handlers_and_operations_contain_no_sql(directory):
     offenders = {}
@@ -132,7 +133,9 @@ def test_every_repository_is_covered_by_the_scan():
     assert "features/crypto/repositories/predictions.py" in names
     assert "features/xfeed/repositories/feeds.py" in names
     assert "features/moderation/spam_ai/repositories/groups.py" in names
-    assert len(names) >= 12
+    assert "features/moderation/repositories/spam_settings.py" in names
+    assert "features/moderation/repositories/verification.py" in names
+    assert len(names) >= 16
 
 
 @pytest.mark.parametrize("path", repository_files(), ids=relative)
@@ -154,10 +157,15 @@ def test_repositories_do_not_import_telegram_or_the_balance_service(path):
     assert offenders == []
 
 
-def test_economy_operations_do_not_import_telegram():
+@pytest.mark.parametrize(
+    "directory",
+    [ECONOMY_DIR / "operations", MODERATION_DIR / "operations"],
+    ids=["economy", "moderation"],
+)
+def test_operations_do_not_import_telegram(directory):
     offenders = [
         relative(path)
-        for path in python_files(ECONOMY_DIR / "operations")
+        for path in python_files(directory)
         if any(name.split(".")[0] == "telegram" for name in imported_modules(parse(path)))
     ]
 
