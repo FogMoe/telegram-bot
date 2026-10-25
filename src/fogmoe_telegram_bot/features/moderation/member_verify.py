@@ -1,52 +1,21 @@
+"""`/verify` 与新成员验证：Telegram 适配层。
+
+禁言、发欢迎消息与验证按钮、解除禁言或移出群组；开关、每一轮验证的记录与认领在 `operations/member_verify.py`。
+"""
+
 import logging
-from datetime import datetime, timedelta
 
 from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatMemberStatus
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
-from fogmoe_telegram_bot.core import mysql_connection
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.redaction import report_error
+from fogmoe_telegram_bot.features.moderation.operations import member_verify as verification
 
-# 新成员的验证时限（秒）
-VERIFY_SECONDS = 300
 # 恢复任务的周期：重启后第一次在 RECOVERY_FIRST_SECONDS 秒后运行，之后每隔 RECOVERY_INTERVAL 秒。
 RECOVERY_INTERVAL = 30
 RECOVERY_FIRST_SECONDS = 5
-
-# verification_tasks 每个 (用户, 群组) 一行，记录当前这一轮验证的欢迎消息。
-# 验证按钮只对这条消息有效：重新入群会换成新消息，旧消息上的按钮和旧定时器随之失效。
-
-async def save_verification_task(user_id, chat_id, message_id, expire_time):
-    await mysql_connection.execute(
-        "INSERT INTO verification_tasks (user_id, group_id, message_id, expire_time) "
-        "VALUES (%s, %s, %s, %s) "
-        "ON DUPLICATE KEY UPDATE message_id = VALUES(message_id), expire_time = VALUES(expire_time)",
-        (user_id, chat_id, message_id, expire_time),
-    )
-
-# 认领某一轮验证：删掉这一轮的记录，删到的一方才继续处理，
-# 所以按钮点击、超时和离群对同一轮只会有一个生效
-async def claim_verification_task(user_id, chat_id, message_id):
-    deleted = await mysql_connection.execute(
-        "DELETE FROM verification_tasks WHERE user_id = %s AND group_id = %s AND message_id = %s",
-        (user_id, chat_id, message_id),
-    )
-    return deleted > 0
-
-async def find_verification_message(user_id, chat_id):
-    row = await mysql_connection.fetch_one(
-        "SELECT message_id FROM verification_tasks WHERE user_id = %s AND group_id = %s",
-        (user_id, chat_id),
-    )
-    return row[0] if row else None
-
-async def due_verification_tasks(now):
-    return await mysql_connection.fetch_all(
-        "SELECT user_id, group_id, message_id FROM verification_tasks WHERE expire_time <= %s",
-        (now,),
-    )
 
 # 在开启验证功能前详细检查必要权限
 async def check_bot_permissions(bot, chat_id):
@@ -73,23 +42,15 @@ async def check_bot_permissions(bot, chat_id):
 @cooldown
 async def verify_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    # 查询数据库判断当前群组是否已开启接管验证
-    record = await mysql_connection.fetch_one(
-        "SELECT group_id FROM group_verification WHERE group_id = %s",
-        (chat_id,),
-    )
 
-    if record:
+    if await verification.is_enabled(chat_id):
         # 若记录存在，则只有群组管理员才能取消接管
         sender_member = await context.bot.get_chat_member(chat_id, update.effective_user.id)
         if sender_member.status not in ["administrator", "creator"]:
             await update.message.reply_text("只有群组管理员才能取消接管。")
             return
         context.chat_data["enable_verify"] = False
-        await mysql_connection.execute(
-            "DELETE FROM group_verification WHERE group_id = %s",
-            (chat_id,),
-        )
+        await verification.disable(chat_id)
         await update.message.reply_text("验证接管已取消。")
         return
 
@@ -103,30 +64,15 @@ async def verify_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not has_permissions:
         await update.message.reply_text(f"机器人缺少必要权限，无法开启验证功能：{message}")
         return
-    # 启用接管验证，并将当前群组信息存储到数据库中
     context.chat_data["enable_verify"] = True
-    insert_query = (
-        "INSERT INTO group_verification (group_id, group_name) "
-        "VALUES (%s, %s) "
-        "ON DUPLICATE KEY UPDATE group_name = VALUES(group_name)"
-    )
-    group_name = update.effective_chat.title if update.effective_chat.title else "未知群组"
-    await mysql_connection.execute(insert_query, (chat_id, group_name))
+    await verification.enable(chat_id, update.effective_chat.title)
     await update.message.reply_text("新成员验证功能已开启。新成员加入时将被禁言并要求点击【验证】按钮验证，5分钟内有效。")
 
 # 新成员加入事件处理
 async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
-    # 从数据库直接查询群组是否开启了验证功能
-    record = await mysql_connection.fetch_one(
-        "SELECT group_id FROM group_verification WHERE group_id = %s",
-        (chat_id,),
-    )
-    verification_enabled = record is not None
-
-    # 若未开启验证功能，则直接返回
-    if not verification_enabled:
+    if not await verification.is_enabled(chat_id):
         return
 
     # 同步内存状态变量（可选，为了保持一致性）
@@ -183,23 +129,18 @@ async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=keyboard,
             parse_mode="HTML"
         )
-        await save_verification_task(
-            user_id,
-            chat_id,
-            welcome_msg.message_id,
-            datetime.now() + timedelta(seconds=VERIFY_SECONDS),
-        )
+        await verification.open_round(user_id, chat_id, welcome_msg.message_id)
         # 到点处理超时；进程重启会丢掉这个定时器，由 recover_verification_tasks 兜底
         context.job_queue.run_once(
             verification_timeout_job,
-            when=VERIFY_SECONDS + 0.5,
+            when=verification.VERIFY_SECONDS + 0.5,
             data=(chat_id, user_id, welcome_msg.message_id),
         )
 
 # 某一轮验证到期仍未通过：移出群组并编辑欢迎消息
 async def expire_verification(bot, chat_id, user_id, message_id):
     # 已验证、已离群或已被新一轮取代时，这一轮的记录已经不在
-    if not await claim_verification_task(user_id, chat_id, message_id):
+    if not await verification.claim_round(user_id, chat_id, message_id):
         return
     try:
         member = await bot.get_chat_member(chat_id, user_id)
@@ -230,11 +171,13 @@ async def verification_timeout_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def recover_verification_tasks(context: ContextTypes.DEFAULT_TYPE):
     """启动后与周期性的恢复：处理已经到期、定时器却随进程重启丢失的验证。"""
-    for user_id, chat_id, message_id in await due_verification_tasks(datetime.now()):
+    for task in await verification.due_rounds():
         try:
-            await expire_verification(context.bot, chat_id, user_id, message_id)
+            await expire_verification(context.bot, task.chat_id, task.user_id, task.message_id)
         except Exception:
-            logging.getLogger(__name__).exception("处理群组 %s 成员 %s 的过期验证失败", chat_id, user_id)
+            logging.getLogger(__name__).exception(
+                "处理群组 %s 成员 %s 的过期验证失败", task.chat_id, task.user_id
+            )
 
 # 按钮是否属于点击者；兼容旧版本发出的 verify_<用户>_<令牌> 按钮
 def is_own_verify_button(callback_data, user_id):
@@ -252,7 +195,7 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     message_id = query.message.message_id if query.message else None
-    if await claim_verification_task(user_id, chat_id, message_id):
+    if await verification.claim_round(user_id, chat_id, message_id):
         try:
             # 解除禁言（恢复发送消息权限）
             await context.bot.restrict_chat_member(
@@ -277,9 +220,7 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("验证成功！", show_alert=True)
         except Exception as e:
             # 放回这一轮的记录：用户可以再点一次，一直没通过的照常按超时处理
-            await save_verification_task(
-                user_id, chat_id, message_id, datetime.now() + timedelta(seconds=VERIFY_SECONDS)
-            )
+            await verification.open_round(user_id, chat_id, message_id)
             error_str = str(e)
             notice = report_error(
                 logging.getLogger(__name__), f"解除成员 {user_id} 禁言失败", e
@@ -307,20 +248,12 @@ async def handle_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # 如果是机器人自己被踢出
     if user.id == bot.id:
-        # 清理数据库中的验证配置和未完成的验证
-        await mysql_connection.execute(
-            "DELETE FROM group_verification WHERE group_id = %s",
-            (chat_id,),
-        )
-        await mysql_connection.execute(
-            "DELETE FROM verification_tasks WHERE group_id = %s",
-            (chat_id,),
-        )
+        await verification.forget_group(chat_id)
         return
 
     # 如果是普通成员离开，结束他未完成的验证
-    message_id = await find_verification_message(user.id, chat_id)
-    if message_id is not None and await claim_verification_task(user.id, chat_id, message_id):
+    message_id = await verification.find_round_message(user.id, chat_id)
+    if message_id is not None and await verification.claim_round(user.id, chat_id, message_id):
         try:
             await context.bot.edit_message_text(
                 chat_id=chat_id,

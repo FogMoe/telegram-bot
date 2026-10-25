@@ -69,7 +69,8 @@ app → core
 | `admin/` | 开发者命令与 `/admin_announce` |
 | `xfeed/` | `/xfeed`：群管理员绑定一个 X 账号，轮询任务把新帖子（原创与引用）以原链接发到群里（内容靠链接预览展示），超过 24 小时的不补发；数据源是 FxTwitter API v2（`source.py`），首次开通的扣费与同步进度在 `operations.py`，SQL 在 `repositories/feeds.py`，分层同「经济与游戏的分层」 |
 | `moderation/spam_ai/` | `/spam ai`：群管理员按 30 天付费开启 AI 垃圾识别，每位成员的前几条消息交给 TypeSafe 的 Jev 判断（`judge.py`）；付费、检查计数与到期提醒在 `operations.py`，SQL 在 `repositories/groups.py`，分层同「经济与游戏的分层」。自定义垃圾词与 AI 删除共用的累计处罚（满次数移出群组）在 `moderation/spam_strikes.py`；普通群升级成超级群时付费状态随服务消息搬到新 chat id |
-| `games/` `media/` `moderation/` | 玩法、媒体、群管；游戏里持有金币的状态（下注轮次、石头剪刀布对局）持久化在 MySQL，恢复策略见 [job-recovery.md](job-recovery.md) 的「游戏状态」；`games/` 的 SQL 都在 `games/repositories/`，见「经济与游戏的分层」 |
+| `moderation/` | 群管：`/spam` 垃圾信息过滤（`spam_control.py`，帮助菜单与文案在 `spam_control_views.py`）、`/keyword` 关键词自动回复（`keyword_handler.py`）、`/verify` 新成员验证（`member_verify.py`）是适配层；开关与缓存、垃圾词与警告计数、验证轮次的认领在 `moderation/operations/`，SQL 在 `moderation/repositories/`，分层同「经济与游戏的分层」。`/report`、`/sf` 不碰数据库 |
+| `games/` `media/` | 玩法、媒体；游戏里持有金币的状态（下注轮次、石头剪刀布对局）持久化在 MySQL，恢复策略见 [job-recovery.md](job-recovery.md) 的「游戏状态」；`games/` 的 SQL 都在 `games/repositories/`，见「经济与游戏的分层」 |
 
 `features/conversation/` 内部：
 
@@ -184,7 +185,7 @@ BTC 价格预测（`crypto_predict.py` 的 `create_prediction`、`check_predicti
 
 新增或修改一个会改余额的操作时：SQL 写进对应 repository；操作持有事务并把余额变动放进去，`op_key` 登记到
 [balance-service.md](balance-service.md)；适配层只做映射；新的操作与 repository 模块加入 `pyproject.toml` 的 mypy `files`。
-`tests/test_persistence_boundary.py` 用 AST 检查适配层与操作里没有 SQL、repository 不持有事务也不含业务，违反时会失败；`features/xfeed/` 与 `features/moderation/spam_ai/` 也在检查范围内。
+`tests/test_persistence_boundary.py` 用 AST 检查适配层与操作里没有 SQL、repository 不持有事务也不含业务，违反时会失败；`features/xfeed/` 与 `features/moderation/`（含 `spam_ai/`）也在检查范围内。
 各层的测试方式见 [testing-guidelines.md](testing-guidelines.md) 的「经济与游戏的测试」。
 
 ## core 与业务之间的回调
@@ -250,7 +251,7 @@ economy 的 `ADMIN_USER_ID`（`charge_coin.py`）与 `NEW_USER_BONUS_COINS`（�
 ## 已知遗留
 
 - 经济、游戏与加密货币的两个金币入口之外，仍有 SQL 留在 handler 或共享模块里：`features/crypto/chart.py`、
-  `features/profile/handlers.py`（`/me` 开户与个人信息）、`features/ai/tools/`、`features/moderation/`，以及 `core/process_user.py`
+  `features/profile/handlers.py`（`/me` 开户与个人信息）、`features/ai/tools/`，以及 `core/process_user.py`
   里的好感度与印象。其中涉及金币的（`/me` 的开户奖励、AI 善意赠币）变动已经走余额服务，但 SQL 还没有收拢到 repository。
 - `features/games/rpg/` 的 `characters.py` 与 `equipment/` 仍把操作、事务和给用户的文案混在同一批函数里（SQL 已在 `games/repositories/rpg.py`，
   金币相关的结算已经独立在 `rpg/settlement.py`）。

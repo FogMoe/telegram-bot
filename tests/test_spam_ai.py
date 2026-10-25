@@ -11,6 +11,8 @@ from telegram.error import BadRequest
 
 from fogmoe_telegram_bot.core import balance
 from fogmoe_telegram_bot.features.moderation import spam_control, spam_strikes
+from fogmoe_telegram_bot.features.moderation.operations import spam_control as spam_rules
+from fogmoe_telegram_bot.features.moderation.repositories.spam_settings import SpamSettings
 from fogmoe_telegram_bot.features.moderation.spam_ai import handlers, judge, operations
 from fogmoe_telegram_bot.features.moderation.spam_ai.operations import PayResult, PayStatus
 from fogmoe_telegram_bot.features.moderation.spam_ai.repositories import groups
@@ -793,24 +795,23 @@ def group_message_update(msg):
     )
 
 
+def stub_settings(monkeypatch, *, block_links=False, block_mentions=False):
+    async def get_settings(chat_id):
+        return SpamSettings(enabled=True, block_links=block_links, block_mentions=block_mentions)
+
+    monkeypatch.setattr(spam_rules, "get_settings", get_settings)
+
+
 def stub_filter(monkeypatch, *, keyword_hit, custom_keywords=True):
-    async def enabled(chat_id):
-        return True
-
-    async def disabled(chat_id):
-        return False
-
     async def has_custom(chat_id):
         return custom_keywords
 
-    async def is_spam_message(text, chat_id):
-        return (True, "<博彩>") if keyword_hit else (False, None)
+    async def find_spam_word(text, chat_id):
+        return "<博彩>" if keyword_hit else None
 
-    monkeypatch.setattr(spam_control, "has_custom_spam_keywords", has_custom)
-    monkeypatch.setattr(spam_control, "is_spam_control_enabled", enabled)
-    monkeypatch.setattr(spam_control, "is_link_blocking_enabled", disabled)
-    monkeypatch.setattr(spam_control, "is_mention_blocking_enabled", disabled)
-    monkeypatch.setattr(spam_control, "is_spam_message", is_spam_message)
+    stub_settings(monkeypatch)
+    monkeypatch.setattr(spam_rules, "has_custom_keywords", has_custom)
+    monkeypatch.setattr(spam_rules, "find_spam_word", find_spam_word)
     punish = Recorder()
     monkeypatch.setattr(spam_strikes, "penalize", punish)
     ai = Recorder()
@@ -883,15 +884,11 @@ def test_messages_the_keywords_miss_go_to_the_ai(monkeypatch):
     ],
 )
 def test_the_link_filter_only_matches_real_links(text, link):
-    assert spam_control.contains_url(text) == (link is not None, link)
+    assert spam_rules.find_link(text) == link
 
 
 def test_the_link_filter_catches_hidden_text_links(monkeypatch):
-    async def enabled(chat_id):
-        return True
-
-    monkeypatch.setattr(spam_control, "is_spam_control_enabled", enabled)
-    monkeypatch.setattr(spam_control, "is_link_blocking_enabled", enabled)
+    stub_settings(monkeypatch, block_links=True)
     bot = FakeBot()
     msg = message(
         text="点击领取福利",
