@@ -33,6 +33,37 @@ async def get_settings(
     return SpamSettings(enabled=bool(row[0]), block_links=bool(row[1]), block_mentions=bool(row[2]))
 
 
+def _group_filter(enabled_only: bool) -> str:
+    return " WHERE enabled = TRUE" if enabled_only else ""
+
+
+async def count_groups(
+    *, enabled_only: bool, connection: AsyncConnection | None = None
+) -> int:
+    """有过滤设置的群数；`enabled_only` 时只算总开关打开的。"""
+    row = await sql.fetch_one(
+        "SELECT COUNT(*) FROM group_spam_control" + _group_filter(enabled_only),
+        connection=connection,
+    )
+    return int(row[0]) if row else 0
+
+
+async def list_group_ids(
+    limit: int | None = None,
+    *,
+    enabled_only: bool,
+    connection: AsyncConnection | None = None,
+) -> list[int]:
+    """有过滤设置的群，最多 `limit` 个（None 为全部），不排序；`enabled_only` 时只列总开关打开的。"""
+    suffix, params = ("", None) if limit is None else (" LIMIT %s", (limit,))
+    rows = await sql.fetch_all(
+        "SELECT group_id FROM group_spam_control" + _group_filter(enabled_only) + suffix,
+        params,
+        connection=connection,
+    )
+    return [int(row[0]) for row in rows]
+
+
 async def save_enabled(
     connection: AsyncConnection,
     chat_id: int,

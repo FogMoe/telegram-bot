@@ -46,6 +46,23 @@ async def disable(connection: AsyncConnection, chat_id: int) -> None:
     )
 
 
+async def count_groups(*, connection: AsyncConnection | None = None) -> int:
+    """开启了验证的群数。"""
+    row = await sql.fetch_one("SELECT COUNT(*) FROM group_verification", connection=connection)
+    return int(row[0]) if row else 0
+
+
+async def list_group_ids(
+    limit: int | None = None, *, connection: AsyncConnection | None = None
+) -> list[int]:
+    """开启了验证的群，最多 `limit` 个（None 为全部），不排序。"""
+    suffix, params = ("", None) if limit is None else (" LIMIT %s", (limit,))
+    rows = await sql.fetch_all(
+        "SELECT group_id FROM group_verification" + suffix, params, connection=connection
+    )
+    return [int(row[0]) for row in rows]
+
+
 async def save_task(
     connection: AsyncConnection,
     user_id: int,

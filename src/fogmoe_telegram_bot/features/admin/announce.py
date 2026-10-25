@@ -11,6 +11,8 @@ from fogmoe_telegram_bot.core import config, mysql_connection
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.redaction import report_error
 
+from . import group_usage
+
 ADMIN_USER_ID = config.ADMIN_USER_ID
 
 
@@ -42,10 +44,21 @@ async def admin_announce(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         users = await mysql_connection.fetch_all("SELECT id FROM user")
         user_ids.update(user[0] for user in users)
 
+        # 群管的群由 moderation 提供（app 启动时注入），其余的表直接读
+        moderation = group_usage.moderation_groups()
+        moderation_sources = [
+            ("group_keywords", moderation.keywords),
+            ("group_verification", moderation.verification),
+            ("group_spam_control", moderation.spam_settings),
+        ]
+        for table, read_groups in moderation_sources:
+            try:
+                _, ids = await read_groups(None)
+                group_ids.update(ids)
+            except SQLAlchemyError as table_err:
+                logging.warning(f"查询群组表 {table} 时出错: {table_err}")
+
         group_tables = [
-            "group_keywords",
-            "group_verification",
-            "group_spam_control",
             "group_chart_tokens",
             "chat_records_group",
         ]

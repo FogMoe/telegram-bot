@@ -135,6 +135,8 @@ files = [
     "src/fogmoe_telegram_bot/features/moderation/operations/spam_control.py",
     "src/fogmoe_telegram_bot/features/moderation/operations/keyword_replies.py",
     "src/fogmoe_telegram_bot/features/moderation/operations/member_verify.py",
+    "src/fogmoe_telegram_bot/features/moderation/operations/group_usage.py",
+    "src/fogmoe_telegram_bot/features/admin/group_usage.py",
     "src/fogmoe_telegram_bot/features/moderation/repositories/__init__.py",
     "src/fogmoe_telegram_bot/features/moderation/repositories/spam_settings.py",
     "src/fogmoe_telegram_bot/features/moderation/repositories/spam_keywords.py",
