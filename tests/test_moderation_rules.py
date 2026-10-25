@@ -74,15 +74,27 @@ def test_oversized_keyword_replies_are_refused(keyword, response, status):
     assert asyncio.run(keyword_replies.add_reply(-100, 7, keyword, response)) is status
 
 
-def test_every_message_in_a_group_with_keywords_uses_the_trigger_budget(monkeypatch):
+@pytest.fixture
+def hello_reply(monkeypatch):
     reply = KeywordReply("hello", "<b>hi</b>")
 
     async def get_replies(chat_id):
         return [reply]
 
     monkeypatch.setattr(keyword_replies, "get_replies", get_replies)
+    return reply
 
-    for _ in range(keyword_replies.MAX_TRIGGERS_PER_MINUTE):
+
+def test_messages_without_a_keyword_do_not_use_the_trigger_budget(hello_reply):
+    for _ in range(keyword_replies.MAX_TRIGGERS_PER_MINUTE * 3):
         assert asyncio.run(keyword_replies.find_reply(-100, "无关的消息")) is None
+
+    assert asyncio.run(keyword_replies.find_reply(-100, "hello there")) == hello_reply
+
+
+def test_replies_are_capped_per_group_per_minute(hello_reply):
+    for _ in range(keyword_replies.MAX_TRIGGERS_PER_MINUTE):
+        assert asyncio.run(keyword_replies.find_reply(-100, "hello there")) == hello_reply
+
     assert asyncio.run(keyword_replies.find_reply(-100, "hello there")) is None
-    assert asyncio.run(keyword_replies.find_reply(-200, "hello there")) == reply
+    assert asyncio.run(keyword_replies.find_reply(-200, "hello there")) == hello_reply

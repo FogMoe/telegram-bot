@@ -49,6 +49,25 @@ async def count_replies(chat_id: int, *, connection: AsyncConnection | None = No
     return int(row[0]) if row else 0
 
 
+async def count_groups(*, connection: AsyncConnection | None = None) -> int:
+    """设置了关键词回复的群数。"""
+    row = await sql.fetch_one(
+        "SELECT COUNT(DISTINCT group_id) FROM group_keywords", connection=connection
+    )
+    return int(row[0]) if row else 0
+
+
+async def list_group_ids(
+    limit: int | None = None, *, connection: AsyncConnection | None = None
+) -> list[int]:
+    """设置了关键词回复的群，最多 `limit` 个（None 为全部），不排序。"""
+    suffix, params = ("", None) if limit is None else (" LIMIT %s", (limit,))
+    rows = await sql.fetch_all(
+        "SELECT DISTINCT group_id FROM group_keywords" + suffix, params, connection=connection
+    )
+    return [int(row[0]) for row in rows]
+
+
 async def upsert_reply(
     connection: AsyncConnection, chat_id: int, keyword: str, response: str, *, user_id: int
 ) -> None:

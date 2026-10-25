@@ -4,8 +4,8 @@
 
 - 每个群最多 `MAX_REPLIES` 个关键词；触发词不超过 `MAX_KEYWORD_LENGTH` 个字符，回复不超过 `MAX_RESPONSE_LENGTH` 个字符。
 - 回复内容是 Telegram HTML，白名单之外的标签转义后保存，发送前再净化一次。
-- 一条消息只回复第一个匹配的关键词。每个群每分钟最多 `MAX_TRIGGERS_PER_MINUTE` 次：
-  设置了关键词的群里，每条消息都占一次额度，不论有没有匹配。
+- 一条消息只回复第一个匹配的关键词。每个群每分钟最多回复 `MAX_TRIGGERS_PER_MINUTE` 次，
+  只有命中关键词的消息占用额度；额度用完时命中的消息不回复。
 
 每个群的关键词缓存 `CACHE_SECONDS` 秒，本进程里的修改立即刷新缓存。缓存与触发记录都在进程内存里，重启后清空。
 """
@@ -99,13 +99,10 @@ def take_trigger(chat_id: int) -> bool:
 
 
 async def find_reply(chat_id: int, text: str) -> KeywordReply | None:
-    """这条消息要回复的关键词；群里没有关键词、这一分钟的额度用完或没有匹配时返回 None。"""
-    replies = await get_replies(chat_id)
-    if not replies or not take_trigger(chat_id):
-        return None
-    for reply in replies:
+    """这条消息要回复的关键词；没有匹配、或这一分钟的额度已经用完时返回 None。"""
+    for reply in await get_replies(chat_id):
         if is_keyword_match(reply.keyword, text):
-            return reply
+            return reply if take_trigger(chat_id) else None
     return None
 
 

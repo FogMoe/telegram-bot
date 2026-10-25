@@ -10,6 +10,8 @@ from fogmoe_telegram_bot.core import config, mysql_connection
 from fogmoe_telegram_bot.core.command_cooldown import cooldown  # 导入冷却装饰器
 from fogmoe_telegram_bot.core.redaction import report_error
 
+from . import group_usage
+
 # 定义开发者命令处理函数
 
 @cooldown # 添加冷却装饰器
@@ -28,23 +30,15 @@ async def get_bot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         user_count = user_row["count"] if user_row else 0
 
-        keyword_row = await mysql_connection.fetch_one(
-            "SELECT COUNT(DISTINCT group_id) as count FROM group_keywords",
-            mapping=True,
-        )
-        keyword_group_count = keyword_row["count"] if keyword_row else 0
-
-        verify_row = await mysql_connection.fetch_one(
-            "SELECT COUNT(*) as count FROM group_verification",
-            mapping=True,
-        )
-        verify_group_count = verify_row["count"] if verify_row else 0
-
-        spam_row = await mysql_connection.fetch_one(
-            "SELECT COUNT(*) as count FROM group_spam_control WHERE enabled = TRUE",
-            mapping=True,
-        )
-        spam_group_count = spam_row["count"] if spam_row else 0
+        # 群管的三类群由 moderation 提供（app 启动时注入）
+        limit = 20
+        moderation = group_usage.moderation_groups()
+        keyword_group_count, keyword_ids = await moderation.keywords(limit)
+        verify_group_count, verify_ids = await moderation.verification(limit)
+        spam_group_count, spam_ids = await moderation.spam_filter(limit)
+        keyword_group_ids = [str(group_id) for group_id in keyword_ids]
+        verify_group_ids = [str(group_id) for group_id in verify_ids]
+        spam_group_ids = [str(group_id) for group_id in spam_ids]
 
         chart_row = await mysql_connection.fetch_one(
             "SELECT COUNT(DISTINCT group_id) as count FROM group_chart_tokens",
@@ -52,28 +46,6 @@ async def get_bot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         chart_group_count = chart_row["count"] if chart_row else 0
 
-        limit = 20
-        keyword_group_ids = [
-            str(row["group_id"])
-            for row in await mysql_connection.fetch_all(
-                f"SELECT DISTINCT group_id FROM group_keywords LIMIT {limit}",
-                mapping=True,
-            )
-        ]
-        verify_group_ids = [
-            str(row["group_id"])
-            for row in await mysql_connection.fetch_all(
-                f"SELECT group_id FROM group_verification LIMIT {limit}",
-                mapping=True,
-            )
-        ]
-        spam_group_ids = [
-            str(row["group_id"])
-            for row in await mysql_connection.fetch_all(
-                f"SELECT group_id FROM group_spam_control WHERE enabled = TRUE LIMIT {limit}",
-                mapping=True,
-            )
-        ]
         chart_group_ids = [
             str(row["group_id"])
             for row in await mysql_connection.fetch_all(

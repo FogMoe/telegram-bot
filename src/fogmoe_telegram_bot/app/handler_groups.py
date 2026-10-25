@@ -8,6 +8,7 @@
 from telegram.ext import CommandHandler
 
 from fogmoe_telegram_bot.features.admin import developer
+from fogmoe_telegram_bot.features.admin import group_usage as admin_group_usage
 from fogmoe_telegram_bot.features.admin.announce import admin_announce
 from fogmoe_telegram_bot.features.ai import idle_followup, scheduler, translate_handlers
 from fogmoe_telegram_bot.features.conversation import handlers as conversation
@@ -38,6 +39,7 @@ from fogmoe_telegram_bot.features.moderation import (
     report,
     spam_control,
 )
+from fogmoe_telegram_bot.features.moderation.operations import group_usage as moderation_groups
 from fogmoe_telegram_bot.features.profile import handlers as profile
 from fogmoe_telegram_bot.features.xfeed import handlers as xfeed
 
@@ -135,6 +137,15 @@ def register_rpg_handlers(application) -> None:
 
 
 def register_admin_handlers(application) -> None:
+    # /stats 与 /admin_announce 读取群管的群：admin 不 import moderation，在这里注入
+    admin_group_usage.install(
+        admin_group_usage.ModerationGroups(
+            keywords=moderation_groups.keyword_groups,
+            verification=moderation_groups.verification_groups,
+            spam_filter=moderation_groups.spam_filter_groups,
+            spam_settings=moderation_groups.spam_settings_groups,
+        )
+    )
     developer.setup_developer_handlers(application)
     web_password.setup_webpassword_handlers(application)
 
