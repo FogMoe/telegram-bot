@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import logging
+import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -102,11 +103,21 @@ async def _paid(chat_id: int) -> bool:
         return False
 
 
-async def _delete(bot: Any, chat_id: int, message_id: int) -> None:
+async def _delete(bot: Any, chat_id: int, message_id: int) -> bool:
+    """删除消息；消息已经不在时也算删掉。"""
     try:
         await bot.delete_message(chat_id=chat_id, message_id=message_id)
     except TelegramError as exc:
+        if "not found" in str(exc).lower():
+            return True
         logger.warning("举报：删除群 %s 的消息 %s 失败: %s", chat_id, message_id, exc)
+        return False
+    return True
+
+
+def _ban_until() -> int:
+    """刚封禁的人到期的 Unix 时间，和 `spam_strikes.kick` 的封禁时长一致。"""
+    return int(time.time()) + spam_strikes.BAN_SECONDS
 
 
 @cooldown
@@ -122,6 +133,10 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     target = message.reply_to_message
     if target is None:
         await message.reply_text(views.NO_REPLY)
+        return
+    if message.sender_chat is not None:
+        # 匿名管理员和以频道身份发言的人共用 Telegram 的同一个账号，没法按人计票和算额度
+        await message.reply_text(views.AS_CHAT)
         return
 
     reporter = message.from_user
@@ -281,7 +296,7 @@ async def _judge_and_act(
         )
         return views.not_spam_reply(count, required, notified)
 
-    await _delete(bot, chat_id, message_id)
+    deleted = await _delete(bot, chat_id, message_id)
     banned = await spam_strikes.kick(
         bot,
         chat_id,
@@ -290,11 +305,17 @@ async def _judge_and_act(
         basic_group=is_basic_group(chat_id),
         offense=views.vote_offense(reported.sender_html, count),
     )
+    if banned:
+        keyboard = views.banned_keyboard(
+            chat_id, reported.sender_id, _ban_until(), None if deleted else reported.link
+        )
+    else:
+        keyboard = views.pending_keyboard(reported)  # 可以在私聊里再试一次
     await _notify(
         bot,
         admin_ids,
-        views.auto_banned_dm(reported, count, probability, banned),
-        views.banned_keyboard(chat_id, reported.sender_id) if banned else None,
+        views.auto_banned_dm(reported, count, probability, banned=banned, deleted=deleted),
+        keyboard,
     )
     return None
 
@@ -313,8 +334,7 @@ async def _sender_html(bot: Any, chat_id: int, user_id: int) -> str:
 
 
 async def _admin_ban(bot: Any, action: AdminAction, admin_html: str) -> tuple[bool, str, InlineKeyboardMarkup | None]:
-    if action.message_id is not None:
-        await _delete(bot, action.chat_id, action.message_id)
+    deleted = action.message_id is None or await _delete(bot, action.chat_id, action.message_id)
     sender = await _sender_html(bot, action.chat_id, action.user_id)
     banned = await spam_strikes.kick(
         bot,
@@ -326,7 +346,11 @@ async def _admin_ban(bot: Any, action: AdminAction, admin_html: str) -> tuple[bo
     )
     if not banned:
         return False, views.ADMIN_BAN_FAILED, None
-    return True, views.admin_banned_line(admin_html), views.banned_keyboard(action.chat_id, action.user_id)
+    return (
+        True,
+        views.admin_banned_line(admin_html, deleted),
+        views.banned_keyboard(action.chat_id, action.user_id, _ban_until()),
+    )
 
 
 async def _admin_unban(bot: Any, action: AdminAction, admin_html: str) -> tuple[bool, str, InlineKeyboardMarkup | None]:
@@ -342,8 +366,15 @@ async def report_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
     """管理员私聊里的「删除并封禁」「解除封禁」按钮。"""
     query = update.callback_query
     action = views.parse_action(query.data)
-    if action is None:
-        await query.answer()
+    if action is None or not views.offered(getattr(query.message, "reply_markup", None), query.data):
+        await query.answer(views.STALE_BUTTON, show_alert=True)
+        return
+    if action.kind == "unban" and action.until is not None and time.time() >= action.until:
+        await query.answer(views.UNBAN_EXPIRED, show_alert=True)
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except TelegramError as exc:
+            logger.info("举报：移除过期的解除封禁按钮失败: %s", exc)
         return
     try:
         member = await context.bot.get_chat_member(action.chat_id, query.from_user.id)

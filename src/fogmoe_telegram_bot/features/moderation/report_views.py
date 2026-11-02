@@ -33,6 +33,9 @@ BOT = "不能举报机器人的消息。"
 ADMIN = "不能举报管理员的消息。"
 TOO_OLD = "只能举报 24 小时内的消息。"
 LOOKUP_FAILED = "举报处理过程中出错，请稍后再试。"
+AS_CHAT = "请以个人身份发送 /report；匿名管理员或以频道身份发送的举报无法计票。"
+STALE_BUTTON = "这个按钮已失效。"
+UNBAN_EXPIRED = "封禁已经到期，这个按钮不再有效。"
 NO_ADMIN_REACHED = "无法私聊通知管理员（管理员需要先私聊过机器人），请直接联系群管理员。"
 
 
@@ -68,14 +71,15 @@ class AdminAction:
     chat_id: int
     user_id: int
     message_id: int | None = None  # ban：一并删除的消息
+    until: int | None = None  # unban：这次封禁到期的 Unix 时间，过期后按钮失效
 
 
 def ban_data(chat_id: int, message_id: int, user_id: int) -> str:
     return f"{CALLBACK_PREFIX}:ban:{chat_id}:{message_id}:{user_id}"
 
 
-def unban_data(chat_id: int, user_id: int) -> str:
-    return f"{CALLBACK_PREFIX}:unban:{chat_id}:{user_id}"
+def unban_data(chat_id: int, user_id: int, until: int) -> str:
+    return f"{CALLBACK_PREFIX}:unban:{chat_id}:{user_id}:{until}"
 
 
 def parse_action(data: str | None) -> AdminAction | None:
@@ -83,8 +87,8 @@ def parse_action(data: str | None) -> AdminAction | None:
     try:
         if len(parts) == 5 and parts[:2] == [CALLBACK_PREFIX, "ban"]:
             return AdminAction("ban", int(parts[2]), int(parts[4]), int(parts[3]))
-        if len(parts) == 4 and parts[:2] == [CALLBACK_PREFIX, "unban"]:
-            return AdminAction("unban", int(parts[2]), int(parts[3]))
+        if len(parts) == 5 and parts[:2] == [CALLBACK_PREFIX, "unban"]:
+            return AdminAction("unban", int(parts[2]), int(parts[3]), until=int(parts[4]))
     except ValueError:
         return None
     return None
@@ -105,8 +109,18 @@ def pending_keyboard(reported: ReportedMessage) -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup([row]) if row else None
 
 
-def banned_keyboard(chat_id: int, user_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("解除封禁", callback_data=unban_data(chat_id, user_id))]])
+def banned_keyboard(chat_id: int, user_id: int, until: int, link: str | None = None) -> InlineKeyboardMarkup:
+    """已封禁：解除封禁；消息没删掉时再给一个「查看消息」，方便手动删除。"""
+    row = [InlineKeyboardButton("查看消息", url=link)] if link else []
+    row.append(InlineKeyboardButton("解除封禁", callback_data=unban_data(chat_id, user_id, until)))
+    return InlineKeyboardMarkup([row])
+
+
+def offered(markup: InlineKeyboardMarkup | None, data: str | None) -> bool:
+    """回调数据确实是这条私聊上的按钮：只接受机器人自己发出的按钮，不接受伪造的回调。"""
+    if markup is None or data is None:
+        return False
+    return any(button.callback_data == data for row in markup.inline_keyboard for button in row)
 
 
 # ---------------------------------------------------------------------------
@@ -149,22 +163,26 @@ def not_spam_dm(reported: ReportedMessage, count: int, probability: float) -> st
     )
 
 
-def auto_banned_dm(reported: ReportedMessage, count: int, probability: float, banned: bool) -> str:
-    if banned:
+def auto_banned_dm(reported: ReportedMessage, count: int, probability: float, *, banned: bool, deleted: bool) -> str:
+    verdict = f"AI 判定为垃圾信息（概率 {probability:.0%}）"
+    if banned and deleted:
         head = (
-            f"🚫 <b>举报已自动处理</b>：AI 判定为垃圾信息（概率 {probability:.0%}），"
-            f"已删除消息并封禁 {BAN_HOURS} 小时。误判可以点下面的按钮解除封禁。"
+            f"🚫 <b>举报已自动处理</b>：{verdict}，已删除消息并封禁 {BAN_HOURS} 小时。"
+            "误判可以点下面的按钮解除封禁。"
         )
+    elif banned:
+        head = f"⚠️ <b>举报需要你处理</b>：{verdict}，已封禁 {BAN_HOURS} 小时，但消息没能删除，请手动删除。"
+    elif deleted:
+        head = f"⚠️ <b>举报需要你处理</b>：{verdict}，已删除消息，但没能封禁，请在群里手动处理。"
     else:
-        head = (
-            f"⚠️ <b>举报需要你处理</b>：AI 判定为垃圾信息（概率 {probability:.0%}），已删除消息，"
-            "但没能封禁，请在群里手动处理。"
-        )
+        head = f"⚠️ <b>举报需要你处理</b>：{verdict}，但消息没能删除，也没能封禁，请在群里手动处理。"
     return f"{head}\n\n{_card(reported, count)}"
 
 
-def admin_banned_line(admin_html: str) -> str:
-    return f"✅ {admin_html} 已删除消息并封禁 {BAN_HOURS} 小时。"
+def admin_banned_line(admin_html: str, deleted: bool) -> str:
+    if deleted:
+        return f"✅ {admin_html} 已删除消息并封禁 {BAN_HOURS} 小时。"
+    return f"⚠️ {admin_html} 已封禁 {BAN_HOURS} 小时，但消息没能删除，请手动删除。"
 
 
 ADMIN_BAN_FAILED = "⚠️ 封禁失败，请在群里手动处理。"
@@ -209,7 +227,7 @@ def vote_reply(vote: Vote, required: int, notified: int | None) -> str:
 
 def channel_reply(first: bool, notified: int | None) -> str:
     if not first:
-        return "已收到举报，管理员已经收到通知。"
+        return "已收到举报。这条消息是以频道身份发送的，不会自动处理，需要管理员处理。"
     return f"已收到举报。{_admins_note(notified)}这条消息是以频道身份发送的，不会自动处理。"
 
 

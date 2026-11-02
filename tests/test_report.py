@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest, Forbidden
 
 from fogmoe_telegram_bot.core import command_cooldown
@@ -146,12 +147,13 @@ def test_callback_data_round_trips_and_rejects_garbage():
     assert report_views.parse_action(report_views.ban_data(CHAT_ID, 55, 7)) == report_views.AdminAction(
         "ban", CHAT_ID, 7, 55
     )
-    assert report_views.parse_action(report_views.unban_data(CHAT_ID, 7)) == report_views.AdminAction(
-        "unban", CHAT_ID, 7
+    assert report_views.parse_action(report_views.unban_data(CHAT_ID, 7, 1_800_000_000)) == report_views.AdminAction(
+        "unban", CHAT_ID, 7, until=1_800_000_000
     )
-    for data in (None, "rpt:ban:x:1:2", "rpt:kick:1:2", "spam_help"):
+    for data in (None, "rpt:ban:x:1:2", "rpt:kick:1:2", "rpt:unban:1:2", "spam_help"):
         assert report_views.parse_action(data) is None
     assert len(report_views.ban_data(-1001234567890, 2**31, 2**40)) <= 64
+    assert len(report_views.unban_data(-1001234567890, 2**40, 1_800_000_000)) <= 64
 
 
 @pytest.mark.parametrize(
@@ -198,10 +200,11 @@ def admin(user_id, *, is_bot=False, delete=True, restrict=True):
 class FakeBot:
     id = BOT_ID
 
-    def __init__(self, *, members=150, rights=True, dm_errors=()):
+    def __init__(self, *, members=150, rights=True, dm_errors=(), delete_error=None):
         self.admins = [admin(1), admin(2), admin(BOT_ID, is_bot=True, delete=rights, restrict=rights)]
         self.member_count = members
         self.dm_errors = set(dm_errors)
+        self.delete_error = delete_error
         self.group_posts = []
         self.dms = []
         self.deleted = []
@@ -224,6 +227,8 @@ class FakeBot:
         self.dms.append(SimpleNamespace(chat_id=chat_id, text=text, markup=reply_markup))
 
     async def delete_message(self, chat_id, message_id):
+        if self.delete_error:
+            raise self.delete_error
         self.deleted.append(message_id)
 
     async def ban_chat_member(self, chat_id, user_id, until_date=None):
@@ -257,7 +262,7 @@ def target(*, sender=SPAMMER, sender_chat=None, hours_ago=1, message_id=55):
     )
 
 
-def run_report(bot, reporter_id, reported=None):
+def run_report(bot, reporter_id, reported=None, *, sender_chat=None):
     replies = []
 
     async def reply_text(text, **kwargs):
@@ -266,6 +271,7 @@ def run_report(bot, reporter_id, reported=None):
     message = SimpleNamespace(
         reply_to_message=reported if reported is not None else target(),
         from_user=user(reporter_id, f"成员{reporter_id}"),
+        sender_chat=sender_chat,
         reply_text=reply_text,
     )
     update = SimpleNamespace(message=message, effective_chat=CHAT, effective_user=message.from_user)
@@ -311,6 +317,18 @@ def test_reports_that_cannot_be_acted_on_are_refused(jev, reported, reporter_id,
     assert bot.dms == [] and jev.calls == []
 
 
+@pytest.mark.parametrize(
+    ("account", "sender_chat"),
+    [(1087968824, SimpleNamespace(id=CHAT_ID)), (136817688, SimpleNamespace(id=-100999))],
+    ids=["anonymous-admin", "as-channel"],
+)
+def test_reports_sent_anonymously_or_as_a_channel_are_refused(jev, account, sender_chat):
+    bot = FakeBot(members=40)
+
+    assert run_report(bot, account, sender_chat=sender_chat) == [report_views.AS_CHAT]
+    assert bot.dms == [] and jev.calls == []
+
+
 def test_the_first_report_notifies_admins_once_and_waits_for_more_votes(jev):
     bot = FakeBot(members=150)
 
@@ -350,10 +368,30 @@ def test_enough_votes_and_a_spam_verdict_delete_kick_and_ban_for_a_day(jev):
     assert [dm.chat_id for dm in bot.dms] == [1, 2]
     assert "举报已自动处理" in bot.dms[0].text and "95%" in bot.dms[0].text
     (button,), = bot.dms[0].markup.inline_keyboard
-    assert (button.text, button.callback_data) == ("解除封禁", report_views.unban_data(CHAT_ID, SPAMMER.id))
+    action = report_views.parse_action(button.callback_data)
+    assert (button.text, action.kind, action.chat_id, action.user_id) == ("解除封禁", "unban", CHAT_ID, SPAMMER.id)
+    assert 23 * 3600 < action.until - datetime.now(UTC).timestamp() <= 24 * 3600
     # 处理过之后的举报只计票
     assert run_report(bot, 13) == ["已收到举报（3 人），这条消息已经处理过了。"]
     assert len(jev.calls) == 1
+
+
+def test_a_message_that_could_not_be_deleted_is_flagged_to_admins(jev):
+    bot = FakeBot(members=40, delete_error=BadRequest("Message can't be deleted"))
+
+    run_report(bot, 11)
+
+    assert bot.bans
+    assert "已封禁 24 小时，但消息没能删除，请手动删除" in bot.dms[0].text
+    assert [button.text for button in bot.dms[0].markup.inline_keyboard[0]] == ["查看消息", "解除封禁"]
+
+
+def test_a_message_already_gone_counts_as_deleted(jev):
+    bot = FakeBot(members=40, delete_error=BadRequest("Message to delete not found"))
+
+    run_report(bot, 11)
+
+    assert "举报已自动处理" in bot.dms[0].text
 
 
 def test_a_small_group_acts_on_the_first_report_with_a_single_admin_message(jev):
@@ -440,7 +478,7 @@ def test_messages_sent_as_a_channel_only_notify_admins(jev):
     second = run_report(bot, 12, reported)
 
     assert first == ["已收到举报。已通知管理员。这条消息是以频道身份发送的，不会自动处理。"]
-    assert second == ["已收到举报，管理员已经收到通知。"]
+    assert second == ["已收到举报。这条消息是以频道身份发送的，不会自动处理，需要管理员处理。"]
     assert jev.calls == [] and bot.bans == []
     assert len(bot.dms) == 2 and "以频道身份发送" in bot.dms[0].text
     assert [button.text for button in bot.dms[0].markup.inline_keyboard[0]] == ["查看消息"]
@@ -451,16 +489,49 @@ def test_messages_sent_as_a_channel_only_notify_admins(jev):
 # ---------------------------------------------------------------------------
 
 
-def press(bot, data, clicker_id=1):
+def notice_markup(*datas):
+    return InlineKeyboardMarkup([[InlineKeyboardButton(data, callback_data=data) for data in datas]])
+
+
+def press(bot, data, clicker_id=1, markup=None):
+    """点私聊里的按钮；默认这个按钮就在那条私聊上。"""
     query = SimpleNamespace(
         data=data,
         from_user=user(clicker_id, "管理员"),
-        message=SimpleNamespace(text_html="📣 <b>新举报</b>", reply_markup="OLD"),
+        message=SimpleNamespace(text_html="📣 <b>新举报</b>", reply_markup=markup or notice_markup(data)),
         answer=Recorder(),
         edit_message_text=Recorder(),
+        edit_message_reply_markup=Recorder(),
     )
     asyncio.run(report.report_admin_callback(SimpleNamespace(callback_query=query), SimpleNamespace(bot=bot)))
     return query
+
+
+def unban_button(hours_left=12):
+    until = int(datetime.now(UTC).timestamp() + hours_left * 3600)
+    return report_views.unban_data(CHAT_ID, SPAMMER.id, until)
+
+
+def test_buttons_that_are_not_on_the_notice_are_ignored(jev):
+    bot = FakeBot()
+    bot.chat_members[1] = admin(1)
+    forged = report_views.ban_data(CHAT_ID, 77, 42)
+
+    query = press(bot, forged, markup=notice_markup(report_views.ban_data(CHAT_ID, 55, SPAMMER.id)))
+
+    assert query.answer.calls == [((report_views.STALE_BUTTON,), {"show_alert": True})]
+    assert bot.bans == [] and bot.deleted == []
+
+
+def test_an_unban_button_stops_working_once_the_ban_has_expired(jev):
+    bot = FakeBot()
+    bot.chat_members[1] = admin(1)
+
+    query = press(bot, unban_button(hours_left=-1))
+
+    assert query.answer.calls == [((report_views.UNBAN_EXPIRED,), {"show_alert": True})]
+    assert query.edit_message_reply_markup.calls == [((), {"reply_markup": None})]
+    assert bot.unbans == []
 
 
 def test_only_admins_who_can_ban_may_press_the_buttons(jev):
@@ -484,9 +555,10 @@ def test_an_admin_can_ban_from_the_notice_and_then_undo_it(jev):
     assert "的消息被管理员确认为垃圾信息" in bot.group_posts[0]
     (text,), kwargs = banned.edit_message_text.calls[0]
     assert text.startswith("📣 <b>新举报</b>\n\n✅ ") and "已删除消息并封禁 24 小时" in text
-    assert kwargs["reply_markup"].inline_keyboard[0][0].text == "解除封禁"
+    unban = kwargs["reply_markup"].inline_keyboard[0][0]
+    assert unban.text == "解除封禁"
 
-    unbanned = press(bot, report_views.unban_data(CHAT_ID, SPAMMER.id))
+    unbanned = press(bot, unban.callback_data)
 
     assert bot.unbans == [(CHAT_ID, SPAMMER.id, True)]
     (text,), kwargs = unbanned.edit_message_text.calls[0]
@@ -498,7 +570,19 @@ def test_a_failed_unban_keeps_the_buttons(jev, monkeypatch):
     bot.chat_members[1] = admin(1)
     monkeypatch.setattr(bot, "unban_chat_member", Recorder(errors=[BadRequest("Chat not found")]))
 
-    query = press(bot, report_views.unban_data(CHAT_ID, SPAMMER.id))
+    data = unban_button()
+    markup = notice_markup(data)
+    query = press(bot, data, markup=markup)
 
     (text,), kwargs = query.edit_message_text.calls[0]
-    assert report_views.ADMIN_UNBAN_FAILED in text and kwargs["reply_markup"] == "OLD"
+    assert report_views.ADMIN_UNBAN_FAILED in text and kwargs["reply_markup"] is markup
+
+
+def test_a_ban_from_the_notice_that_could_not_delete_says_so(jev):
+    bot = FakeBot(delete_error=BadRequest("Message can't be deleted"))
+    bot.chat_members[1] = admin(1)
+
+    query = press(bot, report_views.ban_data(CHAT_ID, 55, SPAMMER.id))
+
+    (text,), _ = query.edit_message_text.calls[0]
+    assert bot.bans and "已封禁 24 小时，但消息没能删除，请手动删除" in text
