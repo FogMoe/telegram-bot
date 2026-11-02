@@ -14,8 +14,8 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, Mes
 
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.redaction import report_error
+from fogmoe_telegram_bot.features.moderation import admin_ban_views, spam_strikes
 from fogmoe_telegram_bot.features.moderation import spam_control_views as views
-from fogmoe_telegram_bot.features.moderation import spam_strikes
 from fogmoe_telegram_bot.features.moderation.operations import spam_control as spam_rules
 from fogmoe_telegram_bot.features.moderation.spam_ai import handlers as spam_ai_handlers
 from fogmoe_telegram_bot.features.moderation.spam_ai import operations as spam_ai_operations
@@ -275,6 +275,10 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = effective_message.from_user.id
     if await _sender_is_admin(context, chat_id, user_id):
         return
+    # 警告里不显示发送者的名字；以个人身份发言的，警告下面带管理员的封禁按钮
+    sender = spam_strikes.sender_html(effective_message)
+    target = spam_strikes.strike_target(effective_message)
+    ban_keyboard = admin_ban_views.ban_keyboard(chat_id, target) if target is not None else None
 
     if settings.block_links:
         found_url = spam_rules.find_link(message_text)
@@ -283,14 +287,14 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             links = spam_ai_handlers.hidden_links(effective_message)
             found_url = links[0] if links else None
         if found_url is not None:
-            user_mention = effective_message.from_user.mention_html()
             warning_count = spam_rules.add_warning(chat_id, user_id)
             try:
                 await context.bot.delete_message(chat_id=chat_id, message_id=effective_message.message_id)
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=views.link_warning(user_mention, found_url, warning_count),
+                    text=views.link_warning(sender, found_url, warning_count),
                     parse_mode=ParseMode.HTML,
+                    reply_markup=ban_keyboard,
                 )
                 logger.info(f"已删除链接消息 - 群组: {chat_id}, 用户: {user_id}, 链接: {found_url}, 内容: {message_text[:50]}...")
                 return
@@ -300,14 +304,14 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if settings.block_mentions:
         found_mention = spam_rules.find_mention(message_text)
         if found_mention is not None:
-            user_mention = effective_message.from_user.mention_html()
             warning_count = spam_rules.add_warning(chat_id, user_id)
             try:
                 await context.bot.delete_message(chat_id=chat_id, message_id=effective_message.message_id)
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=views.mention_warning(user_mention, found_mention, warning_count),
+                    text=views.mention_warning(sender, found_mention, warning_count),
                     parse_mode=ParseMode.HTML,
+                    reply_markup=ban_keyboard,
                 )
                 logger.info(f"已删除@mention消息 - 群组: {chat_id}, 用户: {user_id}, 提及: {found_mention}, 内容: {message_text[:50]}...")
                 return
@@ -334,10 +338,9 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=views.global_word_warning(
-                    spam_strikes.sender_html(effective_message), reason_html, warning_count
-                ),
+                text=views.global_word_warning(sender, reason_html, warning_count),
                 parse_mode=ParseMode.HTML,
+                reply_markup=ban_keyboard,
             )
         except Exception as e:
             logger.error(f"发送垃圾信息警告时出错: {e}")

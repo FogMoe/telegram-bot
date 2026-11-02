@@ -5,13 +5,20 @@ from types import SimpleNamespace
 import pytest
 from telegram.constants import ChatMemberStatus
 
-from fogmoe_telegram_bot.features.moderation import member_verify
+from fogmoe_telegram_bot.features.moderation import admin_ban_views, member_verify
 from fogmoe_telegram_bot.features.moderation.member_verify import is_own_verify_button
+from fogmoe_telegram_bot.features.moderation.operations import join_messages
 from fogmoe_telegram_bot.features.moderation.operations import member_verify as verification
 from fogmoe_telegram_bot.features.moderation.repositories.verification import VerificationTask
 
 CHAT_ID = -100
 USER_ID = 42
+BOT_ID = 1
+
+
+@pytest.fixture(autouse=True)
+def _fresh_joins(monkeypatch):
+    monkeypatch.setattr(join_messages, "JOINS", join_messages.JoinMessages())
 
 
 def test_own_button_is_accepted():
@@ -75,6 +82,8 @@ class _FakeBot:
         self.restricted = []
         self.kicked = []
         self.edited = []
+        self.edited_texts = []
+        self.deleted = []
         self.fail_restrict = False
 
     async def get_chat_member(self, chat_id, user_id):
@@ -93,9 +102,16 @@ class _FakeBot:
 
     async def edit_message_text(self, chat_id, message_id, text):
         self.edited.append(message_id)
+        self.edited_texts.append(text)
 
     async def send_message(self, chat_id, text):
         pass
+
+    async def delete_message(self, chat_id, message_id):
+        self.deleted.append(message_id)
+
+    async def get_me(self):
+        return SimpleNamespace(id=BOT_ID)
 
 
 class _FakeQuery:
@@ -202,21 +218,97 @@ def test_recovery_after_restart_handles_only_expired_rounds(tasks):
     assert list(tasks.rows) == [(7, CHAT_ID)]
 
 
-def test_leaving_before_verifying_closes_the_round(tasks):
+class _Recorder:
+    def __init__(self, result=None):
+        self.calls = []
+        self.result = result
+
+    async def __call__(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        return self.result
+
+
+def _left(bot, *, removed_by):
+    left = SimpleNamespace(id=USER_ID, full_name="加V领福利")
+    service_message = SimpleNamespace(left_chat_member=left, from_user=removed_by, delete=_Recorder())
+    update = SimpleNamespace(effective_chat=SimpleNamespace(id=CHAT_ID), message=service_message)
+    asyncio.run(member_verify.handle_member_left(update, SimpleNamespace(bot=bot)))
+    return service_message
+
+
+def test_leaving_before_verifying_closes_the_round_and_cleans_up(tasks):
     tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
+    join_messages.JOINS.record(CHAT_ID, USER_ID, 1)
     bot = _FakeBot()
 
-    async def get_me():
-        return SimpleNamespace(id=1)
-
-    bot.get_me = get_me
-    left = SimpleNamespace(id=USER_ID, full_name="someone")
-    update = SimpleNamespace(
-        effective_chat=SimpleNamespace(id=CHAT_ID),
-        message=SimpleNamespace(left_chat_member=left),
-    )
-
-    asyncio.run(member_verify.handle_member_left(update, SimpleNamespace(bot=bot)))
+    service_message = _left(bot, removed_by=SimpleNamespace(id=USER_ID))
 
     assert tasks.rows == {}
-    assert bot.edited == [2]
+    assert bot.edited == [2] and bot.edited_texts == ["新成员在验证前离开了群组。"]
+    assert bot.deleted == [1]  # 加群消息
+    assert service_message.delete.calls == [((), {})]  # 「X 离开了群组」
+
+
+def test_removal_by_the_bot_deletes_the_service_message(tasks):
+    bot = _FakeBot()
+
+    service_message = _left(bot, removed_by=SimpleNamespace(id=BOT_ID))
+
+    assert service_message.delete.calls == [((), {})]
+
+
+def test_a_verified_member_leaving_on_their_own_is_left_alone(tasks):
+    bot = _FakeBot()
+
+    service_message = _left(bot, removed_by=SimpleNamespace(id=USER_ID))
+
+    assert service_message.delete.calls == [] and bot.edited == []
+
+
+def test_a_timed_out_member_also_loses_the_join_message(tasks):
+    tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
+    join_messages.JOINS.record(CHAT_ID, USER_ID, 1)
+    bot = _FakeBot()
+
+    asyncio.run(member_verify.expire_verification(bot, CHAT_ID, USER_ID, 2))
+
+    assert bot.kicked == [USER_ID] and bot.deleted == [1]
+
+
+def _join(monkeypatch, *, enabled):
+    async def is_enabled(chat_id):
+        return enabled
+
+    monkeypatch.setattr(verification, "is_enabled", is_enabled)
+    replies = []
+
+    async def reply_text(text, **kwargs):
+        replies.append((text, kwargs))
+        return SimpleNamespace(message_id=2)
+
+    new_member = SimpleNamespace(id=USER_ID, is_bot=False, full_name="加V领福利")
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=CHAT_ID),
+        message=SimpleNamespace(message_id=1, new_chat_members=[new_member], reply_text=reply_text),
+    )
+    context = SimpleNamespace(
+        bot=_FakeBot(), chat_data={}, job_queue=SimpleNamespace(run_once=lambda *args, **kwargs: None)
+    )
+    asyncio.run(member_verify.new_member_handler(update, context))
+    return replies
+
+
+def test_the_welcome_hides_the_name_and_offers_admins_a_ban_button(tasks, monkeypatch):
+    replies = _join(monkeypatch, enabled=True)
+
+    (text, kwargs), = replies
+    assert "加V领福利" not in text and f'<a href="tg://user?id={USER_ID}">新成员</a>' in text
+    verify, ban = kwargs["reply_markup"].inline_keyboard[0]
+    assert verify.callback_data == f"verify_{USER_ID}"
+    assert ban.callback_data == admin_ban_views.ban_data(CHAT_ID, USER_ID)
+    assert join_messages.JOINS.pop(CHAT_ID, USER_ID) == 1
+
+
+def test_join_messages_are_remembered_even_without_verification(tasks, monkeypatch):
+    assert _join(monkeypatch, enabled=False) == []
+    assert join_messages.JOINS.pop(CHAT_ID, USER_ID) == 1

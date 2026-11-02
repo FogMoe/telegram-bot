@@ -3,11 +3,12 @@
 
 链接过滤、@提及过滤与全局垃圾词库的命中不计入这里，它们只警告，警告次数在 `operations/spam_control.py`。
 计数放在进程内存里，按每次命中的时间滑动统计，重启后清零。
+
+`ban` 与 `kick` 也给举报和管理员按钮用：封禁时一并删掉对方的加群消息。群里的警告与公告不显示对方的名字。
 """
 
 from __future__ import annotations
 
-import html
 import logging
 import time
 from collections import deque
@@ -18,6 +19,8 @@ from typing import Any
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
+from fogmoe_telegram_bot.features.moderation import admin_ban_views
+from fogmoe_telegram_bot.features.moderation.operations import join_messages
 from fogmoe_telegram_bot.features.moderation.spam_ai import operations as spam_ai_operations
 
 logger = logging.getLogger(__name__)
@@ -73,15 +76,15 @@ def strike_target(message: Any) -> int | None:
 
 
 def sender_html(message: Any) -> str:
-    sender_chat = getattr(message, "sender_chat", None)
-    if sender_chat is not None:
-        return html.escape(sender_chat.title or "该频道")
-    return message.from_user.mention_html()
+    """群里提到发送者时的写法：不显示名字或频道名（广告号的名字本身就是广告），点开仍能看到是谁。"""
+    if getattr(message, "sender_chat", None) is not None:
+        return "该频道"
+    return admin_ban_views.neutral_mention(message.from_user.id)
 
 
-async def _send(bot: Any, chat_id: int, text: str) -> None:
+async def _send(bot: Any, chat_id: int, text: str, reply_markup: Any = None) -> None:
     try:
-        await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML)
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
     except TelegramError as exc:
         logger.warning("发送垃圾信息处罚通知失败（群 %s）: %s", chat_id, exc)
 
@@ -90,6 +93,7 @@ async def penalize(bot: Any, message: Any, *, reason_html: str, note: str = "") 
     """消息已经删掉之后调用：记一次违规并警告；窗口内满 `STRIKES_TO_KICK` 次时改为移出群组。
 
     `reason_html` 接在发送者后面，例如「发送的消息包含垃圾内容 …」；`note` 附在警告末尾。
+    警告下面带管理员的封禁按钮。
     """
     chat_id = message.chat_id
     sender = sender_html(message)
@@ -105,11 +109,40 @@ async def penalize(bot: Any, message: Any, *, reason_html: str, note: str = "") 
             bot,
             chat_id,
             f"{deleted}\n这是第 {count} 次警告，{WINDOW_TEXT}满 {STRIKES_TO_KICK} 次将被移出群组。{note}",
+            admin_ban_views.ban_keyboard(chat_id, user_id),
         )
         return
 
     TRACKER.clear(chat_id, user_id)
     await kick(bot, chat_id, user_id, sender, basic_group=getattr(message.chat, "type", "") == "group")
+
+
+async def delete_join_message(bot: Any, chat_id: int, user_id: int) -> None:
+    """删掉这个人的加群系统消息（记得的话）。"""
+    message_id = join_messages.JOINS.pop(chat_id, user_id)
+    if message_id is None:
+        return
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except TelegramError as exc:
+        logger.info("删除加群消息失败（群 %s，消息 %s）: %s", chat_id, message_id, exc)
+
+
+async def ban(bot: Any, chat_id: int, user_id: int, *, seconds: int | None = BAN_SECONDS) -> TelegramError | None:
+    """封禁并清理（AI 检查计数、加群消息）；`seconds` 为 None 时永久封禁。成功返回 None，失败返回 Telegram 的错误。"""
+    until = None if seconds is None else datetime.now(UTC) + timedelta(seconds=seconds)
+    try:
+        await bot.ban_chat_member(chat_id=chat_id, user_id=user_id, until_date=until)
+    except TelegramError as exc:
+        logger.warning("封禁失败（群 %s，用户 %s）: %s", chat_id, user_id, exc)
+        return exc
+
+    try:
+        await spam_ai_operations.forget_member(chat_id, user_id)
+    except Exception:
+        logger.exception("清除被移出成员的 AI 检查计数失败（群 %s，用户 %s）", chat_id, user_id)
+    await delete_join_message(bot, chat_id, user_id)
+    return None
 
 
 async def kick(
@@ -120,19 +153,17 @@ async def kick(
     *,
     basic_group: bool = False,
     offense: str | None = None,
+    seconds: int | None = BAN_SECONDS,
 ) -> bool:
-    """移出群组并在 `BAN_SECONDS` 内禁止重新加入，然后在群里说明；移出成功返回 True。
+    """移出群组并封禁 `seconds` 秒（None 为永久），然后在群里说明；移出成功返回 True。
 
     `offense` 是群里说明的开头，默认是累计处罚的说法。
     普通群（非超级群）不支持限时封禁，Telegram 忽略 `until_date`，被移出的人可以凭邀请链接直接回来。
     """
     offense = offense or f"{sender} 在 {WINDOW_TEXT}发送了 {STRIKES_TO_KICK} 次垃圾信息"
-    until = datetime.now(UTC) + timedelta(seconds=BAN_SECONDS)
-    try:
-        await bot.ban_chat_member(chat_id=chat_id, user_id=user_id, until_date=until)
-    except TelegramError as exc:
-        logger.warning("移出垃圾信息发送者失败（群 %s，用户 %s）: %s", chat_id, user_id, exc)
-        if "rights" in str(exc).lower():
+    error = await ban(bot, chat_id, user_id, seconds=seconds)
+    if error is not None:
+        if "rights" in str(error).lower():
             text = (
                 f"⚠️ {offense}，但机器人没有封禁成员的权限，未能将其移出。"
                 "请管理员授予机器人「封禁成员」权限。"
@@ -142,14 +173,10 @@ async def kick(
         await _send(bot, chat_id, text)
         return False
 
-    try:
-        await spam_ai_operations.forget_member(chat_id, user_id)
-    except Exception:
-        logger.exception("清除被移出成员的 AI 检查计数失败（群 %s，用户 %s）", chat_id, user_id)
-
     if basic_group:
         await _send(bot, chat_id, f"🚫 {offense}，已被移出群组。")
+    elif seconds is None:
+        await _send(bot, chat_id, f"🚫 {offense}，已被移出群组并永久封禁。")
     else:
-        hours = BAN_SECONDS // 3600
-        await _send(bot, chat_id, f"🚫 {offense}，已被移出群组，{hours} 小时内无法重新加入。")
+        await _send(bot, chat_id, f"🚫 {offense}，已被移出群组，{seconds // 3600} 小时内无法重新加入。")
     return True

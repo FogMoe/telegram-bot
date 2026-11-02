@@ -1,6 +1,8 @@
 """`/verify` 与新成员验证：Telegram 适配层。
 
 禁言、发欢迎消息与验证按钮、解除禁言或移出群组；开关、每一轮验证的记录与认领在 `operations/member_verify.py`。
+群里的消息不显示新成员的名字（广告号的名字本身就是广告）；验证没通过时删掉加群消息，机器人移出成员产生的
+系统消息也删掉。欢迎消息上的管理员封禁按钮由 `admin_ban.py` 处理。
 """
 
 import logging
@@ -11,6 +13,8 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, Mes
 
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.redaction import report_error
+from fogmoe_telegram_bot.features.moderation import admin_ban_views, spam_strikes
+from fogmoe_telegram_bot.features.moderation.operations import join_messages
 from fogmoe_telegram_bot.features.moderation.operations import member_verify as verification
 
 # 恢复任务的周期：重启后第一次在 RECOVERY_FIRST_SECONDS 秒后运行，之后每隔 RECOVERY_INTERVAL 秒。
@@ -72,6 +76,11 @@ async def verify_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
+    # 所有群都记下加群消息：验证没通过、或者之后因为发垃圾信息被封禁时删掉
+    for new_member in update.message.new_chat_members:
+        if not new_member.is_bot:
+            join_messages.JOINS.record(chat_id, new_member.id, update.message.message_id)
+
     if not await verification.is_enabled(chat_id):
         return
 
@@ -114,18 +123,22 @@ async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if "httpx.ConnectError" in error_str or "Not enough rights" in error_str:
                 await context.bot.send_message(
                     chat_id,
-                    f"验证错误: 无法限制成员 {new_member.full_name}({user_id})，"
+                    f"验证错误: 无法限制成员 {user_id}，"
                     f"请检查机器人的管理员权限与网络。\n{notice}"
                 )
             continue
 
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("点击验证", callback_data=f"verify_{user_id}")]
+            [
+                InlineKeyboardButton("点击验证", callback_data=f"verify_{user_id}"),
+                admin_ban_views.ban_button(chat_id, user_id),
+            ]
         ])
 
-        # 发送欢迎信息，包含验证按钮
+        # 发送欢迎信息，包含验证按钮；不显示名字
         welcome_msg = await update.message.reply_text(
-            f"欢迎 {new_member.mention_html()} 加入群组！请点击【验证】按钮进行验证（5分钟内有效）。",
+            f"欢迎 {admin_ban_views.neutral_mention(user_id, '新成员')} 加入群组！"
+            "请点击【验证】按钮进行验证（5分钟内有效）。",
             reply_markup=keyboard,
             parse_mode="HTML"
         )
@@ -156,6 +169,7 @@ async def expire_verification(bot, chat_id, user_id, message_id):
         await bot.unban_chat_member(chat_id, user_id)
     except Exception as e:
         print(f"踢出成员 {user_id} 时出错: {e}")
+    await spam_strikes.delete_join_message(bot, chat_id, user_id)
     try:
         await bot.edit_message_text(
             chat_id=chat_id,
@@ -243,7 +257,8 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 处理成员离开群组的事件（合并处理机器人和普通用户）
 async def handle_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    user = update.message.left_chat_member
+    service_message = update.message
+    user = service_message.left_chat_member
     bot = await context.bot.get_me()
 
     # 如果是机器人自己被踢出
@@ -253,15 +268,25 @@ async def handle_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # 如果是普通成员离开，结束他未完成的验证
     message_id = await verification.find_round_message(user.id, chat_id)
-    if message_id is not None and await verification.claim_round(user.id, chat_id, message_id):
+    left_unverified = message_id is not None and await verification.claim_round(user.id, chat_id, message_id)
+    if left_unverified:
         try:
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=f"用户 {user.full_name} 在验证前离开了群组。"
+                text="新成员在验证前离开了群组。"
             )
         except Exception as e:
             print(f"编辑消息出错: {e}")
+        await spam_strikes.delete_join_message(context.bot, chat_id, user.id)
+
+    # 「X 离开了群组」「机器人 移除了 X」也会显示名字：没验证就走的、被机器人移出的都删掉
+    removed_by_bot = service_message.from_user is not None and service_message.from_user.id == bot.id
+    if left_unverified or removed_by_bot:
+        try:
+            await service_message.delete()
+        except Exception as e:
+            print(f"删除离群消息出错: {e}")
 
 # 注册该模块的处理器
 def setup_member_verification(dispatcher):
