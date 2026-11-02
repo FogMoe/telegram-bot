@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # main 用合并队列；必需检查要在队列的临时分支上再跑一遍
+  merge_group:
   workflow_dispatch:
 
 permissions:
