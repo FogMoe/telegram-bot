@@ -112,12 +112,21 @@ async def penalize(bot: Any, message: Any, *, reason_html: str, note: str = "") 
     await kick(bot, chat_id, user_id, sender, basic_group=getattr(message.chat, "type", "") == "group")
 
 
-async def kick(bot: Any, chat_id: int, user_id: int, sender: str, *, basic_group: bool = False) -> None:
-    """移出群组并在 `BAN_SECONDS` 内禁止重新加入，然后在群里说明。
+async def kick(
+    bot: Any,
+    chat_id: int,
+    user_id: int,
+    sender: str,
+    *,
+    basic_group: bool = False,
+    offense: str | None = None,
+) -> bool:
+    """移出群组并在 `BAN_SECONDS` 内禁止重新加入，然后在群里说明；移出成功返回 True。
 
+    `offense` 是群里说明的开头，默认是累计处罚的说法。
     普通群（非超级群）不支持限时封禁，Telegram 忽略 `until_date`，被移出的人可以凭邀请链接直接回来。
     """
-    offense = f"{sender} 在 {WINDOW_TEXT}发送了 {STRIKES_TO_KICK} 次垃圾信息"
+    offense = offense or f"{sender} 在 {WINDOW_TEXT}发送了 {STRIKES_TO_KICK} 次垃圾信息"
     until = datetime.now(UTC) + timedelta(seconds=BAN_SECONDS)
     try:
         await bot.ban_chat_member(chat_id=chat_id, user_id=user_id, until_date=until)
@@ -131,7 +140,7 @@ async def kick(bot: Any, chat_id: int, user_id: int, sender: str, *, basic_group
         else:
             text = f"⚠️ {offense}，但移出失败，请管理员手动处理。"
         await _send(bot, chat_id, text)
-        return
+        return False
 
     try:
         await spam_ai_operations.forget_member(chat_id, user_id)
@@ -143,3 +152,4 @@ async def kick(bot: Any, chat_id: int, user_id: int, sender: str, *, basic_group
     else:
         hours = BAN_SECONDS // 3600
         await _send(bot, chat_id, f"🚫 {offense}，已被移出群组，{hours} 小时内无法重新加入。")
+    return True

@@ -69,7 +69,7 @@ app → core
 | `admin/` | 开发者命令与 `/admin_announce`；用到群管功能的群由 app 注入的读取函数提供（`group_usage.py`），见「core 与业务之间的回调」 |
 | `xfeed/` | `/xfeed`：群管理员绑定一个 X 账号，轮询任务把新帖子（原创与引用）以原链接发到群里（内容靠链接预览展示），超过 24 小时的不补发；数据源是 FxTwitter API v2（`source.py`），首次开通的扣费与同步进度在 `operations.py`，SQL 在 `repositories/feeds.py`，分层同「经济与游戏的分层」 |
 | `moderation/spam_ai/` | `/spam ai`：群管理员按 30 天付费开启 AI 垃圾识别，每位成员的前几条消息交给 TypeSafe 的 Jev 判断（`judge.py`）；付费、检查计数与到期提醒在 `operations.py`，SQL 在 `repositories/groups.py`，分层同「经济与游戏的分层」。自定义垃圾词与 AI 删除共用的累计处罚（满次数移出群组）在 `moderation/spam_strikes.py`；普通群升级成超级群时付费状态随服务消息搬到新 chat id |
-| `moderation/` | 群管：`/spam` 垃圾信息过滤（`spam_control.py`，帮助菜单与文案在 `spam_control_views.py`）、`/keyword` 关键词自动回复（`keyword_handler.py`）、`/verify` 新成员验证（`member_verify.py`）是适配层；开关与缓存、垃圾词与警告计数、验证轮次的认领在 `moderation/operations/`，SQL 在 `moderation/repositories/`，分层同「经济与游戏的分层」。`/report`、`/sf` 不碰数据库 |
+| `moderation/` | 群管：`/spam` 垃圾信息过滤（`spam_control.py`，帮助菜单与文案在 `spam_control_views.py`）、`/keyword` 关键词自动回复（`keyword_handler.py`）、`/verify` 新成员验证（`member_verify.py`）是适配层；开关与缓存、垃圾词与警告计数、验证轮次的认领在 `moderation/operations/`，SQL 在 `moderation/repositories/`，分层同「经济与游戏的分层」。`/report` 举报（`report.py`，文案在 `report_views.py`，票数与每日额度在 `operations/report_votes.py`，凑够票数后用 `spam_ai/judge.py` 判断）与 `/sf` 不碰数据库 |
 | `games/` `media/` | 玩法、媒体；游戏里持有金币的状态（下注轮次、石头剪刀布对局）持久化在 MySQL，恢复策略见 [job-recovery.md](job-recovery.md) 的「游戏状态」；`games/` 的 SQL 都在 `games/repositories/`，见「经济与游戏的分层」 |
 
 `features/conversation/` 内部：

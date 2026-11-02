@@ -159,6 +159,7 @@ def test_register_handlers_preserves_handler_and_job_registration_order():
         ("CallbackQueryHandler", 0, "^ref_", "ref_callback"),
         ("CommandHandler", 0, "checkin", "checkin_command"),
         ("CommandHandler", 0, "report", "report_command"),
+        ("CallbackQueryHandler", 0, "^rpt:", "report_admin_callback"),
         ("CommandHandler", 0, "chart", "chart_command"),
         ("CommandHandler", 0, "pic", "pic_command"),
         ("CallbackQueryHandler", 0, "^pic_hd_", "hd_pic_callback"),
