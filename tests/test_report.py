@@ -527,11 +527,16 @@ def test_an_unban_button_stops_working_once_the_ban_has_expired(jev):
     bot = FakeBot()
     bot.chat_members[1] = admin(1)
 
-    query = press(bot, unban_button(hours_left=-1))
+    data = unban_button(hours_left=-1)
+    link = InlineKeyboardButton("查看消息", url="https://t.me/c/123/55")
+
+    query = press(bot, data, markup=InlineKeyboardMarkup([[link, InlineKeyboardButton("解除封禁", callback_data=data)]]))
 
     assert query.answer.calls == [((report_views.UNBAN_EXPIRED,), {"show_alert": True})]
-    assert query.edit_message_reply_markup.calls == [((), {"reply_markup": None})]
+    (), kwargs = query.edit_message_reply_markup.calls[0]
+    assert kwargs["reply_markup"].inline_keyboard == ((link,),)  # 消息还没删时链接留着
     assert bot.unbans == []
+    assert report_views.without_button(notice_markup(data), data) is None
 
 
 def test_only_admins_who_can_ban_may_press_the_buttons(jev):

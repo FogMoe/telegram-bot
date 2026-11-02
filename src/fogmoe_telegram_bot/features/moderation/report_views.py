@@ -123,6 +123,15 @@ def offered(markup: InlineKeyboardMarkup | None, data: str | None) -> bool:
     return any(button.callback_data == data for row in markup.inline_keyboard for button in row)
 
 
+def without_button(markup: InlineKeyboardMarkup | None, data: str) -> InlineKeyboardMarkup | None:
+    """去掉回调数据为 `data` 的按钮，其余按钮（例如「查看消息」）保留；一个不剩时返回 None。"""
+    if markup is None:
+        return None
+    rows = [[button for button in row if button.callback_data != data] for row in markup.inline_keyboard]
+    rows = [row for row in rows if row]
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
 # ---------------------------------------------------------------------------
 # 给管理员的私聊
 # ---------------------------------------------------------------------------

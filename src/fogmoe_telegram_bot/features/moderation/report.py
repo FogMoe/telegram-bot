@@ -372,7 +372,10 @@ async def report_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
     if action.kind == "unban" and action.until is not None and time.time() >= action.until:
         await query.answer(views.UNBAN_EXPIRED, show_alert=True)
         try:
-            await query.edit_message_reply_markup(reply_markup=None)
+            # 只去掉过期的解除封禁按钮；消息没删掉时的「查看消息」还要留着
+            await query.edit_message_reply_markup(
+                reply_markup=views.without_button(query.message.reply_markup, query.data)
+            )
         except TelegramError as exc:
             logger.info("举报：移除过期的解除封禁按钮失败: %s", exc)
         return
