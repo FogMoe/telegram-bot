@@ -34,6 +34,7 @@ from fogmoe_telegram_bot.features.economy.coins import give_command, lottery_com
 from fogmoe_telegram_bot.features.games import gamble, omikuji, rockpaperscissors_game, rpg, sicbo
 from fogmoe_telegram_bot.features.media import music, pic
 from fogmoe_telegram_bot.features.moderation import (
+    admin_ban,
     keyword_handler,
     member_verify,
     report,
@@ -103,6 +104,7 @@ def register_translation_handlers(application) -> None:
 def register_moderation_handlers(application) -> None:
     keyword_handler.setup_keyword_handlers(application)
     spam_control.setup_spam_control_handlers(application)
+    admin_ban.setup_admin_ban_handlers(application)
     xfeed.setup_xfeed_handlers(application)
 
 

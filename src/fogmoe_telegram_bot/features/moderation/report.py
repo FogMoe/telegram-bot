@@ -1,7 +1,8 @@
 """/report：群成员回复一条消息举报垃圾信息。凑够票数后交给 Jev 判断，判定为垃圾信息的删除消息、移出群组并封禁
-24 小时；管理员在第一次举报和处理结果时各收到一条私聊，可以在私聊里一键删除并封禁，或者解除封禁。
+24 小时；管理员在第一次举报和处理结果时各收到一条私聊，可以在私聊里一键删除并永久封禁，或者解除封禁
+（按钮由 `admin_ban.py` 处理）。
 
-适配层：校验举报、调用 Jev、删除与封禁、私聊管理员、处理私聊按钮。票数与额度的规则在 `operations/report_votes.py`，
+适配层：校验举报、调用 Jev、删除与封禁、私聊管理员。票数与额度的规则在 `operations/report_votes.py`，
 文案在 `report_views.py`，Jev 请求在 `spam_ai/judge.py`，移出在 `spam_strikes.py`。
 """
 
@@ -16,14 +17,14 @@ from typing import Any
 from telegram import InlineKeyboardMarkup, LinkPreviewOptions, Message, Update
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
-from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import CommandHandler, ContextTypes
 
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
+from fogmoe_telegram_bot.features.moderation import admin_ban, spam_strikes
 from fogmoe_telegram_bot.features.moderation import report_views as views
-from fogmoe_telegram_bot.features.moderation import spam_strikes
 from fogmoe_telegram_bot.features.moderation.operations import report_votes as votes
 from fogmoe_telegram_bot.features.moderation.operations.report_votes import Quota, Stage, VoteStatus
-from fogmoe_telegram_bot.features.moderation.report_views import AdminAction, ReportedMessage
+from fogmoe_telegram_bot.features.moderation.report_views import ReportedMessage
 from fogmoe_telegram_bot.features.moderation.spam_ai import handlers as spam_ai_handlers
 from fogmoe_telegram_bot.features.moderation.spam_ai import judge
 from fogmoe_telegram_bot.features.moderation.spam_ai import operations as spam_ai_operations
@@ -33,23 +34,11 @@ logger = logging.getLogger(__name__)
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
 
-def is_basic_group(chat_id: int) -> bool:
-    """普通群（非超级群）；超级群的 chat id 以 -100 开头。"""
-    return not str(chat_id).startswith("-100")
-
-
 def can_act(member: Any) -> bool:
     """机器人能删除消息并封禁成员。"""
     return member is not None and bool(getattr(member, "can_delete_messages", False)) and bool(
         getattr(member, "can_restrict_members", False)
     )
-
-
-def can_ban(member: Any) -> bool:
-    """点按钮的人是群主，或者是能封禁成员的管理员。"""
-    if member.status == "creator":
-        return True
-    return member.status == "administrator" and bool(getattr(member, "can_restrict_members", False))
 
 
 def reported_message(message: Message) -> ReportedMessage:
@@ -101,18 +90,6 @@ async def _paid(chat_id: int) -> bool:
     except Exception:
         logger.exception("举报：读取群 %s 的 AI 识别状态失败，按未开通处理", chat_id)
         return False
-
-
-async def _delete(bot: Any, chat_id: int, message_id: int) -> bool:
-    """删除消息；消息已经不在时也算删掉。"""
-    try:
-        await bot.delete_message(chat_id=chat_id, message_id=message_id)
-    except TelegramError as exc:
-        if "not found" in str(exc).lower():
-            return True
-        logger.warning("举报：删除群 %s 的消息 %s 失败: %s", chat_id, message_id, exc)
-        return False
-    return True
 
 
 def _ban_until() -> int:
@@ -296,14 +273,15 @@ async def _judge_and_act(
         )
         return views.not_spam_reply(count, required, notified)
 
-    deleted = await _delete(bot, chat_id, message_id)
+    deleted = await admin_ban.delete_message(bot, chat_id, message_id)
+    sender = spam_strikes.sender_html(target)  # 群里的公告不显示名字
     banned = await spam_strikes.kick(
         bot,
         chat_id,
         reported.sender_id,
-        reported.sender_html,
-        basic_group=is_basic_group(chat_id),
-        offense=views.vote_offense(reported.sender_html, count),
+        sender,
+        basic_group=admin_ban.is_basic_group(chat_id),
+        offense=views.vote_offense(sender, count),
     )
     if banned:
         keyboard = views.banned_keyboard(
@@ -320,94 +298,7 @@ async def _judge_and_act(
     return None
 
 
-# ---------------------------------------------------------------------------
-# 私聊里的按钮
-# ---------------------------------------------------------------------------
-
-
-async def _sender_html(bot: Any, chat_id: int, user_id: int) -> str:
-    try:
-        member = await bot.get_chat_member(chat_id, user_id)
-        return member.user.mention_html()
-    except TelegramError:
-        return f'<a href="tg://user?id={user_id}">该用户</a>'
-
-
-async def _admin_ban(bot: Any, action: AdminAction, admin_html: str) -> tuple[bool, str, InlineKeyboardMarkup | None]:
-    deleted = action.message_id is None or await _delete(bot, action.chat_id, action.message_id)
-    sender = await _sender_html(bot, action.chat_id, action.user_id)
-    banned = await spam_strikes.kick(
-        bot,
-        action.chat_id,
-        action.user_id,
-        sender,
-        basic_group=is_basic_group(action.chat_id),
-        offense=views.admin_offense(sender),
-    )
-    if not banned:
-        return False, views.ADMIN_BAN_FAILED, None
-    return (
-        True,
-        views.admin_banned_line(admin_html, deleted),
-        views.banned_keyboard(action.chat_id, action.user_id, _ban_until()),
-    )
-
-
-async def _admin_unban(bot: Any, action: AdminAction, admin_html: str) -> tuple[bool, str, InlineKeyboardMarkup | None]:
-    try:
-        await bot.unban_chat_member(chat_id=action.chat_id, user_id=action.user_id, only_if_banned=True)
-    except TelegramError as exc:
-        logger.warning("举报：解除群 %s 用户 %s 的封禁失败: %s", action.chat_id, action.user_id, exc)
-        return False, views.ADMIN_UNBAN_FAILED, None
-    return True, views.admin_unbanned_line(admin_html), None
-
-
-async def report_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """管理员私聊里的「删除并封禁」「解除封禁」按钮。"""
-    query = update.callback_query
-    action = views.parse_action(query.data)
-    if action is None or not views.offered(getattr(query.message, "reply_markup", None), query.data):
-        await query.answer(views.STALE_BUTTON, show_alert=True)
-        return
-    if action.kind == "unban" and action.until is not None and time.time() >= action.until:
-        await query.answer(views.UNBAN_EXPIRED, show_alert=True)
-        try:
-            # 只去掉过期的解除封禁按钮；消息没删掉时的「查看消息」还要留着
-            await query.edit_message_reply_markup(
-                reply_markup=views.without_button(query.message.reply_markup, query.data)
-            )
-        except TelegramError as exc:
-            logger.info("举报：移除过期的解除封禁按钮失败: %s", exc)
-        return
-    try:
-        member = await context.bot.get_chat_member(action.chat_id, query.from_user.id)
-    except TelegramError as exc:
-        logger.warning("举报：确认群 %s 的管理员 %s 失败: %s", action.chat_id, query.from_user.id, exc)
-        await query.answer("无法确认你在该群的管理员权限，请稍后再试。", show_alert=True)
-        return
-    if not can_ban(member):
-        await query.answer("只有能封禁成员的管理员可以操作。", show_alert=True)
-        return
-
-    await query.answer()
-    admin_html = query.from_user.mention_html()
-    handle = _admin_ban if action.kind == "ban" else _admin_unban
-    ok, line, keyboard = await handle(context.bot, action, admin_html)
-    if not ok:
-        keyboard = query.message.reply_markup  # 失败时保留原来的按钮，可以再试
-    try:
-        await query.edit_message_text(
-            f"{query.message.text_html}\n\n{line}",
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard,
-            link_preview_options=NO_PREVIEW,
-        )
-    except TelegramError as exc:
-        logger.warning("举报：更新管理员私聊失败: %s", exc)
-
-
 def setup_report_handlers(application):
     """注册处理函数"""
     application.add_handler(CommandHandler("report", report_command))
-    application.add_handler(CallbackQueryHandler(report_admin_callback, pattern=rf"^{views.CALLBACK_PREFIX}:"))
     logging.info("已加载举报功能处理器")

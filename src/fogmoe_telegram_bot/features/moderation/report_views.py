@@ -10,12 +10,10 @@ from dataclasses import dataclass
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from fogmoe_telegram_bot.features.moderation import spam_strikes
+from fogmoe_telegram_bot.features.moderation import admin_ban_views, spam_strikes
 
 from .operations.report_votes import Stage, Vote
 
-# 私聊按钮的回调数据前缀；注册的 pattern 是 `^rpt:`
-CALLBACK_PREFIX = "rpt"
 EXCERPT_CHARS = 300
 BAN_HOURS = spam_strikes.BAN_SECONDS // 3600
 
@@ -34,8 +32,7 @@ ADMIN = "不能举报管理员的消息。"
 TOO_OLD = "只能举报 24 小时内的消息。"
 LOOKUP_FAILED = "举报处理过程中出错，请稍后再试。"
 AS_CHAT = "请以个人身份发送 /report；匿名管理员或以频道身份发送的举报无法计票。"
-STALE_BUTTON = "这个按钮已失效。"
-UNBAN_EXPIRED = "封禁已经到期，这个按钮不再有效。"
+
 NO_ADMIN_REACHED = "无法私聊通知管理员（管理员需要先私聊过机器人），请直接联系群管理员。"
 
 
@@ -61,75 +58,25 @@ class ReportedMessage:
 
 
 # ---------------------------------------------------------------------------
-# 按钮与回调数据
+# 按钮（回调由 `admin_ban.py` 处理）
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class AdminAction:
-    kind: str  # "ban" 或 "unban"
-    chat_id: int
-    user_id: int
-    message_id: int | None = None  # ban：一并删除的消息
-    until: int | None = None  # unban：这次封禁到期的 Unix 时间，过期后按钮失效
-
-
-def ban_data(chat_id: int, message_id: int, user_id: int) -> str:
-    return f"{CALLBACK_PREFIX}:ban:{chat_id}:{message_id}:{user_id}"
-
-
-def unban_data(chat_id: int, user_id: int, until: int) -> str:
-    return f"{CALLBACK_PREFIX}:unban:{chat_id}:{user_id}:{until}"
-
-
-def parse_action(data: str | None) -> AdminAction | None:
-    parts = (data or "").split(":")
-    try:
-        if len(parts) == 5 and parts[:2] == [CALLBACK_PREFIX, "ban"]:
-            return AdminAction("ban", int(parts[2]), int(parts[4]), int(parts[3]))
-        if len(parts) == 5 and parts[:2] == [CALLBACK_PREFIX, "unban"]:
-            return AdminAction("unban", int(parts[2]), int(parts[3]), until=int(parts[4]))
-    except ValueError:
-        return None
-    return None
-
-
 def pending_keyboard(reported: ReportedMessage) -> InlineKeyboardMarkup | None:
-    """还没处理的举报：查看消息、一键删除并封禁。"""
+    """还没处理的举报：查看消息、一键删除并永久封禁。"""
     row = []
     if reported.link:
         row.append(InlineKeyboardButton("查看消息", url=reported.link))
     if reported.sender_id is not None:
         row.append(
-            InlineKeyboardButton(
-                f"删除并封禁 {BAN_HOURS} 小时",
-                callback_data=ban_data(reported.chat_id, reported.message_id, reported.sender_id),
-            )
+            admin_ban_views.ban_button(reported.chat_id, reported.sender_id, reported.message_id, "删除并永久封禁")
         )
     return InlineKeyboardMarkup([row]) if row else None
 
 
 def banned_keyboard(chat_id: int, user_id: int, until: int, link: str | None = None) -> InlineKeyboardMarkup:
-    """已封禁：解除封禁；消息没删掉时再给一个「查看消息」，方便手动删除。"""
-    row = [InlineKeyboardButton("查看消息", url=link)] if link else []
-    row.append(InlineKeyboardButton("解除封禁", callback_data=unban_data(chat_id, user_id, until)))
-    return InlineKeyboardMarkup([row])
-
-
-def offered(markup: InlineKeyboardMarkup | None, data: str | None) -> bool:
-    """回调数据确实是这条私聊上的按钮：只接受机器人自己发出的按钮，不接受伪造的回调。"""
-    if markup is None or data is None:
-        return False
-    return any(button.callback_data == data for row in markup.inline_keyboard for button in row)
-
-
-def without_button(markup: InlineKeyboardMarkup | None, data: str) -> InlineKeyboardMarkup | None:
-    """去掉回调数据为 `data` 的按钮，其余按钮（例如「查看消息」）保留；一个不剩时返回 None。"""
-    if markup is None:
-        return None
-    rows = [[button for button in row if button.callback_data != data] for row in markup.inline_keyboard]
-    rows = [row for row in rows if row]
-    return InlineKeyboardMarkup(rows) if rows else None
+    """自动封禁之后：解除封禁（到期后失效）；消息没删掉时再给一个「查看消息」。"""
+    return admin_ban_views.unban_keyboard(chat_id, user_id, until, link)
 
 
 # ---------------------------------------------------------------------------
@@ -188,20 +135,6 @@ def auto_banned_dm(reported: ReportedMessage, count: int, probability: float, *,
     return f"{head}\n\n{_card(reported, count)}"
 
 
-def admin_banned_line(admin_html: str, deleted: bool) -> str:
-    if deleted:
-        return f"✅ {admin_html} 已删除消息并封禁 {BAN_HOURS} 小时。"
-    return f"⚠️ {admin_html} 已封禁 {BAN_HOURS} 小时，但消息没能删除，请手动删除。"
-
-
-ADMIN_BAN_FAILED = "⚠️ 封禁失败，请在群里手动处理。"
-ADMIN_UNBAN_FAILED = "⚠️ 解除封禁失败，请在群里手动处理。"
-
-
-def admin_unbanned_line(admin_html: str) -> str:
-    return f"✅ {admin_html} 已解除封禁，对方可以重新加入群组。"
-
-
 # ---------------------------------------------------------------------------
 # 群里的回复与公告
 # ---------------------------------------------------------------------------
@@ -210,10 +143,6 @@ def admin_unbanned_line(admin_html: str) -> str:
 def vote_offense(sender_html: str, count: int) -> str:
     """凑够票数、AI 确认后的移出公告开头。"""
     return f"{sender_html} 的消息经 {count} 人举报、AI 确认为垃圾信息"
-
-
-def admin_offense(sender_html: str) -> str:
-    return f"{sender_html} 的消息被管理员确认为垃圾信息"
 
 
 def _admins_note(notified: int | None) -> str:

@@ -1,15 +1,19 @@
-"""/report：票数与额度规则、举报流程、管理员私聊按钮（不连网络、不连数据库）。"""
+"""/report：票数与额度规则、举报流程（不连网络、不连数据库）。私聊里的按钮在 test_admin_ban.py。"""
 
 import asyncio
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest, Forbidden
 
 from fogmoe_telegram_bot.core import command_cooldown
-from fogmoe_telegram_bot.features.moderation import report, report_views, spam_strikes
+from fogmoe_telegram_bot.features.moderation import (
+    admin_ban_views,
+    report,
+    report_views,
+    spam_strikes,
+)
 from fogmoe_telegram_bot.features.moderation.operations import report_votes as votes
 from fogmoe_telegram_bot.features.moderation.operations.report_votes import Quota, Stage, VoteStatus
 from fogmoe_telegram_bot.features.moderation.spam_ai import judge
@@ -141,19 +145,6 @@ def test_paid_groups_use_the_ai_check_quota(monkeypatch):
 # ---------------------------------------------------------------------------
 # 展示
 # ---------------------------------------------------------------------------
-
-
-def test_callback_data_round_trips_and_rejects_garbage():
-    assert report_views.parse_action(report_views.ban_data(CHAT_ID, 55, 7)) == report_views.AdminAction(
-        "ban", CHAT_ID, 7, 55
-    )
-    assert report_views.parse_action(report_views.unban_data(CHAT_ID, 7, 1_800_000_000)) == report_views.AdminAction(
-        "unban", CHAT_ID, 7, until=1_800_000_000
-    )
-    for data in (None, "rpt:ban:x:1:2", "rpt:kick:1:2", "rpt:unban:1:2", "spam_help"):
-        assert report_views.parse_action(data) is None
-    assert len(report_views.ban_data(-1001234567890, 2**31, 2**40)) <= 64
-    assert len(report_views.unban_data(-1001234567890, 2**40, 1_800_000_000)) <= 64
 
 
 @pytest.mark.parametrize(
@@ -342,8 +333,8 @@ def test_the_first_report_notifies_admins_once_and_waits_for_more_votes(jev):
     assert [dm.chat_id for dm in bot.dms] == [1, 2]  # 机器人自己不收私聊
     assert "新举报" in bot.dms[0].text and "凑够 2 人举报" in bot.dms[0].text
     buttons = bot.dms[0].markup.inline_keyboard[0]
-    assert [button.text for button in buttons] == ["查看消息", "删除并封禁 24 小时"]
-    assert buttons[1].callback_data == report_views.ban_data(CHAT_ID, 55, SPAMMER.id)
+    assert [button.text for button in buttons] == ["查看消息", "删除并永久封禁"]
+    assert buttons[1].callback_data == admin_ban_views.ban_data(CHAT_ID, SPAMMER.id, 55)
     assert jev.calls == []
 
 
@@ -362,13 +353,13 @@ def test_enough_votes_and_a_spam_verdict_delete_kick_and_ban_for_a_day(jev):
     assert (chat_id, user_id) == (CHAT_ID, SPAMMER.id)
     assert timedelta(hours=23) < until - datetime.now(UTC) <= timedelta(hours=24)
     assert bot.group_posts == [
-        '🚫 <a href="tg://user?id=7">加V领福利</a> 的消息经 2 人举报、AI 确认为垃圾信息，'
+        '🚫 <a href="tg://user?id=7">该用户</a> 的消息经 2 人举报、AI 确认为垃圾信息，'
         "已被移出群组，24 小时内无法重新加入。"
     ]
     assert [dm.chat_id for dm in bot.dms] == [1, 2]
     assert "举报已自动处理" in bot.dms[0].text and "95%" in bot.dms[0].text
     (button,), = bot.dms[0].markup.inline_keyboard
-    action = report_views.parse_action(button.callback_data)
+    action = admin_ban_views.parse_action(button.callback_data)
     assert (button.text, action.kind, action.chat_id, action.user_id) == ("解除封禁", "unban", CHAT_ID, SPAMMER.id)
     assert 23 * 3600 < action.until - datetime.now(UTC).timestamp() <= 24 * 3600
     # 处理过之后的举报只计票
@@ -412,7 +403,7 @@ def test_a_clean_verdict_hands_the_report_to_admins(jev):
     assert replies == ["已收到举报（1/1）。AI 认为这条消息不是垃圾信息，已交给管理员处理。"]
     assert bot.bans == [] and bot.deleted == []
     assert "AI 认为这条消息不是垃圾信息（概率 20%）" in bot.dms[0].text
-    assert bot.dms[0].markup.inline_keyboard[0][1].text == "删除并封禁 24 小时"
+    assert bot.dms[0].markup.inline_keyboard[0][1].text == "删除并永久封禁"
 
 
 @pytest.mark.parametrize(
@@ -482,112 +473,3 @@ def test_messages_sent_as_a_channel_only_notify_admins(jev):
     assert jev.calls == [] and bot.bans == []
     assert len(bot.dms) == 2 and "以频道身份发送" in bot.dms[0].text
     assert [button.text for button in bot.dms[0].markup.inline_keyboard[0]] == ["查看消息"]
-
-
-# ---------------------------------------------------------------------------
-# 管理员私聊里的按钮
-# ---------------------------------------------------------------------------
-
-
-def notice_markup(*datas):
-    return InlineKeyboardMarkup([[InlineKeyboardButton(data, callback_data=data) for data in datas]])
-
-
-def press(bot, data, clicker_id=1, markup=None):
-    """点私聊里的按钮；默认这个按钮就在那条私聊上。"""
-    query = SimpleNamespace(
-        data=data,
-        from_user=user(clicker_id, "管理员"),
-        message=SimpleNamespace(text_html="📣 <b>新举报</b>", reply_markup=markup or notice_markup(data)),
-        answer=Recorder(),
-        edit_message_text=Recorder(),
-        edit_message_reply_markup=Recorder(),
-    )
-    asyncio.run(report.report_admin_callback(SimpleNamespace(callback_query=query), SimpleNamespace(bot=bot)))
-    return query
-
-
-def unban_button(hours_left=12):
-    until = int(datetime.now(UTC).timestamp() + hours_left * 3600)
-    return report_views.unban_data(CHAT_ID, SPAMMER.id, until)
-
-
-def test_buttons_that_are_not_on_the_notice_are_ignored(jev):
-    bot = FakeBot()
-    bot.chat_members[1] = admin(1)
-    forged = report_views.ban_data(CHAT_ID, 77, 42)
-
-    query = press(bot, forged, markup=notice_markup(report_views.ban_data(CHAT_ID, 55, SPAMMER.id)))
-
-    assert query.answer.calls == [((report_views.STALE_BUTTON,), {"show_alert": True})]
-    assert bot.bans == [] and bot.deleted == []
-
-
-def test_an_unban_button_stops_working_once_the_ban_has_expired(jev):
-    bot = FakeBot()
-    bot.chat_members[1] = admin(1)
-
-    data = unban_button(hours_left=-1)
-    link = InlineKeyboardButton("查看消息", url="https://t.me/c/123/55")
-
-    query = press(bot, data, markup=InlineKeyboardMarkup([[link, InlineKeyboardButton("解除封禁", callback_data=data)]]))
-
-    assert query.answer.calls == [((report_views.UNBAN_EXPIRED,), {"show_alert": True})]
-    (), kwargs = query.edit_message_reply_markup.calls[0]
-    assert kwargs["reply_markup"].inline_keyboard == ((link,),)  # 消息还没删时链接留着
-    assert bot.unbans == []
-    assert report_views.without_button(notice_markup(data), data) is None
-
-
-def test_only_admins_who_can_ban_may_press_the_buttons(jev):
-    bot = FakeBot()
-    bot.chat_members[1] = admin(1, restrict=False)
-
-    query = press(bot, report_views.ban_data(CHAT_ID, 55, SPAMMER.id))
-
-    assert query.answer.calls == [(("只有能封禁成员的管理员可以操作。",), {"show_alert": True})]
-    assert bot.bans == [] and query.edit_message_text.calls == []
-
-
-def test_an_admin_can_ban_from_the_notice_and_then_undo_it(jev):
-    bot = FakeBot()
-    bot.chat_members[1] = SimpleNamespace(status="creator", user=user(1, "管理员"))
-    bot.chat_members[SPAMMER.id] = SimpleNamespace(status="member", user=SPAMMER)
-
-    banned = press(bot, report_views.ban_data(CHAT_ID, 55, SPAMMER.id))
-
-    assert bot.deleted == [55] and bot.bans[0][:2] == (CHAT_ID, SPAMMER.id)
-    assert "的消息被管理员确认为垃圾信息" in bot.group_posts[0]
-    (text,), kwargs = banned.edit_message_text.calls[0]
-    assert text.startswith("📣 <b>新举报</b>\n\n✅ ") and "已删除消息并封禁 24 小时" in text
-    unban = kwargs["reply_markup"].inline_keyboard[0][0]
-    assert unban.text == "解除封禁"
-
-    unbanned = press(bot, unban.callback_data)
-
-    assert bot.unbans == [(CHAT_ID, SPAMMER.id, True)]
-    (text,), kwargs = unbanned.edit_message_text.calls[0]
-    assert "已解除封禁" in text and kwargs["reply_markup"] is None
-
-
-def test_a_failed_unban_keeps_the_buttons(jev, monkeypatch):
-    bot = FakeBot()
-    bot.chat_members[1] = admin(1)
-    monkeypatch.setattr(bot, "unban_chat_member", Recorder(errors=[BadRequest("Chat not found")]))
-
-    data = unban_button()
-    markup = notice_markup(data)
-    query = press(bot, data, markup=markup)
-
-    (text,), kwargs = query.edit_message_text.calls[0]
-    assert report_views.ADMIN_UNBAN_FAILED in text and kwargs["reply_markup"] is markup
-
-
-def test_a_ban_from_the_notice_that_could_not_delete_says_so(jev):
-    bot = FakeBot(delete_error=BadRequest("Message can't be deleted"))
-    bot.chat_members[1] = admin(1)
-
-    query = press(bot, report_views.ban_data(CHAT_ID, 55, SPAMMER.id))
-
-    (text,), _ = query.edit_message_text.calls[0]
-    assert bot.bans and "已封禁 24 小时，但消息没能删除，请手动删除" in text

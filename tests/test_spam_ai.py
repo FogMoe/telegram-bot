@@ -10,7 +10,8 @@ from telegram import MessageEntity
 from telegram.error import BadRequest
 
 from fogmoe_telegram_bot.core import balance
-from fogmoe_telegram_bot.features.moderation import spam_control, spam_strikes
+from fogmoe_telegram_bot.features.moderation import admin_ban_views, spam_control, spam_strikes
+from fogmoe_telegram_bot.features.moderation.operations import join_messages
 from fogmoe_telegram_bot.features.moderation.operations import spam_control as spam_rules
 from fogmoe_telegram_bot.features.moderation.repositories.spam_settings import SpamSettings
 from fogmoe_telegram_bot.features.moderation.spam_ai import handlers, judge, operations
@@ -404,12 +405,14 @@ def test_strikes_count_within_a_sliding_window():
 class FakeBot:
     def __init__(self, ban_error=None):
         self.sent = []
+        self.markups = []
         self.bans = []
         self.deleted = []
         self._ban_error = ban_error
 
-    async def send_message(self, chat_id, text, parse_mode=None):
+    async def send_message(self, chat_id, text, parse_mode=None, reply_markup=None):
         self.sent.append(text)
+        self.markups.append(reply_markup)
 
     async def ban_chat_member(self, chat_id, user_id, until_date=None):
         if self._ban_error:
@@ -453,6 +456,8 @@ def penalize(bot, msg):
 def test_the_third_strike_kicks_and_bans_for_a_day(monkeypatch):
     forget = Recorder()
     monkeypatch.setattr(spam_strikes.spam_ai_operations, "forget_member", forget)
+    monkeypatch.setattr(join_messages, "JOINS", join_messages.JoinMessages())
+    join_messages.JOINS.record(-100, 7, 30)
     bot = FakeBot()
 
     for _ in range(3):
@@ -461,10 +466,15 @@ def test_the_third_strike_kicks_and_bans_for_a_day(monkeypatch):
     assert "这是第 1 次警告，1 小时内满 3 次将被移出群组。如果是误判" in bot.sent[0]
     assert "这是第 2 次警告" in bot.sent[1]
     assert bot.sent[2].startswith("🚫") and "24 小时内无法重新加入" in bot.sent[2]
+    # 警告和公告都不显示名字；警告下面带管理员的封禁按钮
+    assert all("小美" not in text and "tg://user?id=7" in text for text in bot.sent)
+    assert bot.markups[0].inline_keyboard[0][0].callback_data == admin_ban_views.ban_data(-100, 7)
+    assert bot.markups[2] is None
     (chat_id, user_id, until), = bot.bans
     assert (chat_id, user_id) == (-100, 7)
     assert timedelta(hours=23) < until - datetime.now(UTC) <= timedelta(hours=24)
     assert forget.calls == [((-100, 7), {})]
+    assert bot.deleted == [30]  # 加群消息也删了
     # 移出后重新计数
     penalize(bot, message())
     assert "这是第 1 次警告" in bot.sent[3]
@@ -478,6 +488,16 @@ def test_basic_groups_do_not_promise_a_rejoin_cooldown(monkeypatch):
         penalize(bot, message(chat_type="group"))
 
     assert bot.sent[2].endswith("已被移出群组。")
+
+
+def test_a_permanent_kick_says_so(monkeypatch):
+    monkeypatch.setattr(spam_strikes.spam_ai_operations, "forget_member", Recorder())
+    bot = FakeBot()
+
+    assert asyncio.run(spam_strikes.kick(bot, -100, 7, "该用户", offense="该用户 的消息被管理员确认为垃圾信息", seconds=None))
+
+    assert bot.bans == [(-100, 7, None)]
+    assert bot.sent == ["🚫 该用户 的消息被管理员确认为垃圾信息，已被移出群组并永久封禁。"]
 
 
 @pytest.mark.parametrize(
@@ -851,6 +871,8 @@ def test_a_global_word_list_hit_only_warns(monkeypatch):
     assert punish.calls == [] and ai.calls == []
     assert "&lt;博彩&gt;</tg-spoiler>，已被自动删除。\n这是第" in bot.sent[0]
     assert "移出群组" in bot.sent[0] and bot.bans == []
+    assert "小美" not in bot.sent[0] and '<a href="tg://user?id=7">该用户</a>' in bot.sent[0]
+    assert bot.markups[0].inline_keyboard[0][0].callback_data == admin_ban_views.ban_data(-100, 7)
 
 
 def test_messages_the_keywords_miss_go_to_the_ai(monkeypatch):
@@ -899,3 +921,5 @@ def test_the_link_filter_catches_hidden_text_links(monkeypatch):
 
     assert bot.deleted == [55]
     assert "<tg-spoiler>https://spam.example/&lt;x&gt;</tg-spoiler>" in bot.sent[0]
+    assert "小美" not in bot.sent[0]
+    assert bot.markups[0].inline_keyboard[0][0].text == admin_ban_views.BAN_LABEL
