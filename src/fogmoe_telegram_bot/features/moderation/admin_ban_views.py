@@ -102,20 +102,25 @@ def admin_offense(sender_html: str) -> str:
     return f"{sender_html} 的消息被管理员确认为垃圾信息"
 
 
-def verify_banned_text(user_id: int, admin_html: str) -> str:
+def _banned(basic_group: bool) -> str:
+    """普通群（非超级群）不执行封禁，被移出的人可以凭邀请链接回来，所以只说移出。"""
+    return "移出群组" if basic_group else "永久封禁"
+
+
+def verify_banned_text(user_id: int, admin_html: str, basic_group: bool = False) -> str:
     """验证消息上按了封禁：整条消息换成这句。"""
-    return f"🚫 {neutral_mention(user_id, '新成员')} 已被 {admin_html} 永久封禁。"
+    return f"🚫 {neutral_mention(user_id, '新成员')} 已被 {admin_html} {_banned(basic_group)}。"
 
 
-def group_banned_line(admin_html: str) -> str:
+def group_banned_line(admin_html: str, basic_group: bool = False) -> str:
     """警告消息上按了封禁：接在原文后面。"""
-    return f"🚫 已被 {admin_html} 永久封禁。"
+    return f"🚫 已被 {admin_html} {_banned(basic_group)}。"
 
 
-def dm_banned_line(admin_html: str, deleted: bool) -> str:
+def dm_banned_line(admin_html: str, deleted: bool, basic_group: bool = False) -> str:
     if deleted:
-        return f"✅ {admin_html} 已删除消息并永久封禁。"
-    return f"⚠️ {admin_html} 已永久封禁，但消息没能删除，请手动删除。"
+        return f"✅ {admin_html} 已删除消息并{_banned(basic_group)}。"
+    return f"⚠️ {admin_html} 已{_banned(basic_group)}，但消息没能删除，请手动删除。"
 
 
 def unbanned_line(admin_html: str) -> str:

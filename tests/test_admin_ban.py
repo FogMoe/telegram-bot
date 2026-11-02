@@ -202,6 +202,18 @@ def test_banning_from_the_verification_message_ends_the_round(monkeypatch):
     assert text == f'🚫 <a href="tg://user?id={SPAMMER_ID}">新成员</a> 已被 <b>管理员</b> 永久封禁。'
 
 
+def test_basic_groups_only_promise_a_removal():
+    # 普通群不执行封禁，被移出的人凭邀请链接就能回来
+    bot = FakeBot()
+
+    query = press(bot, views.ban_data(-4567, SPAMMER_ID))
+    dm = press(bot, views.ban_data(-4567, SPAMMER_ID, 55), chat_type="private")
+
+    assert edited(query)[0].endswith("🚫 已被 <b>管理员</b> 移出群组。")
+    assert edited(dm)[0].endswith("✅ <b>管理员</b> 已删除消息并移出群组。")
+    assert "永久封禁" not in bot.group_posts[0]
+
+
 def test_a_failed_ban_keeps_the_buttons():
     bot = FakeBot(ban_error=BadRequest("Not enough rights to restrict/ban chat member"))
 

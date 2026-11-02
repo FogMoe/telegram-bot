@@ -67,7 +67,7 @@ async def _ban_from_dm(bot: Any, action: AdminAction, admin_html: str, text_html
     if not banned:
         return None
     return (
-        f"{text_html}\n\n{views.dm_banned_line(admin_html, deleted)}",
+        f"{text_html}\n\n{views.dm_banned_line(admin_html, deleted, is_basic_group(action.chat_id))}",
         views.unban_keyboard(action.chat_id, action.user_id),
     )
 
@@ -79,11 +79,12 @@ async def _ban_in_group(
     if await spam_strikes.ban(bot, action.chat_id, action.user_id, seconds=None) is not None:
         return None
     keyboard = views.unban_keyboard(action.chat_id, action.user_id)
+    basic_group = is_basic_group(action.chat_id)
     # 验证消息：结束这一轮验证，免得到点又处理一次；整条消息换成封禁结果
     if await verification.find_round_message(action.user_id, action.chat_id) == message_id:
         await verification.claim_round(action.user_id, action.chat_id, message_id)
-        return views.verify_banned_text(action.user_id, admin_html), keyboard
-    return f"{text_html}\n\n{views.group_banned_line(admin_html)}", keyboard
+        return views.verify_banned_text(action.user_id, admin_html, basic_group), keyboard
+    return f"{text_html}\n\n{views.group_banned_line(admin_html, basic_group)}", keyboard
 
 
 async def _unban(bot: Any, action: AdminAction, admin_html: str, text_html: str) -> tuple[str, None] | None:
