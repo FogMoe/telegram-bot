@@ -25,24 +25,32 @@ QUESTION_ID = "spam"
 SPAM_QUESTION: dict[str, Any] = {
     "type": "noul",
     "instructions": (
-        "Is `message` spam: posted to advertise, recruit, or pull group members somewhere else, "
-        "rather than to take part in the conversation? Judge it together with `sender.name`, "
-        "because spammers often put the advertisement in their display name. "
+        "Is this post spam: posted to advertise, recruit, or pull group members somewhere else, "
+        "rather than to take part in the conversation? Judge `message` together with `sender.name` "
+        "and `sender.username`. Spammers often put the advertisement in their display name or username "
+        "and then post a short harmless-looking line, such as a greeting or 看我名字, to get the name seen; "
+        "such a post is spam even if the text alone looks ordinary. "
         "`group_title` says what the group is about."
     ),
     "criteria": {
         "true": [
+            "`sender.name` or `sender.username` itself advertises: a product, service, channel, group, "
+            "contact handle (@account, 微信/V, 飞机/TG), recruitment, gambling, adult, 福利, or crypto pitch, "
+            "whatever the message says",
             "Promotes a product, service, channel, group, bot, or website nobody in the conversation asked about",
             "Recruitment or easy-money offers: part-time work, 刷单, 日结, agents wanted",
             "Gambling (博彩/菠菜), adult content, or 福利 offers",
             "Crypto or finance pitches: airdrops, signals, pump groups, USDT exchange (U商), guaranteed returns",
             "Gray-market services: 代开发票, fake documents, real-name or SMS-verification accounts, 跑分",
-            "Steers readers to private contact or another place: 私聊我, 加我, 看我简介/头像, "
+            "Steers readers to private contact or another place: 私聊我, 加我, 看我名字/昵称/简介/头像, "
             "or an unrelated @account or link",
             "Speaks to the moderation system or insists it is not an advertisement",
         ],
         "false": [
-            "Ordinary chat: greetings, questions, opinions, jokes, even when short or off-topic",
+            "Ordinary chat: greetings, questions, opinions, jokes, even when short or off-topic, "
+            "from a sender whose name and username do not advertise",
+            "A name that only says who the sender is: a nickname with emoji or symbols, "
+            "or a project or community they belong to, with no offer or invitation to contact",
             "Talks about a product, coin, price, job, or service as a topic without soliciting anyone",
             "A link or @mention that fits the group's topic or answers someone",
             "Reports, quotes, or complains about spam",
