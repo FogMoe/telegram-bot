@@ -125,8 +125,10 @@ class _FakeBot:
 
 
 class _FakeQuery:
-    def __init__(self, data, message_id):
+    def __init__(self, data, message_id, *, fail_answer=False, fail_edit=False):
         self.data = data
+        self.fail_answer = fail_answer
+        self.fail_edit = fail_edit
         self.from_user = SimpleNamespace(id=USER_ID)
         self.message = SimpleNamespace(message_id=message_id)
         self.answers = []
@@ -134,9 +136,13 @@ class _FakeQuery:
         self.deleted = False
 
     async def answer(self, text, show_alert=False):
+        if self.fail_answer:
+            raise RuntimeError("query is too old")
         self.answers.append(text)
 
     async def edit_message_text(self, text, **kwargs):
+        if self.fail_edit:
+            raise RuntimeError("network down")
         self.edits.append((text, kwargs))
 
     async def delete_message(self):
@@ -147,18 +153,18 @@ def _later():
     return datetime.now() + timedelta(minutes=5)
 
 
-def _click(bot, message_id, data="verify_42"):
-    query = _FakeQuery(data, message_id)
+def _click(bot, message_id, data="verify_42", **failures):
+    query = _FakeQuery(data, message_id, **failures)
     update = SimpleNamespace(callback_query=query, effective_chat=SimpleNamespace(id=CHAT_ID))
     asyncio.run(member_verify.verify_callback(update, SimpleNamespace(bot=bot)))
     return query
 
 
-def _play(bot, message_id=2, *, correct=True):
+def _play(bot, message_id=2, *, correct=True, **failures):
     """点这一局当前这道题的格子：correct 时点目标，否则点旁边一格。"""
     game = verify_game.GAMES.get(CHAT_ID, USER_ID, message_id)
     cell = game.target if correct else (game.target + 1) % verify_game.GRID_SIZE
-    return _click(bot, message_id, views.pick_data(USER_ID, game.question, cell))
+    return _click(bot, message_id, views.pick_data(USER_ID, game.question, cell), **failures)
 
 
 def test_starting_shows_the_grid_and_puts_the_target_only_in_the_popup(tasks):
@@ -204,6 +210,33 @@ def test_too_many_mistakes_remove_the_member(tasks):
     assert query.answers == [views.FAILED_ALERT]
     assert bot.edited_texts == [views.FAILED_TEXT] and bot.deleted == [1]
     assert tasks.rows == {}
+
+
+def test_a_failed_popup_still_removes_the_member(tasks):
+    # 第三次答错时弹框发不出去：这一轮已经认领，超时不会再处理，必须照常移出
+    tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
+    bot = _FakeBot()
+    _click(bot, message_id=2)
+    for _ in range(verify_game.MAX_MISTAKES - 1):
+        _play(bot, correct=False)
+
+    _play(bot, correct=False, fail_answer=True)
+
+    assert bot.kicked == [USER_ID] and tasks.rows == {}
+
+
+def test_a_failed_success_edit_does_not_reopen_the_round(tasks):
+    # 已经解除禁言，只是没能把欢迎消息改成「验证通过」：不放回这一轮，也不重新出题
+    tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
+    bot = _FakeBot()
+    _click(bot, message_id=2)
+    for _ in range(verify_game.ROUNDS_TO_PASS - 1):
+        _play(bot)
+
+    query = _play(bot, fail_edit=True)
+
+    assert bot.restricted == [USER_ID] and tasks.rows == {}
+    assert query.answers == [views.PASSED_ALERT]
 
 
 def test_after_a_restart_the_old_grid_starts_a_new_game(tasks):

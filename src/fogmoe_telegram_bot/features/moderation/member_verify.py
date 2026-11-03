@@ -272,9 +272,6 @@ async def pass_verification(query, bot, chat_id, user_id, message_id):
                             can_send_video_notes=True,
                             can_send_voice_notes=True,)
         )
-        verify_game.GAMES.drop(chat_id, user_id, message_id)
-        await query.edit_message_text(views.PASSED_TEXT)
-        await query.answer(views.PASSED_ALERT, show_alert=True)
     except Exception as e:
         # 放回这一轮的记录：这一局仍算通过，用户可以再点一次，一直没通过的照常按超时处理
         await verification.open_round(user_id, chat_id, message_id)
@@ -289,6 +286,14 @@ async def pass_verification(query, bot, chat_id, user_id, message_id):
                 f"请检查机器人的管理员权限与网络。\n{notice}"
             )
         await query.answer(views.UNMUTE_FAILED, show_alert=True)
+        return
+    # 已经解除禁言：之后改消息、弹框失败都只记一笔，不再放回这一轮
+    verify_game.GAMES.drop(chat_id, user_id, message_id)
+    try:
+        await query.edit_message_text(views.PASSED_TEXT)
+    except Exception as e:
+        print(f"编辑验证消息出错: {e}")
+    await answer_alert(query, views.PASSED_ALERT)
 
 # 答错次数用完：认领这一轮验证并移出群组（不封禁）
 async def fail_verification(query, bot, chat_id, user_id, message_id):
@@ -296,8 +301,16 @@ async def fail_verification(query, bot, chat_id, user_id, message_id):
     if not await verification.claim_round(user_id, chat_id, message_id):
         await query.answer(views.STALE, show_alert=True)
         return
-    await query.answer(views.FAILED_ALERT, show_alert=True)
+    # 这一轮已经认领，超时不会再处理：弹框失败也要照常移出
+    await answer_alert(query, views.FAILED_ALERT)
     await remove_unverified(bot, chat_id, user_id, message_id, views.FAILED_TEXT)
+
+# 弹框失败（网络出错、回调已过期）只记一笔，不打断验证本身的处理
+async def answer_alert(query, text):
+    try:
+        await query.answer(text, show_alert=True)
+    except Exception as e:
+        print(f"回应验证按钮出错: {e}")
 
 # 这一轮验证已经不在（已处理，或重新入群后换成了新的欢迎消息）：删掉这条旧的欢迎消息
 async def answer_stale(query):
