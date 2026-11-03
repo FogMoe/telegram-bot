@@ -45,7 +45,7 @@ HELP_TEXT = (
     "• 每个群组最多可设置10个自定义垃圾词\n"
     "• 有自定义垃圾词时，全局垃圾词库将不生效\n"
     "• 管理员发送的消息不会被检测\n"
-    "• 图片和视频的说明文字也会被检测\n"
+    "• 图片和视频的说明文字、消息下面按钮上的文字和链接也会被检测\n"
     f"• {spam_strikes.WINDOW_TEXT}因自定义垃圾词或 AI 识别被删除 {spam_strikes.STRIKES_TO_KICK} 条消息的成员会被移出群组，"
     f"{spam_strikes.BAN_SECONDS // 3600} 小时内无法重新加入（需要机器人有封禁成员的权限）；全局垃圾词库命中只警告\n"
     f"• AI 识别每 {spam_ai_operations.PERIOD_DAYS} 天 {spam_ai_operations.PERIOD_PRICE} 金币，"

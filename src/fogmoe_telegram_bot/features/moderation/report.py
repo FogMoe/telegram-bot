@@ -43,10 +43,13 @@ def can_act(member: Any) -> bool:
 
 def reported_message(message: Message) -> ReportedMessage:
     chat = message.chat
-    if message.sender_chat is not None:
-        sender_id, sender_html = None, html.escape(message.sender_chat.title or "某频道")
+    # 访客 bot 的回复算 @ 它的人（或频道）发的
+    chat_sender = spam_strikes.sender_chat(message)
+    if chat_sender is not None:
+        sender_id, sender_html = None, html.escape(chat_sender.title or "某频道")
     else:
-        sender_id, sender_html = message.from_user.id, message.from_user.mention_html()
+        sender = spam_strikes.sender_user(message)
+        sender_id, sender_html = sender.id, sender.mention_html()
     return ReportedMessage(
         chat_id=chat.id,
         chat_title=chat.title or "",
@@ -117,12 +120,15 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     reporter = message.from_user
+    # 访客 bot 的回复算 @ 它的人（或频道）发的，举报的是那个人
+    chat_sender = spam_strikes.sender_chat(target)
+    sender = spam_strikes.sender_user(target)
     refusal = None
-    if target.sender_chat is not None and target.sender_chat.id == chat.id:
+    if chat_sender is not None and chat_sender.id == chat.id:
         refusal = views.ADMIN  # 匿名管理员以群的身份发言
-    elif target.sender_chat is None and (target.from_user is None or target.from_user.is_bot):
+    elif chat_sender is None and (sender is None or sender.is_bot):
         refusal = views.BOT
-    elif target.sender_chat is None and target.from_user.id == reporter.id:
+    elif chat_sender is None and sender.id == reporter.id:
         refusal = views.SELF
     elif votes.too_old(target.date):
         refusal = views.TOO_OLD
@@ -136,7 +142,7 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.error("举报：获取群 %s 的管理员失败: %s", chat.id, exc)
         await message.reply_text(views.LOOKUP_FAILED)
         return
-    if target.sender_chat is None and any(admin.user.id == target.from_user.id for admin in admins):
+    if chat_sender is None and any(admin.user.id == sender.id for admin in admins):
         await message.reply_text(views.ADMIN)
         return
     admin_ids = [admin.user.id for admin in admins if not admin.user.is_bot]

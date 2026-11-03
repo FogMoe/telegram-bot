@@ -20,6 +20,9 @@ REQUEST_TIMEOUT_SECONDS = 5
 # 正文与被回复消息的截断长度，防止长文拉高 token 费用
 MAX_TEXT_CHARS = 2000
 MAX_REPLY_CHARS = 200
+# 按钮与隐藏链接最多带这么多个，按钮文字截断到这个长度
+MAX_LIST_ITEMS = 10
+MAX_BUTTON_CHARS = 64
 QUESTION_ID = "spam"
 
 SPAM_QUESTION: dict[str, Any] = {
@@ -71,8 +74,10 @@ class MessageForReview:
     sender_username: str | None = None
     group_title: str | None = None
     forwarded_from: str | None = None  # 转发来源的名字（频道、群或用户）
-    hidden_links: tuple[str, ...] = ()  # 文字链接背后的网址，正文里看不到
+    hidden_links: tuple[str, ...] = ()  # 文字链接与按钮背后的网址，正文里看不到
     reply_to_text: str | None = None
+    via_bot: str | None = None  # 经哪个 inline bot 发出（bot 的 username）
+    buttons: tuple[str, ...] = ()  # 消息下面按钮上的文字
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,8 +105,10 @@ def build_state(message: MessageForReview) -> dict[str, Any]:
             "text": _truncate(message.text, MAX_TEXT_CHARS),
             "is_caption": message.is_caption,
             "forwarded_from": message.forwarded_from,
-            "hidden_links": list(message.hidden_links),
+            "hidden_links": list(message.hidden_links[:MAX_LIST_ITEMS]),
             "reply_to_text": _truncate(message.reply_to_text, MAX_REPLY_CHARS),
+            "via_bot": message.via_bot,
+            "buttons": [_truncate(label, MAX_BUTTON_CHARS) for label in message.buttons[:MAX_LIST_ITEMS]],
         },
     }
 

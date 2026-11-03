@@ -202,12 +202,23 @@ async def spam_ai_command(
 # ---------------------------------------------------------------------------
 
 
+def _buttons(message: Message) -> list[Any]:
+    """消息下面的按钮。普通成员发不出带按钮的消息，只有经 inline bot 发的或者转发来的才有。"""
+    keyboard = getattr(message.reply_markup, "inline_keyboard", None) or ()
+    return [button for row in keyboard for button in row]
+
+
 def hidden_links(message: Message) -> tuple[str, ...]:
-    """文字链接背后的网址（正文里看不到）。"""
+    """正文里看不到的网址：文字链接背后的，和按钮上的（inline bot 发的广告常把链接放在按钮上）。"""
     entities = message.caption_entities if message.caption else message.entities
-    return tuple(
+    text_links = tuple(
         entity.url for entity in entities or () if entity.type == MessageEntity.TEXT_LINK and entity.url
     )
+    return text_links + tuple(button.url for button in _buttons(message) if button.url)
+
+
+def button_labels(message: Message) -> tuple[str, ...]:
+    return tuple(button.text for button in _buttons(message) if button.text)
 
 
 def _origin_name(message: Message) -> str | None:
@@ -224,10 +235,16 @@ def _origin_name(message: Message) -> str | None:
     return str(hidden_name) if hidden_name else "未知来源"
 
 
+def _posting_bot(message: Message) -> str | None:
+    """消息是经哪个 bot 发出的：成员用的 inline bot，或者被 @ 出来回复的访客 bot。"""
+    bot = message.via_bot or (message.from_user if message.guest_bot_caller_user else None)
+    return bot.username if bot is not None else None
+
+
 def review_input(message: Message) -> judge.MessageForReview:
     reply = message.reply_to_message
     reply_text = (reply.text or reply.caption) if reply is not None else None
-    user = message.from_user
+    user = spam_strikes.sender_user(message)
     return judge.MessageForReview(
         text=message.text or message.caption or "",
         is_caption=message.text is None,
@@ -237,15 +254,15 @@ def review_input(message: Message) -> judge.MessageForReview:
         forwarded_from=_origin_name(message),
         hidden_links=hidden_links(message),
         reply_to_text=reply_text,
+        via_bot=_posting_bot(message),
+        buttons=button_labels(message),
     )
 
 
 def should_review(message: Message) -> bool:
-    """只检查真人以个人身份发的消息：频道自动转发、以频道或群身份发言、机器人的消息都不检查。"""
-    if message.is_automatic_forward or message.sender_chat is not None:
-        return False
-    user = message.from_user
-    return user is not None and not user.is_bot
+    """只检查算在真人头上的消息：频道自动转发、以频道或群身份发言、机器人自己发的消息都不检查；
+    访客 bot 的回复算 @ 它的人发的。"""
+    return not message.is_automatic_forward and spam_strikes.strike_target(message) is not None
 
 
 async def maybe_review(message: Message, bot: Any) -> None:
@@ -253,7 +270,7 @@ async def maybe_review(message: Message, bot: Any) -> None:
     if not judge.is_configured() or not should_review(message):
         return
     chat_id = message.chat_id
-    user_id = message.from_user.id
+    user_id = spam_strikes.sender_user(message).id
     if operations.is_exempt(chat_id, user_id):
         return
     if not await operations.is_checking(chat_id):
@@ -263,7 +280,7 @@ async def maybe_review(message: Message, bot: Any) -> None:
 
 async def review_message(message: Message, bot: Any) -> None:
     chat_id = message.chat_id
-    user_id = message.from_user.id
+    user_id = spam_strikes.sender_user(message).id
     if not await operations.needs_review(chat_id, user_id):
         return
     if not operations.take_daily_check(chat_id):

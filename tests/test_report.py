@@ -250,6 +250,9 @@ def target(*, sender=SPAMMER, sender_chat=None, hours_ago=1, message_id=55):
         forward_origin=None,
         reply_to_message=None,
         is_automatic_forward=False,
+        reply_markup=None,
+        via_bot=None,
+        guest_bot_caller_user=None,
     )
 
 
@@ -394,6 +397,19 @@ def test_a_small_group_acts_on_the_first_report_with_a_single_admin_message(jev)
     assert all("举报已自动处理" in dm.text for dm in bot.dms)
 
 
+def test_a_guest_bot_reply_is_reported_as_the_message_of_the_member_who_called_it(jev):
+    bot = FakeBot(members=40)
+    reported = target(sender=user(900, "Dhm 9ecded5d Bot", is_bot=True))
+    reported.guest_bot_caller_user = SPAMMER
+
+    run_report(bot, 11, reported)
+
+    assert bot.deleted == [55]
+    assert [ban[1] for ban in bot.bans] == [SPAMMER.id]
+    (review,), _ = jev.calls[0]
+    assert review.sender_name == "加V领福利"
+
+
 def test_a_clean_verdict_hands_the_report_to_admins(jev):
     jev.set(0.2)
     bot = FakeBot(members=40)
@@ -473,3 +489,13 @@ def test_messages_sent_as_a_channel_only_notify_admins(jev):
     assert jev.calls == [] and bot.bans == []
     assert len(bot.dms) == 2 and "以频道身份发送" in bot.dms[0].text
     assert [button.text for button in bot.dms[0].markup.inline_keyboard[0]] == ["查看消息"]
+
+
+def test_a_guest_bot_called_as_a_channel_only_notifies_admins(jev):
+    bot = FakeBot(members=40)
+    reported = target(sender=user(900, "Dhm 9ecded5d Bot", is_bot=True))
+    reported.guest_bot_caller_chat = SimpleNamespace(id=-100999, title="福利频道")
+
+    assert run_report(bot, 11, reported) == ["已收到举报。已通知管理员。这条消息是以频道身份发送的，不会自动处理。"]
+    assert jev.calls == [] and bot.bans == []
+    assert "福利频道" in bot.dms[0].text

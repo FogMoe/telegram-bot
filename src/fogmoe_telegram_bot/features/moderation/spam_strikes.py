@@ -65,11 +65,22 @@ class StrikeTracker:
 TRACKER = StrikeTracker(STRIKE_WINDOW_SECONDS)
 
 
+def sender_user(message: Any) -> Any:
+    """消息算在谁头上。访客 bot（Bot API 10.0 的 Guest Mode：不在群里，被人 @ 一次就能回复一次）的回复
+    算在 @ 它的人头上，其余是发送者本人。"""
+    return getattr(message, "guest_bot_caller_user", None) or getattr(message, "from_user", None)
+
+
+def sender_chat(message: Any) -> Any:
+    """以频道或群的身份发言时的那个频道或群；访客 bot 的回复看 @ 它的是不是频道或群。"""
+    return getattr(message, "sender_chat", None) or getattr(message, "guest_bot_caller_chat", None)
+
+
 def strike_target(message: Any) -> int | None:
-    """要处罚的用户；以频道或群的身份发言、或者机器人发的消息没有可以处罚的个人，返回 None。"""
-    if getattr(message, "sender_chat", None) is not None:
+    """要处罚的用户；以频道或群的身份发言、或者机器人自己发的消息没有可以处罚的个人，返回 None。"""
+    if sender_chat(message) is not None:
         return None
-    user = getattr(message, "from_user", None)
+    user = sender_user(message)
     if user is None or user.is_bot:
         return None
     return int(user.id)
@@ -77,9 +88,9 @@ def strike_target(message: Any) -> int | None:
 
 def sender_html(message: Any) -> str:
     """群里提到发送者时的写法：不显示名字或频道名（广告号的名字本身就是广告），点开仍能看到是谁。"""
-    if getattr(message, "sender_chat", None) is not None:
+    if sender_chat(message) is not None:
         return "该频道"
-    return admin_ban_views.neutral_mention(message.from_user.id)
+    return admin_ban_views.neutral_mention(sender_user(message).id)
 
 
 async def _send(bot: Any, chat_id: int, text: str, reply_markup: Any = None) -> None:
