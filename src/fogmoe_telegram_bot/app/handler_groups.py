@@ -32,6 +32,7 @@ from fogmoe_telegram_bot.features.economy import (
 )
 from fogmoe_telegram_bot.features.economy.coins import give_command, lottery_command, rich_command
 from fogmoe_telegram_bot.features.games import gamble, omikuji, rockpaperscissors_game, rpg, sicbo
+from fogmoe_telegram_bot.features.guest import handlers as guest
 from fogmoe_telegram_bot.features.media import music, pic
 from fogmoe_telegram_bot.features.moderation import (
     admin_ban,
@@ -49,6 +50,10 @@ from .error_handler import error_handler
 
 def register_error_handlers(application) -> None:
     application.add_error_handler(error_handler)
+
+
+def register_guest_handlers(application) -> None:
+    guest.setup_guest_handlers(application)
 
 
 def register_history_handlers(application) -> None:

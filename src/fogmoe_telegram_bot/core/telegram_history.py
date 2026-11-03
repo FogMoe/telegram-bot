@@ -15,9 +15,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from telegram import Update
-from telegram.ext import ExtBot
 
 from . import config, group_chat_history, mysql_connection, redaction
+from .guest_replies import GuestReplyExtBot
 from .prompt_utils import format_metadata_attrs, remove_xml_tags, xml_escape
 from .telegram_utils import describe_message_for_context
 
@@ -691,8 +691,8 @@ async def _record_callback_answer(
     await _persist_event(context.user_id, content, bot)
 
 
-class HistoryTrackingExtBot(ExtBot):
-    """记录成功发送到 Telegram 的可见 Bot 消息。"""
+class HistoryTrackingExtBot(GuestReplyExtBot):
+    """记录成功发送到 Telegram 的可见 Bot 消息；guest 回复的改写在 `GuestReplyExtBot`。"""
 
     async def _send_and_record(self, operation: Any) -> Any:
         result = await operation

@@ -1,5 +1,6 @@
 import logging
 
+from telegram import Update
 from telegram.ext import Application, ApplicationBuilder
 from telegram.request import HTTPXRequest
 
@@ -9,6 +10,15 @@ from fogmoe_telegram_bot.features.conversation.lifecycle import post_init
 
 from . import runtime_lifecycle
 from .handler_registry import register_handlers
+
+# 与 Telegram 的默认一致（不收 chat_member 和两种 reaction），但显式列出：不传时 Telegram 沿用上次
+# 设置过的列表，那份列表可能没有 guest_message 这类新类型。
+ALLOWED_UPDATES = [
+    update_type
+    for update_type in Update.ALL_TYPES
+    if update_type
+    not in (Update.CHAT_MEMBER, Update.MESSAGE_REACTION, Update.MESSAGE_REACTION_COUNT)
+]
 
 
 class BotApplication(Application):  # type: ignore[type-arg]
@@ -86,6 +96,9 @@ def create_application(
 def run() -> None:
     application = create_application()
     try:
-        application.run_polling(timeout=config.TELEGRAM_GET_UPDATES_TIMEOUT)
+        application.run_polling(
+            timeout=config.TELEGRAM_GET_UPDATES_TIMEOUT,
+            allowed_updates=ALLOWED_UPDATES,
+        )
     except KeyboardInterrupt:
         logging.info("Bot shutdown requested by keyboard interrupt.")
