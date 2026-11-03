@@ -2,7 +2,7 @@
 
 只有群主和能封禁成员的管理员能点。管理员手动封禁是永久的（自动处罚是 24 小时），封禁时一并删掉对方的加群消息；
 从举报私聊里封禁还会删掉被举报的消息，并在群里发移出公告。在群里的按钮上封禁时，改写那条消息本身，不另发公告。
-「原文」用回调弹框显示被自动删除的消息，只有点的人看得到；原文在 `operations/deleted_messages.py`。
+「原文」用回调弹框显示被自动删除的消息，只有点的人看得到，也不记进对方的 AI 对话记录；原文在 `operations/deleted_messages.py`。
 
 按钮与文案在 `admin_ban_views.py`，封禁本身在 `spam_strikes.ban` / `spam_strikes.kick`。
 """
@@ -18,6 +18,7 @@ from telegram.constants import ParseMode
 from telegram.error import TelegramError
 from telegram.ext import CallbackQueryHandler, ContextTypes
 
+from fogmoe_telegram_bot.core.telegram_history import suppress_telegram_history
 from fogmoe_telegram_bot.features.moderation import admin_ban_views as views
 from fogmoe_telegram_bot.features.moderation import spam_strikes
 from fogmoe_telegram_bot.features.moderation.admin_ban_views import AdminAction
@@ -128,7 +129,9 @@ async def admin_ban_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     if action.kind == "view":
         original = deleted_messages.ORIGINALS.get(action.chat_id, action.message_id)
-        await query.answer(views.original_popup(original), show_alert=True)
+        # 弹框默认会记进点按钮的人的 AI 对话记录；原文只给管理员看一眼，不能借此存进数据库
+        with suppress_telegram_history():
+            await query.answer(views.original_popup(original), show_alert=True)
         return
 
     admin_html = query.from_user.mention_html()

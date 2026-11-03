@@ -8,6 +8,7 @@ import pytest
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
 
+from fogmoe_telegram_bot.core import telegram_history
 from fogmoe_telegram_bot.features.moderation import admin_ban, spam_strikes
 from fogmoe_telegram_bot.features.moderation import admin_ban_views as views
 from fogmoe_telegram_bot.features.moderation.operations import deleted_messages, join_messages
@@ -85,7 +86,7 @@ def markup_with(*datas, link=None):
     return InlineKeyboardMarkup([row])
 
 
-def press(bot, data, *, chat_type="supergroup", message_id=90, markup=None, text_html="⚠️ 注意: 警告"):
+def press(bot, data, *, chat_type="supergroup", message_id=90, markup=None, text_html="⚠️ 注意: 警告", answer=None):
     query = SimpleNamespace(
         data=data,
         from_user=SimpleNamespace(id=ADMIN_ID, mention_html=lambda: "<b>管理员</b>"),
@@ -95,7 +96,7 @@ def press(bot, data, *, chat_type="supergroup", message_id=90, markup=None, text
             text_html=text_html,
             reply_markup=markup or markup_with(data),
         ),
-        answer=Recorder(),
+        answer=answer or Recorder(),
         edit_message_text=Recorder(),
         edit_message_reply_markup=Recorder(),
     )
@@ -164,6 +165,21 @@ def test_originals_can_be_viewed_again_until_they_expire():
     assert originals.get(CHAT_ID, 56) is None
     now[0] = deleted_messages.KEEP_SECONDS
     assert originals.get(CHAT_ID, 55) is None
+
+
+def test_a_full_store_drops_only_the_oldest_originals(monkeypatch):
+    monkeypatch.setattr(deleted_messages, "MAX_ENTRIES", 2)
+    now = [0.0]
+    originals = deleted_messages.DeletedMessages(clock=lambda: now[0])
+    for message_id in (55, 56):
+        originals.record(CHAT_ID, message_id, f"广告 {message_id}")
+    originals.record(CHAT_ID, 55, "改过的广告 55")  # 重新记下的算最新的
+
+    originals.record(CHAT_ID, 57, "广告 57")
+
+    assert originals.get(CHAT_ID, 56) is None
+    assert originals.get(CHAT_ID, 55) == "改过的广告 55"
+    assert originals.get(CHAT_ID, 57) == "广告 57"
 
 
 def test_originals_are_clipped_to_fit_the_popup():
@@ -257,6 +273,20 @@ def test_viewing_the_original_shows_it_only_to_the_admin_who_pressed():
 
     assert query.answer.calls == [(("加我领福利",), {"show_alert": True})]
     assert query.edit_message_text.calls == [] and bot.group_posts == [] and bot.bans == []
+
+
+def test_the_original_never_reaches_the_admins_ai_history():
+    # 弹框平时会记进点按钮的人的 AI 对话记录，原文不能借此存下来
+    deleted_messages.ORIGINALS.record(CHAT_ID, 55, "加我领福利")
+    suppressed = []
+
+    async def answer(*args, **kwargs):
+        suppressed.append(telegram_history._CAPTURE_SUPPRESSED.get())
+
+    press(FakeBot(), views.view_data(CHAT_ID, 55), answer=answer)
+
+    assert suppressed == [True]
+    assert telegram_history._CAPTURE_SUPPRESSED.get() is False
 
 
 @pytest.mark.parametrize(("original", "popup"), [(None, views.ORIGINAL_GONE), ("", views.ORIGINAL_EMPTY)], ids=["gone", "empty"])

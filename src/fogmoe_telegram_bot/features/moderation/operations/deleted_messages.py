@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 
 KEEP_SECONDS = 24 * 3600
-# 记录超过这个数时先清掉过期的，还是太多就整体清空
+# 记录满这个数时丢掉最早记下的，其余的照常保留到期
 MAX_ENTRIES = 20_000
 # Telegram 回调弹框最多 200 个字符（按 UTF-16 计）
 POPUP_LIMIT = 200
@@ -41,11 +41,15 @@ class DeletedMessages:
 
     def record(self, chat_id: int, message_id: int, text: str) -> None:
         now = self._clock()
-        if len(self._items) >= MAX_ENTRIES:
-            self._items = {key: item for key, item in self._items.items() if now - item[0] < KEEP_SECONDS}
-            if len(self._items) >= MAX_ENTRIES:
-                self._items.clear()
-        self._items[(chat_id, message_id)] = (now, clip(text))
+        key = (chat_id, message_id)
+        # 重新记下的排到最后，字典的顺序就是记录时间的顺序：从头清掉过期的，满了再丢最早的
+        self._items.pop(key, None)
+        while self._items:
+            oldest = next(iter(self._items))
+            if len(self._items) < MAX_ENTRIES and now - self._items[oldest][0] < KEEP_SECONDS:
+                break
+            del self._items[oldest]
+        self._items[key] = (now, clip(text))
 
     def get(self, chat_id: int, message_id: int) -> str | None:
         """原文（可以反复查看）；没有记录或已经过期时返回 None。"""
