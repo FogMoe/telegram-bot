@@ -1001,6 +1001,30 @@ def test_turning_the_filter_off_says_whether_the_ai_check_keeps_running(ai_runni
     assert ("AI 识别不受影响，仍在运行；如需暂停，使用 /spam ai off。" in text) is extra
 
 
+def test_turning_the_filter_off_still_succeeds_when_the_ai_status_cannot_be_read(monkeypatch):
+    async def is_enabled(chat_id):
+        return True
+
+    set_enabled = Recorder()
+    monkeypatch.setattr(spam_rules, "is_enabled", is_enabled)
+    monkeypatch.setattr(spam_rules, "set_enabled", set_enabled)
+    monkeypatch.setattr(handlers, "is_running", Recorder(errors=[RuntimeError("db down")]))
+    reply = Recorder()
+    member = SimpleNamespace(status="administrator", can_delete_messages=True)
+    update = SimpleNamespace(
+        message=SimpleNamespace(reply_text=reply),
+        effective_chat=SimpleNamespace(id=-100, type="supergroup"),
+        effective_user=SimpleNamespace(id=7),
+    )
+    context = SimpleNamespace(args=[], bot=SimpleNamespace(id=1, get_chat_member=Recorder(result=member)))
+
+    asyncio.run(spam_control.toggle_spam_control.__wrapped__(update, context))
+
+    # 总开关已经关掉：读不到 AI 状态只是少提醒一句，不能报告失败，免得管理员重试又把它打开
+    assert set_enabled.calls == [((-100, 7, False), {})]
+    assert [args[0] for args, _ in reply.calls] == [spam_control_views.DISABLED_TEXT]
+
+
 @pytest.mark.parametrize(
     ("text", "link"),
     [

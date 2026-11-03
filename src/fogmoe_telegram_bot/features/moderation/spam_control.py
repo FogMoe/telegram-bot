@@ -113,11 +113,21 @@ async def toggle_spam_control(update: Update, context: ContextTypes.DEFAULT_TYPE
                 reply_markup=views.help_keyboard(),
             )
         else:
-            ai_running = await spam_ai_handlers.is_running(chat_id)
-            await update.message.reply_text(views.disabled_text(ai_running), parse_mode=ParseMode.MARKDOWN)
+            await update.message.reply_text(
+                views.disabled_text(await _ai_still_running(chat_id)), parse_mode=ParseMode.MARKDOWN
+            )
     except Exception as e:
         notice = report_error(logger, "更新垃圾信息过滤状态时出错", e)
         await update.message.reply_text(f"操作失败，请稍后再试。\n{notice}")
+
+
+async def _ai_still_running(chat_id: int) -> bool:
+    """关掉总开关之后 AI 识别是否还在运行，只用来多提醒一句；总开关已经关掉了，读不到状态时不提，不当作操作失败。"""
+    try:
+        return await spam_ai_handlers.is_running(chat_id)
+    except Exception:
+        logger.exception("读取群 %s 的 AI 识别状态失败", chat_id)
+        return False
 
 
 async def _blocking_command(update: Update, context: ContextTypes.DEFAULT_TYPE, sub_command, args):
