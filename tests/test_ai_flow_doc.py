@@ -9,6 +9,7 @@ import functools
 import importlib.util
 import re
 import sys
+import tokenize
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -58,9 +59,15 @@ def _prose(text: str) -> str:
 
 @functools.cache
 def _source_words() -> frozenset[str]:
+    """源码里的标识符与字符串里的词（表名、事件名在字符串里）；注释不算，改名后留在注释里的旧名不会蒙混过关。"""
     words: set[str] = set()
     for path in PACKAGE_DIR.rglob("*.py"):
-        words.update(re.findall(r"\w+", path.read_text(encoding="utf-8")))
+        with path.open("rb") as source:
+            for token in tokenize.tokenize(source.readline):
+                if token.type == tokenize.NAME:
+                    words.add(token.string)
+                elif token.type in (tokenize.STRING, tokenize.FSTRING_MIDDLE):
+                    words.update(re.findall(r"\w+", token.string))
     return frozenset(words)
 
 

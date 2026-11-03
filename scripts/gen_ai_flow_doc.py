@@ -24,9 +24,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# 不读开发者的 .env：生成结果只取决于代码。必须在 import 项目模块之前设置。
-os.environ.setdefault("BOT_ENV_FILE", "")
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOC_PATH = REPO_ROOT / "docs" / "ai-conversation-flow.md"
 HTML_PATH = REPO_ROOT / "docs" / "ai-conversation-flow.html"
@@ -249,6 +246,9 @@ def tool_catalog() -> list[CatalogTool]:
                 order.append(name)
                 functions[name] = function
                 handlers[name] = agent_handlers[name]
+            elif function != functions[name] or agent_handlers[name] is not handlers[name]:
+                # 目录每个工具只占一行；agent 之间的版本不同时，需要先决定目录怎么呈现。
+                raise ValueError(f"tool {name!r} differs between agents; the catalog shows one row")
             agents.setdefault(name, []).append(agent)
     return [CatalogTool(name, functions[name], handlers[name], tuple(agents[name])) for name in order]
 
@@ -351,6 +351,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true", help="只检查，不写回")
     args = parser.parse_args(argv)
+
+    # 不读任何 env 文件（包括 shell 里 BOT_ENV_FILE 指向的）：生成结果只取决于代码。
+    # 项目模块都在函数里延迟 import，所以在这里设置仍然早于配置加载；测试里由 conftest 负责。
+    os.environ["BOT_ENV_FILE"] = ""
 
     stale = False
     for path, render_target in TARGETS:
