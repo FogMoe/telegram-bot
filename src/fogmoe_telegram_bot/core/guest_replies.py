@@ -10,6 +10,9 @@ bot 不在召唤它的聊天里，`sendMessage` 发不进去：只能用 `answer
 
 发往别的聊天（例如私聊调用者）的请求照常发出。拦在 `_do_post` 是因为所有 Bot 方法都经过它，
 且这时默认值已经填好；PTB 的 `ExtBot` 也在这一层做限流。
+
+Telegram 文档没写 guest 回复能否凭 `inline_message_id` 编辑，测试里的编辑是替身，还没有真机验证。
+目前的自我介绍只发一条、不编辑；把会发多条或会编辑的功能接进来之前，先在真机上召唤一次并编辑确认。
 """
 
 from __future__ import annotations
