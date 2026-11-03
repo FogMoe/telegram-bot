@@ -1,21 +1,24 @@
 """`/verify` 与新成员验证：Telegram 适配层。
 
-禁言、发欢迎消息与验证按钮、解除禁言或移出群组；开关、每一轮验证的记录与认领在 `operations/member_verify.py`。
+禁言、发欢迎消息、点【开始验证】后把欢迎消息换成九宫格小游戏、解除禁言或移出群组；开关、每一轮验证的记录与认领在
+`operations/member_verify.py`，出题与判题在 `operations/verify_game.py`，文案与按钮在 `member_verify_views.py`。
 群里的消息不显示新成员的名字（广告号的名字本身就是广告）；验证没通过时删掉加群消息，机器人移出成员产生的
 系统消息也删掉。欢迎消息上的管理员封禁按钮由 `admin_ban.py` 处理。
 """
 
 import logging
 
-from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import ChatPermissions, Update
 from telegram.constants import ChatMemberStatus
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.redaction import report_error
-from fogmoe_telegram_bot.features.moderation import admin_ban_views, spam_strikes
-from fogmoe_telegram_bot.features.moderation.operations import join_messages
+from fogmoe_telegram_bot.features.moderation import member_verify_views as views
+from fogmoe_telegram_bot.features.moderation import spam_strikes
+from fogmoe_telegram_bot.features.moderation.operations import join_messages, verify_game
 from fogmoe_telegram_bot.features.moderation.operations import member_verify as verification
+from fogmoe_telegram_bot.features.moderation.operations.verify_game import Outcome
 
 # 恢复任务的周期：重启后第一次在 RECOVERY_FIRST_SECONDS 秒后运行，之后每隔 RECOVERY_INTERVAL 秒。
 RECOVERY_INTERVAL = 30
@@ -70,7 +73,11 @@ async def verify_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     context.chat_data["enable_verify"] = True
     await verification.enable(chat_id, update.effective_chat.title)
-    await update.message.reply_text("新成员验证功能已开启。新成员加入时将被禁言并要求点击【验证】按钮验证，5分钟内有效。")
+    await update.message.reply_text(
+        f"新成员验证功能已开启。新成员加入时将被禁言，需要在 {verification.VERIFY_SECONDS // 60} 分钟内"
+        f"点【开始验证】，在九宫格里连续 {verify_game.ROUNDS_TO_PASS} 次点对弹框提示的图标才能发言；"
+        f"答错 {verify_game.MAX_MISTAKES} 次或超时会被移出群组。"
+    )
 
 # 新成员加入事件处理
 async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -128,18 +135,10 @@ async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 )
             continue
 
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("点击验证", callback_data=f"verify_{user_id}"),
-                admin_ban_views.ban_button(chat_id, user_id),
-            ]
-        ])
-
-        # 发送欢迎信息，包含验证按钮；不显示名字
+        # 发送欢迎信息，包含开始验证按钮；不显示名字
         welcome_msg = await update.message.reply_text(
-            f"欢迎 {admin_ban_views.neutral_mention(user_id, '新成员')} 加入群组！"
-            "请点击【验证】按钮进行验证（5分钟内有效）。",
-            reply_markup=keyboard,
+            views.welcome_text(user_id),
+            reply_markup=views.welcome_keyboard(chat_id, user_id),
             parse_mode="HTML"
         )
         await verification.open_round(user_id, chat_id, welcome_msg.message_id)
@@ -155,6 +154,11 @@ async def expire_verification(bot, chat_id, user_id, message_id):
     # 已验证、已离群或已被新一轮取代时，这一轮的记录已经不在
     if not await verification.claim_round(user_id, chat_id, message_id):
         return
+    verify_game.GAMES.drop(chat_id, user_id, message_id)
+    await remove_unverified(bot, chat_id, user_id, message_id, views.TIMEOUT_TEXT)
+
+# 已认领的一轮验证没通过：移出仍被禁言的成员，删掉加群消息，欢迎消息换成 text
+async def remove_unverified(bot, chat_id, user_id, message_id, text):
     try:
         member = await bot.get_chat_member(chat_id, user_id)
     except Exception as e:
@@ -174,7 +178,7 @@ async def expire_verification(bot, chat_id, user_id, message_id):
         await bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
-            text="验证超时，您已被移出群组。"
+            text=text
         )
     except Exception as e:
         print(f"编辑消息 {message_id} 出错: {e}")
@@ -193,66 +197,128 @@ async def recover_verification_tasks(context: ContextTypes.DEFAULT_TYPE):
                 "处理群组 %s 成员 %s 的过期验证失败", task.chat_id, task.user_id
             )
 
-# 按钮是否属于点击者；兼容旧版本发出的 verify_<用户>_<令牌> 按钮
-def is_own_verify_button(callback_data, user_id):
-    callback_parts = callback_data.split("_")
-    return len(callback_parts) in (2, 3) and callback_parts[0] == "verify" and callback_parts[1] == str(user_id)
-
-# 回调查询处理：点击验证按钮时解除禁言并更新消息
+# 回调查询处理：开始验证、查看提示、点九宫格；连续答对时解除禁言，答错次数用完时移出群组
 async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     chat_id = update.effective_chat.id
 
-    if not is_own_verify_button(query.data, user_id):
-        await query.answer("这不是为您准备的验证按钮。", show_alert=True)
+    button = views.parse_button(query.data, user_id)
+    if button is None:
+        await query.answer(views.NOT_YOURS, show_alert=True)
         return
 
     message_id = query.message.message_id if query.message else None
-    if await verification.claim_round(user_id, chat_id, message_id):
-        try:
-            # 解除禁言（恢复发送消息权限）
-            await context.bot.restrict_chat_member(
-                chat_id,
-                user_id,
-                ChatPermissions(can_send_messages=True,
-                                can_send_polls=True,
-                                can_send_other_messages=True,
-                                can_add_web_page_previews=True,
-                                can_change_info=True,
-                                can_invite_users=True,
-                                can_pin_messages=True,
-                                can_manage_topics=True,
-                                can_send_audios=True,
-                                can_send_documents=True,
-                                can_send_photos=True,
-                                can_send_videos=True,
-                                can_send_video_notes=True,
-                                can_send_voice_notes=True,)
-            )
-            await query.edit_message_text("验证通过，欢迎加入群组！")
-            await query.answer("验证成功！", show_alert=True)
-        except Exception as e:
-            # 放回这一轮的记录：用户可以再点一次，一直没通过的照常按超时处理
-            await verification.open_round(user_id, chat_id, message_id)
-            error_str = str(e)
-            notice = report_error(
-                logging.getLogger(__name__), f"解除成员 {user_id} 禁言失败", e
-            )
-            if "httpx.ConnectError" in error_str or "Not enough rights" in error_str:
-                await context.bot.send_message(
-                    chat_id,
-                    f"验证错误: 无法解除禁言成员({user_id})，"
-                    f"请检查机器人的管理员权限与网络。\n{notice}"
-                )
-            await query.answer("验证时出现错误，请稍后再试。", show_alert=True)
+    game = verify_game.GAMES.get(chat_id, user_id, message_id)
+    if game is None:
+        # 还没开始，或者进程重启丢了这一局：这一轮验证还在就开一局
+        if message_id is None or await verification.find_round_message(user_id, chat_id) != message_id:
+            await answer_stale(query)
+            return
+        game = verify_game.GAMES.start(chat_id, user_id, message_id)
+        await show_game(query, chat_id, user_id, game)
+        await query.answer(views.prompt(game), show_alert=True)
+        return
+
+    if button.kind == "pick":
+        outcome = verify_game.GAMES.pick(chat_id, user_id, message_id, button.question, button.cell)
     else:
-        await query.answer("验证已失效或已处理。", show_alert=True)
-        try:
-            # 删除验证消息
-            await query.delete_message()
-        except Exception as e:
-            print(f"删除验证消息时出错: {e}")
+        outcome = Outcome.PASSED if game.passed else None
+    if outcome is Outcome.PASSED:
+        await pass_verification(query, context.bot, chat_id, user_id, message_id)
+        return
+    if outcome is Outcome.FAILED:
+        await fail_verification(query, context.bot, chat_id, user_id, message_id)
+        return
+    if outcome is not None or button.kind == "start":
+        # 换了新题；点的是旧题或【开始验证】时，之前可能没换成功，再换一次
+        await show_game(query, chat_id, user_id, game)
+    await query.answer(views.prompt(game, outcome), show_alert=True)
+
+# 欢迎消息换成这一局当前的九宫格；没换成功时，成员再点旧的按钮会再换一次
+async def show_game(query, chat_id, user_id, game):
+    try:
+        await query.edit_message_text(
+            views.game_text(user_id, game),
+            reply_markup=views.game_keyboard(chat_id, user_id, game),
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        print(f"显示验证小游戏出错: {e}")
+
+# 连续答对：认领这一轮验证并解除禁言
+async def pass_verification(query, bot, chat_id, user_id, message_id):
+    if not await verification.claim_round(user_id, chat_id, message_id):
+        # 超时或离群已经处理了这一轮，或者同时点了两下
+        await query.answer(views.STALE, show_alert=True)
+        return
+    try:
+        # 解除禁言（恢复发送消息权限）
+        await bot.restrict_chat_member(
+            chat_id,
+            user_id,
+            ChatPermissions(can_send_messages=True,
+                            can_send_polls=True,
+                            can_send_other_messages=True,
+                            can_add_web_page_previews=True,
+                            can_change_info=True,
+                            can_invite_users=True,
+                            can_pin_messages=True,
+                            can_manage_topics=True,
+                            can_send_audios=True,
+                            can_send_documents=True,
+                            can_send_photos=True,
+                            can_send_videos=True,
+                            can_send_video_notes=True,
+                            can_send_voice_notes=True,)
+        )
+    except Exception as e:
+        # 放回这一轮的记录：这一局仍算通过，用户可以再点一次，一直没通过的照常按超时处理
+        await verification.open_round(user_id, chat_id, message_id)
+        error_str = str(e)
+        notice = report_error(
+            logging.getLogger(__name__), f"解除成员 {user_id} 禁言失败", e
+        )
+        if "httpx.ConnectError" in error_str or "Not enough rights" in error_str:
+            await bot.send_message(
+                chat_id,
+                f"验证错误: 无法解除禁言成员({user_id})，"
+                f"请检查机器人的管理员权限与网络。\n{notice}"
+            )
+        await query.answer(views.UNMUTE_FAILED, show_alert=True)
+        return
+    # 已经解除禁言：之后改消息、弹框失败都只记一笔，不再放回这一轮
+    verify_game.GAMES.drop(chat_id, user_id, message_id)
+    try:
+        await query.edit_message_text(views.PASSED_TEXT)
+    except Exception as e:
+        print(f"编辑验证消息出错: {e}")
+    await answer_alert(query, views.PASSED_ALERT)
+
+# 答错次数用完：认领这一轮验证并移出群组（不封禁）
+async def fail_verification(query, bot, chat_id, user_id, message_id):
+    verify_game.GAMES.drop(chat_id, user_id, message_id)
+    if not await verification.claim_round(user_id, chat_id, message_id):
+        await query.answer(views.STALE, show_alert=True)
+        return
+    # 这一轮已经认领，超时不会再处理：弹框失败也要照常移出
+    await answer_alert(query, views.FAILED_ALERT)
+    await remove_unverified(bot, chat_id, user_id, message_id, views.FAILED_TEXT)
+
+# 弹框失败（网络出错、回调已过期）只记一笔，不打断验证本身的处理
+async def answer_alert(query, text):
+    try:
+        await query.answer(text, show_alert=True)
+    except Exception as e:
+        print(f"回应验证按钮出错: {e}")
+
+# 这一轮验证已经不在（已处理，或重新入群后换成了新的欢迎消息）：删掉这条旧的欢迎消息
+async def answer_stale(query):
+    await query.answer(views.STALE, show_alert=True)
+    try:
+        await query.delete_message()
+    except Exception as e:
+        print(f"删除验证消息时出错: {e}")
 
 # 处理成员离开群组的事件（合并处理机器人和普通用户）
 async def handle_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -270,6 +336,7 @@ async def handle_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE)
     message_id = await verification.find_round_message(user.id, chat_id)
     left_unverified = message_id is not None and await verification.claim_round(user.id, chat_id, message_id)
     if left_unverified:
+        verify_game.GAMES.drop(chat_id, user.id, message_id)
         try:
             await context.bot.edit_message_text(
                 chat_id=chat_id,

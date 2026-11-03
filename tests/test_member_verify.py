@@ -1,4 +1,5 @@
 import asyncio
+import random
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -6,8 +7,8 @@ import pytest
 from telegram.constants import ChatMemberStatus
 
 from fogmoe_telegram_bot.features.moderation import admin_ban_views, member_verify
-from fogmoe_telegram_bot.features.moderation.member_verify import is_own_verify_button
-from fogmoe_telegram_bot.features.moderation.operations import join_messages
+from fogmoe_telegram_bot.features.moderation import member_verify_views as views
+from fogmoe_telegram_bot.features.moderation.operations import join_messages, verify_game
 from fogmoe_telegram_bot.features.moderation.operations import member_verify as verification
 from fogmoe_telegram_bot.features.moderation.repositories.verification import VerificationTask
 
@@ -21,20 +22,29 @@ def _fresh_joins(monkeypatch):
     monkeypatch.setattr(join_messages, "JOINS", join_messages.JoinMessages())
 
 
-def test_own_button_is_accepted():
-    assert is_own_verify_button("verify_42", USER_ID)
+@pytest.fixture(autouse=True)
+def _fresh_games(monkeypatch):
+    monkeypatch.setattr(verify_game, "GAMES", verify_game.VerifyGames(rng=random.Random(0)))
 
 
-def test_button_from_before_upgrade_is_accepted():
-    assert is_own_verify_button("verify_42_0123abcd", USER_ID)
+def test_own_buttons_are_understood():
+    assert views.parse_button("verify_42", USER_ID) == views.VerifyButton("start")
+    assert views.parse_button(views.hint_data(USER_ID), USER_ID) == views.VerifyButton("hint")
+    assert views.parse_button(views.pick_data(USER_ID, 3, 8), USER_ID) == views.VerifyButton("pick", 3, 8)
+
+
+def test_button_from_before_upgrade_starts_the_game():
+    assert views.parse_button("verify_42_0123abcd", USER_ID) == views.VerifyButton("start")
 
 
 def test_someone_elses_button_is_rejected():
-    assert not is_own_verify_button("verify_7", USER_ID)
+    assert views.parse_button("verify_7", USER_ID) is None
+    assert views.parse_button(views.pick_data(7, 1, 0), USER_ID) is None
 
 
 def test_malformed_callback_data_is_rejected():
-    assert not is_own_verify_button("verify", USER_ID)
+    assert views.parse_button("verify", USER_ID) is None
+    assert views.parse_button("verify_42_pick_x_1", USER_ID) is None
 
 
 class _FakeTasks:
@@ -115,18 +125,25 @@ class _FakeBot:
 
 
 class _FakeQuery:
-    def __init__(self, data, message_id):
+    def __init__(self, data, message_id, *, fail_answer=False, fail_edit=False):
         self.data = data
+        self.fail_answer = fail_answer
+        self.fail_edit = fail_edit
         self.from_user = SimpleNamespace(id=USER_ID)
         self.message = SimpleNamespace(message_id=message_id)
         self.answers = []
+        self.edits = []
         self.deleted = False
 
     async def answer(self, text, show_alert=False):
+        if self.fail_answer:
+            raise RuntimeError("query is too old")
         self.answers.append(text)
 
-    async def edit_message_text(self, text):
-        pass
+    async def edit_message_text(self, text, **kwargs):
+        if self.fail_edit:
+            raise RuntimeError("network down")
+        self.edits.append((text, kwargs))
 
     async def delete_message(self):
         self.deleted = True
@@ -136,21 +153,102 @@ def _later():
     return datetime.now() + timedelta(minutes=5)
 
 
-def _click(bot, message_id, data="verify_42"):
-    query = _FakeQuery(data, message_id)
+def _click(bot, message_id, data="verify_42", **failures):
+    query = _FakeQuery(data, message_id, **failures)
     update = SimpleNamespace(callback_query=query, effective_chat=SimpleNamespace(id=CHAT_ID))
     asyncio.run(member_verify.verify_callback(update, SimpleNamespace(bot=bot)))
     return query
 
 
-def test_click_on_current_welcome_message_unmutes(tasks):
+def _play(bot, message_id=2, *, correct=True, **failures):
+    """点这一局当前这道题的格子：correct 时点目标，否则点旁边一格。"""
+    game = verify_game.GAMES.get(CHAT_ID, USER_ID, message_id)
+    cell = game.target if correct else (game.target + 1) % verify_game.GRID_SIZE
+    return _click(bot, message_id, views.pick_data(USER_ID, game.question, cell), **failures)
+
+
+def test_starting_shows_the_grid_and_puts_the_target_only_in_the_popup(tasks):
     tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
     bot = _FakeBot()
 
+    query = _click(bot, message_id=2)
+
+    game = verify_game.GAMES.get(CHAT_ID, USER_ID, 2)
+    (text, kwargs), = query.edits
+    rows = kwargs["reply_markup"].inline_keyboard
+    assert [button.text for row in rows[:-1] for button in row] == list(game.icons)
+    assert game.target_icon not in text
+    assert query.answers == [views.prompt(game)] and game.target_icon in query.answers[0]
+    assert bot.restricted == [] and (USER_ID, CHAT_ID) in tasks.rows
+
+
+def test_enough_correct_answers_in_a_row_unmute(tasks):
+    tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
+    bot = _FakeBot()
     _click(bot, message_id=2)
 
+    for _ in range(verify_game.ROUNDS_TO_PASS - 1):
+        _play(bot)
+        assert bot.restricted == []
+    query = _play(bot)
+
     assert bot.restricted == [USER_ID]
+    assert query.answers == [views.PASSED_ALERT]
+    assert tasks.rows == {} and verify_game.GAMES.get(CHAT_ID, USER_ID, 2) is None
+
+
+def test_too_many_mistakes_remove_the_member(tasks):
+    tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
+    join_messages.JOINS.record(CHAT_ID, USER_ID, 1)
+    bot = _FakeBot()
+    _click(bot, message_id=2)
+
+    for _ in range(verify_game.MAX_MISTAKES):
+        query = _play(bot, correct=False)
+
+    assert bot.restricted == [] and bot.kicked == [USER_ID]
+    assert query.answers == [views.FAILED_ALERT]
+    assert bot.edited_texts == [views.FAILED_TEXT] and bot.deleted == [1]
     assert tasks.rows == {}
+
+
+def test_a_failed_popup_still_removes_the_member(tasks):
+    # 第三次答错时弹框发不出去：这一轮已经认领，超时不会再处理，必须照常移出
+    tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
+    bot = _FakeBot()
+    _click(bot, message_id=2)
+    for _ in range(verify_game.MAX_MISTAKES - 1):
+        _play(bot, correct=False)
+
+    _play(bot, correct=False, fail_answer=True)
+
+    assert bot.kicked == [USER_ID] and tasks.rows == {}
+
+
+def test_a_failed_success_edit_does_not_reopen_the_round(tasks):
+    # 已经解除禁言，只是没能把欢迎消息改成「验证通过」：不放回这一轮，也不重新出题
+    tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
+    bot = _FakeBot()
+    _click(bot, message_id=2)
+    for _ in range(verify_game.ROUNDS_TO_PASS - 1):
+        _play(bot)
+
+    query = _play(bot, fail_edit=True)
+
+    assert bot.restricted == [USER_ID] and tasks.rows == {}
+    assert query.answers == [views.PASSED_ALERT]
+
+
+def test_after_a_restart_the_old_grid_starts_a_new_game(tasks):
+    # 重启丢了内存里的局：记录还在时，点旧九宫格上的格子重新开一局，不算对错
+    tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
+    bot = _FakeBot()
+
+    query = _click(bot, 2, views.pick_data(USER_ID, 3, 0))
+
+    game = verify_game.GAMES.get(CHAT_ID, USER_ID, 2)
+    assert game.mistakes == 0 and game.streak == 0
+    assert query.answers == [views.prompt(game)] and len(query.edits) == 1
 
 
 def test_click_on_old_welcome_message_after_rejoin_is_stale(tasks):
@@ -165,14 +263,21 @@ def test_click_on_old_welcome_message_after_rejoin_is_stale(tasks):
     assert query.deleted
 
 
-def test_failed_unmute_keeps_the_round_open(tasks):
+def test_failed_unmute_keeps_the_round_open_and_the_game_won(tasks):
     tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
     bot = _FakeBot()
     bot.fail_restrict = True
-
     _click(bot, message_id=2)
+    for _ in range(verify_game.ROUNDS_TO_PASS):
+        _play(bot)
 
     assert tasks.rows[(USER_ID, CHAT_ID)][0] == 2
+
+    # 再点任意一个按钮就再试一次解除禁言，不用重玩
+    bot.fail_restrict = False
+    _click(bot, 2, views.hint_data(USER_ID))
+
+    assert bot.restricted == [USER_ID] and tasks.rows == {}
 
 
 def test_timeout_of_old_round_after_rejoin_does_nothing(tasks):
