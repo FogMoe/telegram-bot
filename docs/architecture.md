@@ -62,7 +62,7 @@ app → core
 | 目录 | 职责 |
 |---|---|
 | `conversation/` | AI 对话主路径，见下表 |
-| `ai/` | 按 provider 声明表解析与调用模型（路由、聊天入口、task runner，契约见 [ai-provider-architecture.md](ai-provider-architecture.md)）、tools、summary、定时任务与 idle followup（claim 所有权、租约与崩溃恢复见 [job-recovery.md](job-recovery.md)）、翻译 handler、出站发送 |
+| `ai/` | 按 provider 声明表解析与调用模型（路由、聊天入口、task runner，契约见 [ai-provider-architecture.md](ai-provider-architecture.md)）、工具循环（`tool_runner.py` 是循环骨架，消息转换、工具执行、投递与截止时间收尾分别在 `tool_loop_messages.py`、`tool_loop_execution.py`、`tool_loop_delivery.py`、`tool_loop_deadline.py`）、tools、summary、定时任务与 idle followup（claim 所有权、租约与崩溃恢复见 [job-recovery.md](job-recovery.md)）、翻译 handler、出站发送 |
 | `profile/` | `/start` `/me` `/help` `/github` `/setmyinfo` 与入群欢迎 |
 | `economy/` | 金币相关：`/lottery` `/give` `/rich`、商店、签到、质押、充值、邀请、任务、网页密码；按适配层、`operations/`、`repositories/` 分层，见「经济与游戏的分层」 |
 | `crypto/` | 行情、图表、预测、swap，以及管理员的行情监控命令；预测与 swap 的 SQL 在 `crypto/repositories/` |

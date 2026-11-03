@@ -19,7 +19,7 @@ provider 特有的协议要求由什么承载。权威定义是代码，本页�
 | 主聊天的 provider 入口 | `features/ai/chat_provider.py` 的 `run_chat_provider` | 模型、`display_name`、`skip_tools`、`translates_safety_blocks`、`capabilities` |
 | 主聊天路由、熔断与图片降级 | `features/ai/router.py` | `safety_blocks_fall_through`、视觉能力 |
 | 历史消息的协议整理 | `features/ai/litellm_message_sanitizer.py` | `wire_protocol` |
-| 工具循环里的协议兼容 | `features/ai/tool_runner.py` 的 `_resolve_assistant_message` | `merges_split_tool_call_choices` |
+| 工具循环里的协议兼容 | `features/ai/tool_loop_messages.py` 的 `resolve_assistant_message` | `merges_split_tool_call_choices` |
 | 聊天模型是否支持图片 | `features/ai/chat_capabilities.py` | `capabilities`、`AI_CHAT_TEXT_ONLY_MODELS` |
 | token 计数使用的模型 | `core/chat_records.py` 的 `_chat_token_count_model` | `configured_models` |
 
