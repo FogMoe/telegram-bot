@@ -71,9 +71,14 @@ def sender_user(message: Any) -> Any:
     return getattr(message, "guest_bot_caller_user", None) or getattr(message, "from_user", None)
 
 
+def sender_chat(message: Any) -> Any:
+    """以频道或群的身份发言时的那个频道或群；访客 bot 的回复看 @ 它的是不是频道或群。"""
+    return getattr(message, "sender_chat", None) or getattr(message, "guest_bot_caller_chat", None)
+
+
 def strike_target(message: Any) -> int | None:
     """要处罚的用户；以频道或群的身份发言、或者机器人自己发的消息没有可以处罚的个人，返回 None。"""
-    if getattr(message, "sender_chat", None) is not None:
+    if sender_chat(message) is not None:
         return None
     user = sender_user(message)
     if user is None or user.is_bot:
@@ -83,7 +88,7 @@ def strike_target(message: Any) -> int | None:
 
 def sender_html(message: Any) -> str:
     """群里提到发送者时的写法：不显示名字或频道名（广告号的名字本身就是广告），点开仍能看到是谁。"""
-    if getattr(message, "sender_chat", None) is not None or getattr(message, "guest_bot_caller_chat", None) is not None:
+    if sender_chat(message) is not None:
         return "该频道"
     return admin_ban_views.neutral_mention(sender_user(message).id)
 

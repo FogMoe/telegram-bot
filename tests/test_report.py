@@ -489,3 +489,13 @@ def test_messages_sent_as_a_channel_only_notify_admins(jev):
     assert jev.calls == [] and bot.bans == []
     assert len(bot.dms) == 2 and "以频道身份发送" in bot.dms[0].text
     assert [button.text for button in bot.dms[0].markup.inline_keyboard[0]] == ["查看消息"]
+
+
+def test_a_guest_bot_called_as_a_channel_only_notifies_admins(jev):
+    bot = FakeBot(members=40)
+    reported = target(sender=user(900, "Dhm 9ecded5d Bot", is_bot=True))
+    reported.guest_bot_caller_chat = SimpleNamespace(id=-100999, title="福利频道")
+
+    assert run_report(bot, 11, reported) == ["已收到举报。已通知管理员。这条消息是以频道身份发送的，不会自动处理。"]
+    assert jev.calls == [] and bot.bans == []
+    assert "福利频道" in bot.dms[0].text
