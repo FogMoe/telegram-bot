@@ -5,11 +5,13 @@
 算涉及 MySQL 的改动：
 
 - 固定路径：迁移（`alembic/`、`alembic.ini`）、集成测试（`tests/integration/` 和对它同样生效的
-  `tests/conftest.py`）、依赖与 pytest 配置（`pyproject.toml`、`uv.lock`）、CI 本身（`ci.yml` 与本脚本）；
-- `src/` 下改动前或改动后 import 了 sqlalchemy、asyncmy、alembic 或项目 `core.db`、`core.sql` 的模块。
+  `tests/conftest.py`）、依赖与 pytest 配置（`pyproject.toml`、`uv.lock`）、数据库连接配置（`core/config.py`）、
+  CI 本身（`ci.yml` 与本脚本）；
+- `src/` 下改动前或改动后 import 了 sqlalchemy、asyncmy、alembic 或项目数据库层（`core.db`、`core.sql`、
+  `core.mysql_connection`）的模块。
 
 只用标准库，CI 用 runner 自带的 python3 运行，不需要 `uv sync`。拿不准时（解析不了的文件）算涉及；
-git 比较失败时退出码非 0，由 CI 按涉及处理。
+git 比较或读取文件失败时退出码非 0，由 CI 按涉及处理。
 """
 
 from __future__ import annotations
@@ -26,6 +28,8 @@ ALWAYS_PATHS = (
     "tests/conftest.py",
     "pyproject.toml",
     "uv.lock",
+    # MYSQL_* 连接与连接池设置，以及由它们拼出的数据库 URL
+    "src/fogmoe_telegram_bot/core/config.py",
     ".github/workflows/ci.yml",
     "scripts/ci_mysql_changes.py",
 )
@@ -36,6 +40,7 @@ DB_MODULES = (
     "alembic",
     "fogmoe_telegram_bot.core.db",
     "fogmoe_telegram_bot.core.sql",
+    "fogmoe_telegram_bot.core.mysql_connection",
 )
 
 
@@ -81,8 +86,15 @@ def mysql_reasons(paths: Iterable[str], versions: Callable[[str], Iterable[str]]
     return reasons
 
 
-def _git(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8")
+class GitError(Exception):
+    pass
+
+
+def _git(*args: str) -> str:
+    result = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8")
+    if result.returncode:
+        raise GitError(f"git {' '.join(args)}：{result.stderr.strip()}")
+    return result.stdout
 
 
 def main(argv: list[str]) -> int:
@@ -90,16 +102,24 @@ def main(argv: list[str]) -> int:
         print(__doc__, file=sys.stderr)
         return 2
     base, head = argv[1], argv[2] if len(argv) == 3 else "HEAD"
-    diff = _git("diff", "--name-only", "--no-renames", base, head)
-    if diff.returncode:
-        print(f"无法比较 {base} 与 {head}：{diff.stderr.strip()}", file=sys.stderr)
+    try:
+        # -z：路径原样输出，不对非 ASCII 字符转义；输出是交替的「状态、路径」
+        fields = _git("diff", "--name-status", "-z", "--no-renames", base, head).split("\0")[:-1]
+        statuses = dict(zip(fields[1::2], fields[::2], strict=True))
+
+        def versions(path: str) -> list[str]:
+            # 新增的文件只在 head 上有，删除的只在 base 上有；应该有却读不到就是出错，不当作没有
+            revs = [
+                rev
+                for rev, absent_when in ((base, "A"), (head, "D"))
+                if statuses[path] != absent_when
+            ]
+            return [_git("show", f"{rev}:{path}") for rev in revs]
+
+        reasons = mysql_reasons(statuses, versions)
+    except (GitError, UnicodeDecodeError) as exc:
+        print(f"无法判断改动范围：{exc}", file=sys.stderr)
         return 1
-
-    def versions(path: str) -> list[str]:
-        shown = (_git("show", f"{rev}:{path}") for rev in (base, head))
-        return [result.stdout for result in shown if result.returncode == 0]
-
-    reasons = mysql_reasons(diff.stdout.splitlines(), versions)
     for reason in reasons:
         print(f"涉及 MySQL：{reason}", file=sys.stderr)
     if not reasons:

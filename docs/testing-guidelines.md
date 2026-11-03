@@ -165,7 +165,9 @@ uv run mypy
 - `test`：除 `tests/integration` 以外的 pytest，包括 slow 测试（`--run-slow`）。
 - `integration`：`mysql:8.4` service 上的 `tests/integration`；目录里还没有测试时不算失败，但全部被跳过会失败。
   pull request 和合并队列里只在改动涉及 MySQL 时运行（判断规则见 `scripts/ci_mysql_changes.py`：迁移、集成测试、依赖、
-  CI 本身，以及 import 了 sqlalchemy 或 `core.db`、`core.sql` 的模块），否则由 `changes` 任务跳过，跳过的必需检查算通过；
+  `core/config.py`、CI 本身，以及 import 了 sqlalchemy 或 `core.db`、`core.sql`、`core.mysql_connection` 的模块），
+  否则由 `changes` 任务跳过，跳过的必需检查算通过；新加数据库封装层时要加进脚本的 `DB_MODULES`，
+  `tests/test_ci_mysql_changes.py` 会在写了 SQL 语句却没被识别的模块上失败；
   推送到 `main` 和手动触发时总是运行。
 - `image`：构建镜像并运行启动冒烟检查，确认日志同时进入 stdout 和挂载的日志目录。
 
