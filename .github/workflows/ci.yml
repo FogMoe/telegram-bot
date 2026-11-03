@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  # 经合并队列合进来的提交只补跑队列跳过的 MySQL 兜底，见 changes job；绕过队列直接推的照常全部跑
   push:
     branches: [main]
   pull_request:
@@ -24,6 +25,9 @@ env:
 jobs:
   lint:
     name: Lint, types and lock
+    needs: changes
+    # 合并队列已经在同一个提交上跑过时不再重跑；changes 失败时输出为空，照常运行
+    if: ${{ !cancelled() && needs.changes.outputs.queued != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -49,6 +53,8 @@ jobs:
 
   test:
     name: Unit tests
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.queued != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -70,19 +76,45 @@ jobs:
     name: Detect MySQL changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      # 推到 main 时查合并队列在同一个提交上的运行结果
+      actions: read
     outputs:
       mysql: ${{ steps.detect.outputs.mysql }}
+      queued: ${{ steps.queue.outputs.tested }}
     steps:
       - uses: actions/checkout@v7
         with:
           # pull_request 检出的是合并提交，HEAD^1 就是目标分支
           fetch-depth: 2
 
+      # 经合并队列合进 main 的提交，和队列刚测过的是同一个 SHA
+      - id: queue
+        name: Did the merge queue already test this commit?
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=merge_group&status=success&head_sha=$GITHUB_SHA" \
+            -q '.workflow_runs[0].id // empty') || run_id=
+          if [ -z "$run_id" ]; then
+            echo "::notice::这个提交没经过合并队列，照常跑全部检查"
+            exit 0
+          fi
+          echo "tested=true" >> "$GITHUB_OUTPUT"
+          # 名字要和下面 integration job 的 name 一致；查不到时按队列没跑 MySQL 处理
+          mysql=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs" \
+            -q '.jobs[] | select(.name == "MySQL integration tests") | .conclusion') || mysql=
+          echo "mysql=$mysql" >> "$GITHUB_OUTPUT"
+
       - id: detect
         name: Does this change touch MySQL?
         env:
           EVENT_NAME: ${{ github.event_name }}
           MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          QUEUE_TESTED: ${{ steps.queue.outputs.tested }}
+          QUEUE_MYSQL: ${{ steps.queue.outputs.mysql }}
         run: |
           case "$EVENT_NAME" in
             pull_request) base=HEAD^1 ;;
@@ -90,8 +122,21 @@ jobs:
               git fetch --no-tags --depth=1 origin "$MERGE_GROUP_BASE"
               base=$MERGE_GROUP_BASE
               ;;
+            push)
+              # 推送到 main：总是有一次 MySQL，兜住 PR 和队列里按规则跳过的情况；队列已经跑过就不再跑
+              if [ "$QUEUE_TESTED" = true ] && [ "$QUEUE_MYSQL" = success ]; then
+                echo "::notice::合并队列已在这个提交上跑过全部检查，不再重跑"
+                echo "mysql=false" >> "$GITHUB_OUTPUT"
+              else
+                if [ "$QUEUE_TESTED" = true ]; then
+                  echo "::notice::合并队列已在这个提交上跑过检查，只补跑它跳过的 MySQL 集成测试"
+                fi
+                echo "mysql=true" >> "$GITHUB_OUTPUT"
+              fi
+              exit 0
+              ;;
             *)
-              # 推送到 main、手动触发：总是跑，兜住 PR 里按规则跳过的情况
+              # 手动触发：总是跑
               echo "mysql=true" >> "$GITHUB_OUTPUT"
               exit 0
               ;;
@@ -170,6 +215,8 @@ jobs:
 
   image:
     name: Image build and startup smoke check
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.queued != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
