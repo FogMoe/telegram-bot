@@ -4,7 +4,8 @@
 链接过滤、@提及过滤与全局垃圾词库的命中不计入这里，它们只警告，警告次数在 `operations/spam_control.py`。
 计数放在进程内存里，按每次命中的时间滑动统计，重启后清零。
 
-`ban` 与 `kick` 也给举报和管理员按钮用：封禁时一并删掉对方的加群消息。群里的警告与公告不显示对方的名字。
+`ban` 与 `kick` 也给举报和管理员按钮用：封禁时一并删掉对方的加群消息。群里的警告与公告不显示对方的名字，
+下面带管理员看原文的按钮（`warning_keyboard`）。
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
 from fogmoe_telegram_bot.features.moderation import admin_ban_views
-from fogmoe_telegram_bot.features.moderation.operations import join_messages
+from fogmoe_telegram_bot.features.moderation.operations import deleted_messages, join_messages
 from fogmoe_telegram_bot.features.moderation.spam_ai import operations as spam_ai_operations
 
 logger = logging.getLogger(__name__)
@@ -100,18 +101,26 @@ async def _send(bot: Any, chat_id: int, text: str, reply_markup: Any = None) -> 
         logger.warning("发送垃圾信息处罚通知失败（群 %s）: %s", chat_id, exc)
 
 
-async def penalize(bot: Any, message: Any, *, reason_html: str, note: str = "") -> None:
+def warning_keyboard(message: Any, original: str, *, ban: bool = True) -> Any:
+    """消息删掉之后的警告按钮：记下原文 `original`，给管理员一个看原文的按钮；
+    `ban` 为真且能处罚到个人时再加封禁按钮。"""
+    deleted_messages.ORIGINALS.record(message.chat_id, message.message_id, original)
+    user_id = strike_target(message) if ban else None
+    return admin_ban_views.warning_keyboard(message.chat_id, message.message_id, user_id)
+
+
+async def penalize(bot: Any, message: Any, *, original: str, reason_html: str, note: str = "") -> None:
     """消息已经删掉之后调用：记一次违规并警告；窗口内满 `STRIKES_TO_KICK` 次时改为移出群组。
 
-    `reason_html` 接在发送者后面，例如「发送的消息包含垃圾内容 …」；`note` 附在警告末尾。
-    警告下面带管理员的封禁按钮。
+    `original` 是被删消息的文字，管理员可以点按钮看；`reason_html` 接在发送者后面，
+    例如「发送的消息包含垃圾内容 …」；`note` 附在警告末尾。警告下面还带管理员的封禁按钮。
     """
     chat_id = message.chat_id
     sender = sender_html(message)
     deleted = f"⚠️ 注意: {sender} {reason_html}，已被自动删除。"
     user_id = strike_target(message)
     if user_id is None:
-        await _send(bot, chat_id, deleted + note)
+        await _send(bot, chat_id, deleted + note, warning_keyboard(message, original))
         return
 
     count = TRACKER.record(chat_id, user_id)
@@ -120,12 +129,19 @@ async def penalize(bot: Any, message: Any, *, reason_html: str, note: str = "") 
             bot,
             chat_id,
             f"{deleted}\n这是第 {count} 次警告，{WINDOW_TEXT}满 {STRIKES_TO_KICK} 次将被移出群组。{note}",
-            admin_ban_views.ban_keyboard(chat_id, user_id),
+            warning_keyboard(message, original),
         )
         return
 
     TRACKER.clear(chat_id, user_id)
-    await kick(bot, chat_id, user_id, sender, basic_group=getattr(message.chat, "type", "") == "group")
+    await kick(
+        bot,
+        chat_id,
+        user_id,
+        sender,
+        basic_group=getattr(message.chat, "type", "") == "group",
+        reply_markup=warning_keyboard(message, original, ban=False),
+    )
 
 
 async def delete_join_message(bot: Any, chat_id: int, user_id: int) -> None:
@@ -165,10 +181,11 @@ async def kick(
     basic_group: bool = False,
     offense: str | None = None,
     seconds: int | None = BAN_SECONDS,
+    reply_markup: Any = None,
 ) -> bool:
     """移出群组并封禁 `seconds` 秒（None 为永久），然后在群里说明；移出成功返回 True。
 
-    `offense` 是群里说明的开头，默认是累计处罚的说法。
+    `offense` 是群里说明的开头，默认是累计处罚的说法；`reply_markup` 是说明下面的按钮。
     普通群（非超级群）不支持限时封禁，Telegram 忽略 `until_date`，被移出的人可以凭邀请链接直接回来。
     """
     offense = offense or f"{sender} 在 {WINDOW_TEXT}发送了 {STRIKES_TO_KICK} 次垃圾信息"
@@ -181,13 +198,14 @@ async def kick(
             )
         else:
             text = f"⚠️ {offense}，但移出失败，请管理员手动处理。"
-        await _send(bot, chat_id, text)
+        await _send(bot, chat_id, text, reply_markup)
         return False
 
     if basic_group:
-        await _send(bot, chat_id, f"🚫 {offense}，已被移出群组。")
+        text = f"🚫 {offense}，已被移出群组。"
     elif seconds is None:
-        await _send(bot, chat_id, f"🚫 {offense}，已被移出群组并永久封禁。")
+        text = f"🚫 {offense}，已被移出群组并永久封禁。"
     else:
-        await _send(bot, chat_id, f"🚫 {offense}，已被移出群组，{seconds // 3600} 小时内无法重新加入。")
+        text = f"🚫 {offense}，已被移出群组，{seconds // 3600} 小时内无法重新加入。"
+    await _send(bot, chat_id, text, reply_markup)
     return True
