@@ -31,7 +31,7 @@
 3) 在 `schemas.py` 添加对应 schema。
 4) 在 `registry.py` 注册工具处理函数。
 5) 只有在其他模块需要直接调用时，才在 `__init__.py` 里导出。
-6) 运行 `uv run python scripts/gen_ai_flow_doc.py`，更新 [`docs/ai-conversation-flow.md`](../../../../docs/ai-conversation-flow.md) 里的工具目录（`tests/test_ai_flow_doc.py` 会检查它是否过期）。
+6) 在 [`docs/ai-conversation-flow.html`](../../../../docs/ai-conversation-flow.html) 的「工具箱」里给新工具补一句说明，再运行 `uv run python scripts/gen_ai_flow_doc.py` 更新工具目录与数字（`tests/test_ai_flow_doc.py` 会检查两者）。
 
 ## 注意事项
 

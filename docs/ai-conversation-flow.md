@@ -1,53 +1,38 @@
-# AI 对话流程
+# AI 对话流程：代码对照
 
-本页把一轮 AI 对话串成图：从收到 Telegram 消息、调用模型与工具，到写回历史、压缩与生成摘要。
+流程图在 [ai-conversation-flow.html](ai-conversation-flow.html)，用浏览器打开。那一页只用自然语言讲流程，
+本页按同样的章节列出每一步对应的代码，并给出完整的工具目录与阈值表。
 各环节的规则分别在 [architecture.md](architecture.md) 的「一轮对话」、
-[ai-provider-architecture.md](ai-provider-architecture.md)（provider、fallback）与 [runtime.md](runtime.md)（准入、截止时间）里，
-本页只画它们怎么连起来，不重复规则。
+[ai-provider-architecture.md](ai-provider-architecture.md)（provider、fallback）与 [runtime.md](runtime.md)（准入、截止时间）里。
 
-权威定义是代码。标着「自动生成」的块由 `scripts/gen_ai_flow_doc.py` 从代码生成，改了工具、阶段或阈值之后运行：
+权威定义是代码。两份文档里会随代码变化的部分由 `scripts/gen_ai_flow_doc.py` 同步：本页标着「自动生成」的块，
+以及 HTML 页面里的数字。改了工具、阶段或阈值之后运行：
 
 ```bash
 uv run python scripts/gen_ai_flow_doc.py
 ```
 
-`tests/test_ai_flow_doc.py` 检查两件事：生成块有没有过期；正文里用反引号引用的符号、文件与相对链接是否还存在。
-图里的节点在每张图下面的表里都写了对应的代码，改名或删除时测试会指出来。
+`tests/test_ai_flow_doc.py` 检查：
 
-## 1. 一条消息怎么进来
+- 两份文档里同步的部分没有过期；
+- HTML 页面的九个步骤与 `Stage` 一一对应，工具箱与各 agent 实际开放的工具一一对应（加了工具就要在页面上补一句说明）；
+- 本页用反引号引用的符号、文件，以及两份文档里的相对链接都还存在。
 
-```mermaid
-flowchart TD
-    A["Telegram 更新"] --> B["历史入口 prepare_update_history<br/>设置出站事件来源，记录命令与按钮事件"]
-    B --> C["对话入口 reply"]
-    C --> D{"编辑后 AI 可见的内容没变？"}
-    D -- 是 --> D1["忽略"]
-    D -- 否 --> E["攒批：同一聊天、同一用户<br/>等 CHAT_BATCH_WINDOW_SECONDS"]
-    E --> F["_reply_locked<br/>整轮 Deadline 开始计时<br/>每用户待处理数 → 会话锁"]
-    F --> G{"群聊？"}
-    G -- 是 --> G1["写入群聊上下文"]
-    G1 --> G2{"这一批点名了 bot？"}
-    G2 -- 否 --> G3["结束，不调用模型"]
-    G2 -- 是 --> H
-    G -- 否 --> H["聊天冷却"]
-    H --> I["全局准入槽位"]
-    I --> J["run_turn → ConversationTurn.run"]
-    F -.->|"待处理太多、等锁超时、正在停止"| R["提示繁忙<br/>这一轮没有开始，不扣费"]
-    I -.->|"拿不到槽位"| R
-```
+## 1. 进门
 
-| 图中节点 | 代码 | 文件 |
+| 步骤 | 代码 | 文件 |
 |---|---|---|
-| 历史入口 | `prepare_update_history`、`HistoryTrackingExtBot`（bot 发出的消息也记入历史） | [core/telegram_history.py](../src/fogmoe_telegram_bot/core/telegram_history.py) |
-| 对话入口、准入、建立请求 | `reply`、`_reply_locked`、`_reply_batch_unlocked`、`_build_turn_request` | [conversation/handlers.py](../src/fogmoe_telegram_bot/features/conversation/handlers.py) |
-| 编辑去重 | `_record_message_content_and_check_unchanged_edit` | [conversation/messages.py](../src/fogmoe_telegram_bot/features/conversation/messages.py) |
-| 攒批 | `_message_batch_key`、`_MESSAGE_BATCHES` | [conversation/batching.py](../src/fogmoe_telegram_bot/features/conversation/batching.py) |
-| 每用户待处理数、全局槽位 | `AdmissionController`、`user_pending`、`slot` | [core/admission.py](../src/fogmoe_telegram_bot/core/admission.py) |
-| 会话锁 | `get_conversation_lock` | [ai/conversation_locks.py](../src/fogmoe_telegram_bot/features/ai/conversation_locks.py) |
-| 群聊上下文 | `log_group_message`，表 `chat_records_group` | [core/group_chat_history.py](../src/fogmoe_telegram_bot/core/group_chat_history.py) |
+| 历史入口：设置出站事件来源，记录命令与按钮事件；bot 发出的消息也记入历史 | `prepare_update_history`、`HistoryTrackingExtBot` | [core/telegram_history.py](../src/fogmoe_telegram_bot/core/telegram_history.py) |
+| 对话入口、排队、建立请求 | `reply`、`_reply_locked`、`_reply_batch_unlocked`、`_build_turn_request` | [conversation/handlers.py](../src/fogmoe_telegram_bot/features/conversation/handlers.py) |
+| 编辑过但内容没变的消息 | `_record_message_content_and_check_unchanged_edit` | [conversation/messages.py](../src/fogmoe_telegram_bot/features/conversation/messages.py) |
+| 攒成一批 | `_message_batch_key`、`_MESSAGE_BATCHES` | [conversation/batching.py](../src/fogmoe_telegram_bot/features/conversation/batching.py) |
+| 每用户待处理数、全局名额、拒绝时的提示 | `AdmissionController`、`user_pending`、`slot`、`_reject_unstarted_batch` | [core/admission.py](../src/fogmoe_telegram_bot/core/admission.py)、[conversation/handlers.py](../src/fogmoe_telegram_bot/features/conversation/handlers.py) |
+| 同一个人同一时间只有一轮 | `get_conversation_lock` | [ai/conversation_locks.py](../src/fogmoe_telegram_bot/features/ai/conversation_locks.py) |
+| 群聊记录、是否点名 bot | `log_group_message`（表 `chat_records_group`）、`_group_batch_wants_a_reply` | [core/group_chat_history.py](../src/fogmoe_telegram_bot/core/group_chat_history.py)、[conversation/handlers.py](../src/fogmoe_telegram_bot/features/conversation/handlers.py) |
 | 聊天冷却 | `check_chat_cooldown` | [core/command_cooldown.py](../src/fogmoe_telegram_bot/core/command_cooldown.py) |
+| 整轮限时 | `Deadline`，在 `_reply_locked` 里开始计时 | [core/deadline.py](../src/fogmoe_telegram_bot/core/deadline.py) |
 
-## 2. 一轮对话的阶段
+## 2. 一轮对话
 
 阶段顺序（自动生成，来自 `Stage`）：
 
@@ -55,127 +40,44 @@ flowchart TD
 `plan` → `charge` → `context` → `prepare` → `history_in` → `model` → `history_out` → `delivery` → `finalize`
 <!-- END GENERATED: stages -->
 
-```mermaid
-flowchart TD
-    P["plan<br/>选出有内容的消息，逐条定价"] --> CH["charge<br/>整轮扣费（整轮唯一的跨语句事务）"]
-    CH --> CT["context<br/>读取余额、印象、日记，拼 user_state_prompt"]
-    CT --> PR["prepare<br/>整理消息，下载并识别图片、贴纸"]
-    PR --> HI["history_in<br/>写入用户消息，读回活跃历史"]
-    HI --> M["model<br/>路由、provider fallback、工具循环"]
-    M --> HO["history_out<br/>写入工具调用、工具结果与回复"]
-    HO --> DL["delivery<br/>容量提示、补发最终回复、生成的媒体"]
-    DL --> FN["finalize<br/>AI 代执行 /clear 的归档、零余额边界"]
-    P -.->|"NOTHING_TO_PROCESS、MESSAGE_TOO_LONG"| X["提前结束，已回复用户"]
-    CH -.->|"UNREGISTERED、INSUFFICIENT_BALANCE"| X
-    PR -.->|"MEDIA_TOO_LARGE、MEDIA_FAILED（已扣费，不退款）"| X
-```
-
-| 阶段 | 代码 | 文件 |
+| 步骤 | 代码 | 文件 |
 |---|---|---|
-| 总流程 | `ConversationTurn.run`、`StageTimer` | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py)、[conversation/turn_types.py](../src/fogmoe_telegram_bot/features/conversation/turn_types.py) |
-| `plan`、`charge` | `_plan`、`_charge`、`charge_turn` | [conversation/billing.py](../src/fogmoe_telegram_bot/features/conversation/billing.py) |
-| `context` | `_load_context`、`format_user_state_prompt` | [core/prompt_utils.py](../src/fogmoe_telegram_bot/core/prompt_utils.py) |
-| `prepare` | `_prepare_inputs`（媒体在历史里只存描述，原图只通过 `runtime_replacements` 给这一次请求） | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py) |
-| `history_in` | `_record_input` → `insert_records`、`get_history` | [conversation/turn_services.py](../src/fogmoe_telegram_bot/features/conversation/turn_services.py) |
-| `model` | `_run_model` → `run_model`（`ModelRequest` / `ModelResponse`） | 见第 3 节 |
-| `history_out` | `_record_output`、`tool_logs_to_record_entries` | [ai/tool_history.py](../src/fogmoe_telegram_bot/features/ai/tool_history.py) |
-| `delivery` | `_deliver`、`_deliver_messages` | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py) |
-| `finalize` | `_finalize`、`archive_completed_clear`、`flush_events` | [conversation/turn_services.py](../src/fogmoe_telegram_bot/features/conversation/turn_services.py) |
-| 每次写入历史后的收尾 | `_persist_records`：打包发送被淘汰的归档、容量提示、溢出时生成摘要 | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py) |
+| 总流程与计时 | `ConversationTurn.run`、`StageTimer`、`run_turn` | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py)、[conversation/turn_types.py](../src/fogmoe_telegram_bot/features/conversation/turn_types.py) |
+| 估价、扣费 | `_plan`、`_charge`、`charge_turn` | [conversation/billing.py](../src/fogmoe_telegram_bot/features/conversation/billing.py) |
+| 了解用户 | `_load_context`、`format_user_state_prompt` | [core/prompt_utils.py](../src/fogmoe_telegram_bot/core/prompt_utils.py) |
+| 看图（历史里只存描述，原图通过 `runtime_replacements` 只给这一次请求） | `_prepare_inputs` | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py) |
+| 记下用户的话 | `_record_input` → `insert_records`、`get_history` | [conversation/turn_services.py](../src/fogmoe_telegram_bot/features/conversation/turn_services.py) |
+| 思考与动手 | `_run_model` → `run_model`（`ModelRequest` / `ModelResponse`） | 见第 3 节 |
+| 记下做了什么 | `_record_output`、`tool_logs_to_record_entries` | [ai/tool_history.py](../src/fogmoe_telegram_bot/features/ai/tool_history.py) |
+| 发出回复 | `_deliver`、`_deliver_messages` | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py) |
+| 收尾 | `_finalize`、`archive_completed_clear`、`flush_events` | [conversation/turn_services.py](../src/fogmoe_telegram_bot/features/conversation/turn_services.py) |
+| 每次写入历史后：打包发送被淘汰的归档、容量提示、溢出时生成摘要 | `_persist_records` | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py) |
 
-## 3. model 阶段：路由、fallback 与工具循环
+## 3. 思考与动手
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant T as ConversationTurn
-    participant R as router
-    participant P as run_chat_provider
-    participant L as run_tool_loop
-    participant C as create_chat_completion
-    participant M as 模型（LiteLLM）
-    participant H as 工具处理函数
-    participant V as Telegram
-
-    T->>R: get_ai_response（历史、tool_context、Deadline）
-    loop AI_CHAT_ORDER 里的每个 provider，跳过熔断中的
-        R->>P: 不支持图片时换成纯文本历史
-        P->>L: 先用主模型，失败后用备用模型
-        L->>L: system = SYSTEM_PROMPT + user_state_prompt
-        loop 最多 max_iterations 轮
-            L->>C: messages + 工具 schema
-            C->>C: 上下文硬预算检查，按 provider 协议整理消息
-            C->>M: litellm.acompletion
-            M-->>L: assistant 消息（文字 + tool_calls）
-            alt 没有 tool_calls
-                L->>V: 最终回复经可见内容发送器发出
-                L-->>R: 回复 + tool_logs
-            else 有 tool_calls
-                L->>V: 伴随工具调用的文字立刻发出
-                L->>H: 逐个校验参数并执行
-                H-->>L: 工具结果
-                L->>V: generate_image、generate_voice 的结果立刻发出
-                L->>L: 追加 tool 消息，记入 tool_logs
-            end
-        end
-    end
-    R-->>T: ModelResponse（文字 + tool_logs）
-```
-
-失败时不一定换 provider，规则在 [ai-provider-architecture.md](ai-provider-architecture.md) 的「主聊天的 fallback」，这里只列结果：
-
-| 情况 | 结果 |
-|---|---|
-| 上下文超过硬上限 `ContextBudgetExceededError` | 不换模型也不换 provider，回复固定提示 |
-| 工具已经执行过后失败 `PartialAIResponseError` | 不重试（避免重复执行有副作用的工具，比如赠币），回复固定提示 |
-| 已经向用户发出可见内容后失败 | 不重试 |
-| 安全拦截 `SafetyBlockError` | 按声明决定是否换下一个 provider |
-| 整轮截止时间到期 `TurnDeadlineError` | 回复超时提示；正在跑的工具记为结果未知，没轮到的补「未执行」，历史仍然配对 |
-| 其他失败 | 记入熔断计数，换下一个 provider；全部失败且带图时用纯文本历史再走一遍 |
-
-| 图中参与者 | 代码 | 文件 |
+| 步骤 | 代码 | 文件 |
 |---|---|---|
-| router | `get_ai_response`、`_try_ai_services`、`_messages_for_service`、`_provider_circuit_is_open` | [ai/router.py](../src/fogmoe_telegram_bot/features/ai/router.py) |
-| run_chat_provider | `run_chat_provider`（主模型、备用模型、`skip_tools`） | [ai/chat_provider.py](../src/fogmoe_telegram_bot/features/ai/chat_provider.py) |
-| run_tool_loop | `run_tool_loop`、`compose_system_prompt`、`_create_chat_completion_with_post_tool_retries`、`_resolve_assistant_message`、`_emit_visible_content`、`_close_interrupted_round` | [ai/tool_runner.py](../src/fogmoe_telegram_bot/features/ai/tool_runner.py)、[ai/prompts.py](../src/fogmoe_telegram_bot/features/ai/prompts.py) |
-| create_chat_completion | `create_chat_completion`、`enforce_messages_context_budget`、`sanitize_messages_for_provider` | [ai/litellm_client.py](../src/fogmoe_telegram_bot/features/ai/litellm_client.py)、[ai/context_budget.py](../src/fogmoe_telegram_bot/features/ai/context_budget.py)、[ai/litellm_message_sanitizer.py](../src/fogmoe_telegram_bot/features/ai/litellm_message_sanitizer.py) |
-| Telegram | `TelegramVisibleContentHandler` | [ai/telegram_visible_sender.py](../src/fogmoe_telegram_bot/features/ai/telegram_visible_sender.py) |
+| 按顺序选模型服务、熔断、看不了图时换成文字、失败分类 | `get_ai_response`、`_try_ai_services`、`_messages_for_service`、`_provider_circuit_is_open` | [ai/router.py](../src/fogmoe_telegram_bot/features/ai/router.py) |
+| 主模型失败后用备用模型、跳过的工具 | `run_chat_provider`、`skip_tools` | [ai/chat_provider.py](../src/fogmoe_telegram_bot/features/ai/chat_provider.py) |
+| 拼好上下文（人设 + 用户状态） | `compose_system_prompt` | [ai/prompts.py](../src/fogmoe_telegram_bot/features/ai/prompts.py) |
+| 工具循环、边做边说、工具执行后的重试 | `run_tool_loop`、`_emit_visible_content`、`_create_chat_completion_with_post_tool_retries`、`_resolve_assistant_message` | [ai/tool_runner.py](../src/fogmoe_telegram_bot/features/ai/tool_runner.py) |
+| 一次工具调用：参数校验、执行、媒体立刻发出、只把公开部分交回模型、附带的事件 | `_validate_tool_args`、`_call_tool`、`_send_media_result_immediately`、`_public_tool_result`、`_context_messages_from_tool_result` | [ai/tool_runner.py](../src/fogmoe_telegram_bot/features/ai/tool_runner.py) |
+| 时间用完时：结果未知、未执行 | `_close_interrupted_round`、`TurnDeadlineError` | [ai/tool_runner.py](../src/fogmoe_telegram_bot/features/ai/tool_runner.py) |
+| 单次请求上限、按服务的协议整理消息 | `create_chat_completion`、`enforce_messages_context_budget`、`sanitize_messages_for_provider` | [ai/litellm_client.py](../src/fogmoe_telegram_bot/features/ai/litellm_client.py)、[ai/context_budget.py](../src/fogmoe_telegram_bot/features/ai/context_budget.py)、[ai/litellm_message_sanitizer.py](../src/fogmoe_telegram_bot/features/ai/litellm_message_sanitizer.py) |
+| 发到 Telegram | `TelegramVisibleContentHandler` | [ai/telegram_visible_sender.py](../src/fogmoe_telegram_bot/features/ai/telegram_visible_sender.py) |
 
-## 4. 工具
+出问题时的处理规则见 [ai-provider-architecture.md](ai-provider-architecture.md) 的「主聊天的 fallback」：
+上下文超限 `ContextBudgetExceededError`、工具执行后失败 `PartialAIResponseError`、安全拦截 `SafetyBlockError`。
 
-### 一次工具调用
+## 4. 工具箱
 
-```mermaid
-flowchart TD
-    A["模型返回一个 tool_call"] --> B{"在 provider 的 skip_tools 里？"}
-    B -- 是 --> B1["跳过"]
-    B -- 否 --> C{"参数通过 Pydantic 校验？"}
-    C -- 否 --> C1["把校验错误当作工具结果交还模型"]
-    C -- 是 --> D{"这个 agent 开放了这个工具？"}
-    D -- 否 --> D1["返回 Tool is not available"]
-    D -- 是 --> E["执行：async 工具直接 await<br/>同步工具走有界线程"]
-    E --> F{"抛异常？"}
-    F -- 是 --> F1["返回 error 与日志 ref"]
-    F -- 否 --> G["内部结果"]
-    G --> H["生成的图片、语音立刻发到 Telegram"]
-    H --> I["公开结果：去掉内部字段<br/>追加为 role=tool 消息"]
-    G --> K["结果里附带的事件<br/>（如代执行命令的回复）<br/>在这一轮工具结果之后作为 user 消息追加"]
-```
-
-| 图中节点 | 代码 | 文件 |
-|---|---|---|
-| 参数校验 | `_validate_tool_args`、`AI_TOOL_ARG_MODELS` | [ai/tool_runner.py](../src/fogmoe_telegram_bot/features/ai/tool_runner.py)、[ai/tools/models.py](../src/fogmoe_telegram_bot/features/ai/tools/models.py) |
-| 执行 | `_call_tool`、`get_tool_request_context` | [ai/tools/context.py](../src/fogmoe_telegram_bot/features/ai/tools/context.py) |
-| 媒体立刻发送 | `_send_media_result_immediately` | [ai/tool_runner.py](../src/fogmoe_telegram_bot/features/ai/tool_runner.py) |
-| 公开结果 | `_public_tool_result` | [ai/tool_runner.py](../src/fogmoe_telegram_bot/features/ai/tool_runner.py) |
-| 附带的事件 | `TOOL_CONTEXT_MESSAGES_KEY`、`_context_messages_from_tool_result` | [ai/types.py](../src/fogmoe_telegram_bot/features/ai/types.py) |
-| schema 与注册 | `OPENAI_TOOLS`、`AI_TOOL_HANDLERS` | [ai/tools/schemas.py](../src/fogmoe_telegram_bot/features/ai/tools/schemas.py)、[ai/tools/registry.py](../src/fogmoe_telegram_bot/features/ai/tools/registry.py) |
-
-### 工具目录（自动生成）
-
-主聊天用 `OPENAI_TOOLS`；空闲回顾只拿其中的只读工具加上专用的 `read_diary_page`；摘要 agent 只有 `search_prior_context`。
+主聊天用 `OPENAI_TOOLS` 与 `AI_TOOL_HANDLERS`（[ai/tools/schemas.py](../src/fogmoe_telegram_bot/features/ai/tools/schemas.py)、
+[ai/tools/registry.py](../src/fogmoe_telegram_bot/features/ai/tools/registry.py)）；空闲回顾用 `IDLE_RECAP_TOOLS`，
+摘要助手用 `SUMMARY_TOOLS`。参数模型在 `AI_TOOL_ARG_MODELS`，工具读取请求上下文用 `get_tool_request_context`。
 加工具的步骤见 [ai/tools/README.md](../src/fogmoe_telegram_bot/features/ai/tools/README.md)，描述怎么写见
 [ai-tool-prompt-guidelines.md](ai-tool-prompt-guidelines.md)。
+
+工具目录（自动生成）：
 
 <!-- BEGIN GENERATED: tools -->
 共 20 个工具：主聊天 18 个，空闲回顾 3 个，摘要 1 个。参数后面带 `?` 的是可选参数。
@@ -204,21 +106,16 @@ flowchart TD
 | `search_prior_context` | 摘要 | `query`, `limit?` | `summary_tools.search_prior_context_tool` | Search up to 20 earlier archived summaries with lightweight BM25 ranking and a small recency boost. Use concrete terms from the current snapshot to resolve older references or continuity. |
 <!-- END GENERATED: tools -->
 
-## 5. 上下文记录
-
-### 存在哪里
+## 5. 模型看到什么
 
 | 存储 | 内容 | 主要入口 |
 |---|---|---|
 | 表 `chat_records` 的 `messages` | 每个用户一份活跃历史（JSON 数组，OpenAI 消息格式）。私聊与群聊共用，`conversation_id` 就是用户 id | `insert_chat_records`、`get_chat_history` |
-| 表 `permanent_chat_records` | 归档快照 `conversation_snapshot` 与它的摘要 `summary` | 压缩、`/clear`；工具 `fetch_permanent_summaries`、`search_permanent_records` 按需读取 |
-| 表 `chat_records_group` | 群聊里的消息，不进活跃历史 | 工具 `fetch_group_context` 按需读取 |
-| 用户状态 | 余额、套餐、权限、印象、日记是否存在 | 每次请求拼进 system prompt，不写入历史 |
+| 表 `permanent_chat_records` | 归档快照 `conversation_snapshot` 与它的摘要 `summary` | 压缩、`/clear`；工具 `fetch_permanent_summaries`、`search_permanent_records` |
+| 表 `chat_records_group` | 群聊里的消息，不进活跃历史 | 工具 `fetch_group_context` |
+| 用户状态 | 余额、套餐、权限、印象、日记是否存在 | `format_user_state_prompt`，每次请求拼进 system prompt，不写入历史 |
 
-这些表的读写都在 [core/chat_records.py](../src/fogmoe_telegram_bot/core/chat_records.py)（群聊在
-[core/group_chat_history.py](../src/fogmoe_telegram_bot/core/group_chat_history.py)），活跃历史每次写入是一次短事务，`SELECT ... FOR UPDATE` 锁住这一行。
-
-### 活跃历史里有什么
+活跃历史里的消息：
 
 | role | 内容 | 谁写入 |
 |---|---|---|
@@ -229,9 +126,7 @@ flowchart TD
 | `assistant` | 回复，以及伴随工具调用的可见文字（都已脱敏） | `_record_output`、`tool_logs_to_record_entries` |
 | `assistant` + `tool` | 带 `tool_calls` 的 assistant 消息与对应的 `tool` 结果，`tool_call_id` 一一配对（结果已脱敏） | `tool_logs_to_record_entries` |
 
-### 一次请求长什么样
-
-下面是示意，字段与格式以代码为准。system 消息只在请求里，不写入历史；其余来自活跃历史。
+一次请求的 messages（示意，字段与格式以代码为准；system 消息只在请求里，不写入历史）：
 
 ```jsonc
 [
@@ -257,79 +152,29 @@ flowchart TD
 ]
 ```
 
-## 6. 写入与压缩
+## 6. 记录太长时
 
-每次写入活跃历史（用户消息、工具记录、回复、bot 事件）都走同一个函数 `_insert_chat_records_once`：
-
-```mermaid
-flowchart TD
-    A["insert_chat_records<br/>一次短事务，锁住这一行"] --> B["读出活跃历史，追加新记录<br/>清掉配不上对的 tool 消息"]
-    B --> D["估算 token<br/>历史 + SYSTEM_PROMPT + user_state_prompt"]
-    D --> E{"超过 CHAT_TOKEN_LIMIT？"}
-    E -- 否 --> F{"写入的是用户消息<br/>且超过 CHAT_TOKEN_WARN_LIMIT？"}
-    F -- 是 --> F1["插入 near_limit 事件（不连续重复）<br/>delivery 阶段提醒用户"]
-    F -- 否 --> F2{"新会话的第一条？"}
-    F2 -- 是 --> F3["插入 new_session 事件"]
-    E -- 是 --> G["只保留最近 keep_non_tool 条非 tool 消息<br/>以及它们需要的 tool_call"]
-    G --> H["其余消息存成一份归档快照"]
-    H --> I["超过保留数的旧快照：取出并删除"]
-    I -.-> I1["打包发给用户"]
-    I --> J["活跃历史 = compressed 事件 + 保留的消息"]
-    J --> S["handle_history_overflow<br/>即时生成摘要"]
-    S --> S1{"在 SUMMARY_IMMEDIATE_TIMEOUT_SECONDS 内完成？"}
-    S1 -- 是 --> S2["摘要存入快照<br/>并回填到 compressed 事件"]
-    S1 -- 否 --> S3["后台生成，完成后同样回填"]
-```
-
-摘要 agent 把快照整理成文字记录，连同上一份摘要一起交给 `summary` 任务的模型；它可以用 `search_prior_context` 检索更早的摘要。
-生成的摘要存进 `permanent_chat_records.summary`，同时回填到活跃历史里那条 `compressed` 事件，于是下一次请求里模型能看到「之前聊过什么」。
-
-| 图中节点 | 代码 | 文件 |
+| 步骤 | 代码 | 文件 |
 |---|---|---|
-| 写入、估算、插入事件 | `insert_chat_records`、`_insert_chat_records_once`、`estimate_conversation_tokens`、`_sanitize_messages_with_tool_pairs` | [core/chat_records.py](../src/fogmoe_telegram_bot/core/chat_records.py)、[core/token_estimator.py](../src/fogmoe_telegram_bot/core/token_estimator.py) |
-| 裁剪 | `_trim_messages_with_tool_context` | [core/chat_records.py](../src/fogmoe_telegram_bot/core/chat_records.py) |
-| 淘汰旧快照 | `prune_permanent_records`、`send_permanent_records_archive` | [core/archive_utils.py](../src/fogmoe_telegram_bot/core/archive_utils.py) |
-| 溢出回调 | `handle_history_overflow`、`handle_snapshot_created` | [conversation/history_hooks.py](../src/fogmoe_telegram_bot/features/conversation/history_hooks.py) |
-| 摘要 | `generate_summary_immediately`、`schedule_summary_generation`、`_run_summary_agent`、`async_update_latest_history_state_summary` | [ai/summary.py](../src/fogmoe_telegram_bot/features/ai/summary.py) |
+| 每次写入：锁住这一行、清理配不上对的 tool 消息、估算 token、插入 `near_limit` / `new_session` 事件 | `insert_chat_records`、`_insert_chat_records_once`、`_sanitize_messages_with_tool_pairs`、`estimate_conversation_tokens` | [core/chat_records.py](../src/fogmoe_telegram_bot/core/chat_records.py)、[core/token_estimator.py](../src/fogmoe_telegram_bot/core/token_estimator.py) |
+| 只留最近的一段，保留它们需要的工具调用 | `_trim_messages_with_tool_context` | [core/chat_records.py](../src/fogmoe_telegram_bot/core/chat_records.py) |
+| 存进归档，淘汰超出保留数的旧快照并打包发给用户 | `prune_permanent_records`、`send_permanent_records_archive` | [core/archive_utils.py](../src/fogmoe_telegram_bot/core/archive_utils.py) |
+| 溢出时先即时生成摘要，来不及就转后台 | `handle_history_overflow`、`handle_snapshot_created` | [conversation/history_hooks.py](../src/fogmoe_telegram_bot/features/conversation/history_hooks.py) |
+| 摘要助手、把摘要放回开头 | `generate_summary_immediately`、`schedule_summary_generation`、`_run_summary_agent`、`async_update_latest_history_state_summary` | [ai/summary.py](../src/fogmoe_telegram_bot/features/ai/summary.py) |
+| 清空对话 | `archive_chat_and_start_new_session` | [conversation/clear.py](../src/fogmoe_telegram_bot/features/conversation/clear.py) |
+| 金币用完时暂停记录、恢复时补标记 | `_build_coin_service_state_event`，`_finalize` 里以 `suspend_if_zero` 写入 | [core/chat_records.py](../src/fogmoe_telegram_bot/core/chat_records.py) |
 
-### 历史状态的变化
+## 7. 别的时候
 
-```mermaid
-stateDiagram-v2
-    state "new_session" as Fresh
-    state "near_limit 已提醒" as Near
-    state "compressed，摘要待回填" as Compressed
-    state "compressed，已有摘要" as Summarized
-
-    [*] --> Fresh: 第一条用户消息
-    Fresh --> Near: 超过 CHAT_TOKEN_WARN_LIMIT
-    Fresh --> Compressed: 超过 CHAT_TOKEN_LIMIT
-    Near --> Compressed: 超过 CHAT_TOKEN_LIMIT
-    Compressed --> Summarized: 摘要生成完成
-    Compressed --> Near: 又接近上限
-    Summarized --> Near: 又接近上限
-    Summarized --> Compressed: 再次超限
-```
-
-- `/clear`（用户执行，或 AI 通过 `execute_telegram_command` 代执行）在任何状态下都把整段活跃历史存成一份快照，
-  活跃历史重置为只有一条 `new_session` 事件，然后后台生成摘要：`archive_chat_and_start_new_session`、
-  [conversation/clear.py](../src/fogmoe_telegram_bot/features/conversation/clear.py)。
-- 余额：`finalize` 阶段发现余额 ≤ 0 时追加 `suspended` 事件；此后对话轮次以外的写入（命令回复等 bot 事件）不再记入历史；
-  余额恢复后的下一次写入先补一条 `resumed` 事件。
-
-## 7. 其他也调用模型的地方
-
-它们复用同一个 `run_tool_loop`，只换工具与系统提示词：
-
-| 入口 | 做什么 | 工具 | 写入历史 |
-|---|---|---|---|
-| 摘要 `_run_summary_agent` | 把归档快照压成摘要 | `search_prior_context` | 回填 `compressed` 事件 |
-| 空闲回顾 `idle_followup` | 私聊沉默一段时间后，回顾 agent 用只读工具生成一条 `idle_recap` 事件，主模型带着它写跟进消息 | 回顾：只读工具与 `read_diary_page`；跟进：主聊天全套 | 跟进消息照常写入 |
-| 定时任务 `scheduler` | 到点后以主聊天身份发私聊消息 | 主聊天全套（经 `get_ai_response`） | 照常写入 |
+| 入口 | 工具 | 文件 |
+|---|---|---|
+| 定时消息 | 主聊天全套（经 `get_ai_response`） | [ai/scheduler.py](../src/fogmoe_telegram_bot/features/ai/scheduler.py) |
+| 空闲回顾：`_run_recap_agent` 写回顾（`idle_recap` 事件），主模型再写跟进消息 | 回顾：`IDLE_RECAP_TOOLS`；跟进：主聊天全套 | [ai/idle_followup.py](../src/fogmoe_telegram_bot/features/ai/idle_followup.py) |
+| 摘要助手 `_run_summary_agent` | `search_prior_context` | [ai/summary.py](../src/fogmoe_telegram_bot/features/ai/summary.py) |
 
 claim、租约与崩溃恢复见 [job-recovery.md](job-recovery.md)。
 
-## 8. 阈值与上限（自动生成）
+## 阈值与上限（自动生成）
 
 默认值取自代码，部署时可以用环境变量覆盖 `AppSettings` 里的项，见 [`.env.example`](../.env.example)。
 

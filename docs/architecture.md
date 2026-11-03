@@ -245,7 +245,7 @@ economy 的 `ADMIN_USER_ID`（`charge_coin.py`）与 `NEW_USER_BONUS_COINS`（�
 | [sensitive-data.md](sensitive-data.md) | 脱敏策略的单一来源与覆盖路径 |
 | [database-migrations.md](database-migrations.md) | 迁移的安装、升级、恢复与编写规则，MySQL 集成测试夹具 |
 | [ai-provider-architecture.md](ai-provider-architecture.md) | provider 声明表、任务解析、fallback、协议要求 |
-| [ai-conversation-flow.md](ai-conversation-flow.md) | 一轮 AI 对话的流程图：入口、阶段、工具循环、工具目录、上下文记录与压缩（部分由脚本生成） |
+| [ai-conversation-flow.html](ai-conversation-flow.html)、[ai-conversation-flow.md](ai-conversation-flow.md) | 一轮 AI 对话的流程图（HTML，自然语言）与逐步的代码对照、工具目录、阈值表（md）；会变的部分由脚本同步 |
 | [testing-guidelines.md](testing-guidelines.md) | 测试、类型检查与 CI |
 
 ## 回归锚点
