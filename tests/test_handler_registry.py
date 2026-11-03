@@ -74,6 +74,7 @@ def _job_signature(job):
 def test_registration_steps_are_grouped_by_app_assembly_boundary():
     assert [step.__name__ for step in REGISTRATION_STEPS] == [
         "register_error_handlers",
+        "register_guest_handlers",
         "register_history_handlers",
         "register_conversation_handlers",
         "register_core_command_handlers",
@@ -105,6 +106,7 @@ def test_register_handlers_preserves_handler_and_job_registration_order():
         _handler_signature(entry["handler"], entry["group"])
         for entry in application.handlers
     ] == [
+        ("MessageHandler", -110, "_GuestMessage", "handle_guest_message"),
         ("TypeHandler", -100, "Update", "prepare_update_history"),
         ("CommandHandler", 0, "fogmoebot", "reply"),
         ("MessageHandler", 0, "_MergedFilter", "reply"),

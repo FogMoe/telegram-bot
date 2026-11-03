@@ -85,6 +85,8 @@ files = [
     "src/fogmoe_telegram_bot/core/deadline.py",
     "src/fogmoe_telegram_bot/core/command_identity.py",
     "src/fogmoe_telegram_bot/core/admission.py",
+    "src/fogmoe_telegram_bot/core/guest_replies.py",
+    "src/fogmoe_telegram_bot/features/guest/handlers.py",
     "src/fogmoe_telegram_bot/core/blocking.py",
     "src/fogmoe_telegram_bot/core/background.py",
     "src/fogmoe_telegram_bot/core/http_sessions.py",

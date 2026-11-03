@@ -47,6 +47,7 @@ app → core
 | `migration_support.py` | Alembic 迁移的支撑代码：数据库 URL 优先级、版本表宽度、可重入 DDL 助手，见 [database-migrations.md](database-migrations.md) |
 | `mysql_connection.py` | **兼容层**：把上面三者 re-export 出去，保留全项目既有的 import 路径 |
 | `telegram_history.py` | Telegram 可见事件 → 对话历史的记录层，只写库并发信号 |
+| `guest_replies.py` | Guest Mode 的回复通道：`guest_reply_scope` 里发往召唤聊天的请求在 `_do_post` 改写成同一条 guest 回复（首条 `answerGuestQuery`，之后编辑这条 inline 消息），handler 拿到合成的 `Message` |
 | `balance.py` / `stake_reward_pool.py` | 金币与奖池变动的唯一入口：带 op_key 的幂等操作和账本，契约见 [balance-service.md](balance-service.md) |
 | `process_user.py` | 用户好感与印象；`user_exists`、`get_user_coins`、`get_user_permission` 等历史入口只转发给 `user_records`。金币只走余额服务，旧的金币函数已移除 |
 | `admission.py` / `deadline.py` | 对话轮次的准入控制（全局并发、每用户待处理数、有界排队）与整轮截止时间，见 [runtime.md](runtime.md) |
@@ -64,6 +65,7 @@ app → core
 | `conversation/` | AI 对话主路径，见下表 |
 | `ai/` | 按 provider 声明表解析与调用模型（路由、聊天入口、task runner，契约见 [ai-provider-architecture.md](ai-provider-architecture.md)）、工具循环（`tool_runner.py` 是循环骨架，消息转换、工具执行、投递与截止时间收尾分别在 `tool_loop_messages.py`、`tool_loop_execution.py`、`tool_loop_delivery.py`、`tool_loop_deadline.py`）、tools、summary、定时任务与 idle followup（claim 所有权、租约与崩溃恢复见 [job-recovery.md](job-recovery.md)）、翻译 handler、出站发送 |
 | `profile/` | `/start` `/me` `/help` `/github` `/setmyinfo` 与入群欢迎 |
+| `guest/` | Guest Mode 入口：bot 不在的聊天里被 @ 或被回复时收到 `guest_message`，在 group -110（早于历史入口）截住、回一段固定的自我介绍，不再往下传 |
 | `economy/` | 金币相关：`/lottery` `/give` `/rich`、商店、签到、质押、充值、邀请、任务、网页密码；按适配层、`operations/`、`repositories/` 分层，见「经济与游戏的分层」 |
 | `crypto/` | 行情、图表、预测、swap，以及管理员的行情监控命令；预测与 swap 的 SQL 在 `crypto/repositories/` |
 | `admin/` | 开发者命令与 `/admin_announce`；用到群管功能的群由 app 注入的读取函数提供（`group_usage.py`），见「core 与业务之间的回调」 |
