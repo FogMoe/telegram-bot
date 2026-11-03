@@ -21,8 +21,8 @@ from telegram.ext import (
 
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.redaction import report_error
-from fogmoe_telegram_bot.features.moderation import admin_ban_views, spam_strikes
 from fogmoe_telegram_bot.features.moderation import spam_control_views as views
+from fogmoe_telegram_bot.features.moderation import spam_strikes
 from fogmoe_telegram_bot.features.moderation.operations import spam_control as spam_rules
 from fogmoe_telegram_bot.features.moderation.spam_ai import handlers as spam_ai_handlers
 from fogmoe_telegram_bot.features.moderation.spam_ai import operations as spam_ai_operations
@@ -267,8 +267,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 文本消息检查正文，图片、视频等检查说明文字；经 inline bot 发的消息下面按钮上的文字也一起检查
-    parts = (effective_message.text or effective_message.caption, *spam_ai_handlers.button_labels(effective_message))
-    message_text = "\n".join(part for part in parts if part)
+    message_text = spam_ai_handlers.readable_text(effective_message)
     links = spam_ai_handlers.hidden_links(effective_message)
     if len(message_text) < 2 and not links:
         return
@@ -282,10 +281,8 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = spam_strikes.sender_user(effective_message).id
     if await _sender_is_admin(context, chat_id, user_id):
         return
-    # 警告里不显示发送者的名字；以个人身份发言的，警告下面带管理员的封禁按钮
+    # 警告里不显示发送者的名字；警告下面带管理员看原文的按钮，以个人身份发言的再加封禁按钮
     sender = spam_strikes.sender_html(effective_message)
-    target = spam_strikes.strike_target(effective_message)
-    ban_keyboard = admin_ban_views.ban_keyboard(chat_id, target) if target is not None else None
 
     if settings.block_links:
         found_url = spam_rules.find_link(message_text)
@@ -300,7 +297,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     chat_id=chat_id,
                     text=views.link_warning(sender, found_url, warning_count),
                     parse_mode=ParseMode.HTML,
-                    reply_markup=ban_keyboard,
+                    reply_markup=spam_strikes.warning_keyboard(effective_message, message_text),
                 )
                 logger.info(f"已删除链接消息 - 群组: {chat_id}, 用户: {user_id}, 链接: {found_url}, 内容: {message_text[:50]}...")
                 return
@@ -317,7 +314,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     chat_id=chat_id,
                     text=views.mention_warning(sender, found_mention, warning_count),
                     parse_mode=ParseMode.HTML,
-                    reply_markup=ban_keyboard,
+                    reply_markup=spam_strikes.warning_keyboard(effective_message, message_text),
                 )
                 logger.info(f"已删除@mention消息 - 群组: {chat_id}, 用户: {user_id}, 提及: {found_mention}, 内容: {message_text[:50]}...")
                 return
@@ -336,7 +333,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reason_html = views.spam_reason_html(trigger_word)
         if await spam_rules.has_custom_keywords(chat_id):
             # 管理员自己设的垃圾词：和 AI 识别共用计数，满次数移出群组
-            await spam_strikes.penalize(context.bot, effective_message, reason_html=reason_html)
+            await spam_strikes.penalize(context.bot, effective_message, original=message_text, reason_html=reason_html)
             return
 
         # 全局词库按子串匹配，收录了不少常用词，命中只警告，不计入移出次数
@@ -346,7 +343,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=chat_id,
                 text=views.global_word_warning(sender, reason_html, warning_count),
                 parse_mode=ParseMode.HTML,
-                reply_markup=ban_keyboard,
+                reply_markup=spam_strikes.warning_keyboard(effective_message, message_text),
             )
         except Exception as e:
             logger.error(f"发送垃圾信息警告时出错: {e}")

@@ -1,4 +1,4 @@
-"""管理员一键封禁：回调数据、权限、群里与私聊里按按钮的效果、加群消息的记录（不连网络、不连数据库）。"""
+"""管理员一键封禁与看原文：回调数据、权限、群里与私聊里按按钮的效果、加群消息与被删原文的记录（不连网络、不连数据库）。"""
 
 import asyncio
 from datetime import UTC, datetime
@@ -10,7 +10,7 @@ from telegram.error import BadRequest
 
 from fogmoe_telegram_bot.features.moderation import admin_ban, spam_strikes
 from fogmoe_telegram_bot.features.moderation import admin_ban_views as views
-from fogmoe_telegram_bot.features.moderation.operations import join_messages
+from fogmoe_telegram_bot.features.moderation.operations import deleted_messages, join_messages
 from fogmoe_telegram_bot.features.moderation.operations import member_verify as verification
 
 CHAT_ID = -100123
@@ -36,6 +36,7 @@ class Recorder:
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch):
     monkeypatch.setattr(join_messages, "JOINS", join_messages.JoinMessages())
+    monkeypatch.setattr(deleted_messages, "ORIGINALS", deleted_messages.DeletedMessages())
     monkeypatch.setattr(spam_strikes.spam_ai_operations, "forget_member", Recorder())
     monkeypatch.setattr(verification, "find_round_message", Recorder(result=None))
     monkeypatch.setattr(verification, "claim_round", Recorder(result=True))
@@ -118,10 +119,22 @@ def test_callback_data_round_trips_and_rejects_garbage():
     assert views.parse_action(views.unban_data(CHAT_ID, 7, 1_800_000_000)) == views.AdminAction(
         "unban", CHAT_ID, 7, until=1_800_000_000
     )
-    for data in (None, "mod:ban:x:1:2", "mod:kick:1:2:0", "mod:unban:1:2", "verify_7", "rpt:ban:1:2:3"):
+    assert views.parse_action(views.view_data(CHAT_ID, 55)) == views.AdminAction("view", CHAT_ID, 0, message_id=55)
+    for data in (
+        None,
+        "mod:ban:x:1:2",
+        "mod:kick:1:2:0",
+        "mod:unban:1:2",
+        "mod:view:x:1",
+        "mod:view:1",
+        "mod:view:1:2:3",
+        "verify_7",
+        "rpt:ban:1:2:3",
+    ):
         assert views.parse_action(data) is None
     assert len(views.ban_data(-1001234567890, 2**40, 2**31)) <= 64
     assert len(views.unban_data(-1001234567890, 2**40, 1_800_000_000)) <= 64
+    assert len(views.view_data(-1001234567890, 2**31)) <= 64
 
 
 def test_mentions_in_the_group_never_show_the_name():
@@ -141,6 +154,26 @@ def test_join_messages_are_forgotten_once_taken_or_too_old():
     assert joins.pop(CHAT_ID, 8) is None
 
 
+def test_originals_can_be_viewed_again_until_they_expire():
+    now = [0.0]
+    originals = deleted_messages.DeletedMessages(clock=lambda: now[0])
+    originals.record(CHAT_ID, 55, "加我领福利")
+
+    assert originals.get(CHAT_ID, 55) == "加我领福利"
+    assert originals.get(CHAT_ID, 55) == "加我领福利"
+    assert originals.get(CHAT_ID, 56) is None
+    now[0] = deleted_messages.KEEP_SECONDS
+    assert originals.get(CHAT_ID, 55) is None
+
+
+def test_originals_are_clipped_to_fit_the_popup():
+    assert deleted_messages.clip("广" * 200) == "广" * 200
+    clipped = deleted_messages.clip("广" * 300)
+    assert clipped == "广" * 199 + "…" and len(clipped) == deleted_messages.POPUP_LIMIT
+    # Telegram 按 UTF-16 计数，emoji 占两个位置
+    assert deleted_messages.clip("😀" * 150) == "😀" * 99 + "…"
+
+
 # ---------------------------------------------------------------------------
 # 谁能点
 # ---------------------------------------------------------------------------
@@ -155,15 +188,17 @@ def test_buttons_that_are_not_on_the_message_are_ignored():
     assert bot.bans == []
 
 
+@pytest.mark.parametrize("data", [views.ban_data(CHAT_ID, SPAMMER_ID), views.view_data(CHAT_ID, 55)], ids=["ban", "view"])
 @pytest.mark.parametrize(
     "clicker",
     [admin(restrict=False), admin(status="member"), admin(status="restricted")],
     ids=["admin-without-ban-rights", "member", "restricted"],
 )
-def test_only_the_owner_or_admins_who_can_ban_may_press(clicker):
+def test_only_the_owner_or_admins_who_can_ban_may_press(clicker, data):
+    deleted_messages.ORIGINALS.record(CHAT_ID, 55, "加我领福利")
     bot = FakeBot(clicker=clicker)
 
-    query = press(bot, views.ban_data(CHAT_ID, SPAMMER_ID))
+    query = press(bot, data)
 
     assert query.answer.calls == [((views.NOT_ALLOWED,), {"show_alert": True})]
     assert bot.bans == [] and query.edit_message_text.calls == []
@@ -212,6 +247,39 @@ def test_basic_groups_only_promise_a_removal():
     assert edited(query)[0].endswith("🚫 已被 <b>管理员</b> 移出群组。")
     assert edited(dm)[0].endswith("✅ <b>管理员</b> 已删除消息并移出群组。")
     assert "永久封禁" not in bot.group_posts[0]
+
+
+def test_viewing_the_original_shows_it_only_to_the_admin_who_pressed():
+    deleted_messages.ORIGINALS.record(CHAT_ID, 55, "加我领福利")
+    bot = FakeBot()
+
+    query = press(bot, views.view_data(CHAT_ID, 55))
+
+    assert query.answer.calls == [(("加我领福利",), {"show_alert": True})]
+    assert query.edit_message_text.calls == [] and bot.group_posts == [] and bot.bans == []
+
+
+@pytest.mark.parametrize(("original", "popup"), [(None, views.ORIGINAL_GONE), ("", views.ORIGINAL_EMPTY)], ids=["gone", "empty"])
+def test_an_original_that_is_gone_or_empty_says_so(original, popup):
+    if original is not None:
+        deleted_messages.ORIGINALS.record(CHAT_ID, 55, original)
+
+    query = press(FakeBot(), views.view_data(CHAT_ID, 55))
+
+    assert query.answer.calls == [((popup,), {"show_alert": True})]
+    assert f"{deleted_messages.KEEP_SECONDS // 3600} 小时" in views.ORIGINAL_GONE
+
+
+def test_the_original_button_stays_after_banning_and_unbanning():
+    bot = FakeBot()
+
+    banned = press(bot, views.ban_data(CHAT_ID, SPAMMER_ID), markup=views.warning_keyboard(CHAT_ID, 55, SPAMMER_ID))
+    _, keyboard = edited(banned)
+    assert [button.text for button in keyboard.inline_keyboard[0]] == [views.VIEW_LABEL, "解除封禁"]
+
+    unbanned = press(bot, views.unban_data(CHAT_ID, SPAMMER_ID), markup=keyboard)
+    _, keyboard = edited(unbanned)
+    assert [button.callback_data for row in keyboard.inline_keyboard for button in row] == [views.view_data(CHAT_ID, 55)]
 
 
 def test_a_failed_ban_keeps_the_buttons():

@@ -12,7 +12,7 @@ from telegram.ext import ApplicationHandlerStop
 
 from fogmoe_telegram_bot.core import balance
 from fogmoe_telegram_bot.features.moderation import admin_ban_views, spam_control, spam_strikes
-from fogmoe_telegram_bot.features.moderation.operations import join_messages
+from fogmoe_telegram_bot.features.moderation.operations import deleted_messages, join_messages
 from fogmoe_telegram_bot.features.moderation.operations import spam_control as spam_rules
 from fogmoe_telegram_bot.features.moderation.repositories.spam_settings import SpamSettings
 from fogmoe_telegram_bot.features.moderation.spam_ai import handlers, judge, operations
@@ -49,11 +49,13 @@ def _reset_memory_state():
     operations._daily_checks.clear()
     operations._status_cache.clear()
     spam_strikes.TRACKER._hits.clear()
+    deleted_messages.ORIGINALS._items.clear()
     yield
     operations._exempt.clear()
     operations._daily_checks.clear()
     operations._status_cache.clear()
     spam_strikes.TRACKER._hits.clear()
+    deleted_messages.ORIGINALS._items.clear()
 
 
 def group(*, enabled=True, days_left=10.0, chat_id=-100):
@@ -465,8 +467,16 @@ def message(*, user_id=7, is_bot=False, sender_chat=None, chat_type="supergroup"
     return SimpleNamespace(**values)
 
 
+def buttons(markup):
+    return [button.callback_data for row in markup.inline_keyboard for button in row]
+
+
 def penalize(bot, msg):
-    asyncio.run(spam_strikes.penalize(bot, msg, reason_html="的消息被 AI 识别为垃圾信息", note="如果是误判，请联系管理员。"))
+    asyncio.run(
+        spam_strikes.penalize(
+            bot, msg, original="加我领福利", reason_html="的消息被 AI 识别为垃圾信息", note="如果是误判，请联系管理员。"
+        )
+    )
 
 
 def test_the_third_strike_kicks_and_bans_for_a_day(monkeypatch):
@@ -482,10 +492,11 @@ def test_the_third_strike_kicks_and_bans_for_a_day(monkeypatch):
     assert "这是第 1 次警告，1 小时内满 3 次将被移出群组。如果是误判" in bot.sent[0]
     assert "这是第 2 次警告" in bot.sent[1]
     assert bot.sent[2].startswith("🚫") and "24 小时内无法重新加入" in bot.sent[2]
-    # 警告和公告都不显示名字；警告下面带管理员的封禁按钮
+    # 警告和公告都不显示名字；警告下面带管理员看原文和封禁的按钮，移出公告下面只有看原文
     assert all("小美" not in text and "tg://user?id=7" in text for text in bot.sent)
-    assert bot.markups[0].inline_keyboard[0][0].callback_data == admin_ban_views.ban_data(-100, 7)
-    assert bot.markups[2] is None
+    assert buttons(bot.markups[0]) == [admin_ban_views.view_data(-100, 55), admin_ban_views.ban_data(-100, 7)]
+    assert buttons(bot.markups[2]) == [admin_ban_views.view_data(-100, 55)]
+    assert deleted_messages.ORIGINALS.get(-100, 55) == "加我领福利"
     (chat_id, user_id, until), = bot.bans
     assert (chat_id, user_id) == (-100, 7)
     assert timedelta(hours=23) < until - datetime.now(UTC) <= timedelta(hours=24)
@@ -548,6 +559,8 @@ def test_messages_without_a_person_behind_them_are_never_kicked(msg):
 
     assert bot.bans == []
     assert all("次警告" not in text for text in bot.sent)
+    # 没有可以封禁的个人，只能看原文
+    assert all(buttons(markup) == [admin_ban_views.view_data(-100, 55)] for markup in bot.markups)
 
 
 # ---------------------------------------------------------------------------
@@ -633,7 +646,7 @@ def test_spam_is_deleted_and_counted_as_a_strike(monkeypatch):
 
     assert bot.deleted == [55]
     (_, msg), kwargs = calls.punish.calls[0]
-    assert kwargs == {"reason_html": "的消息被 AI 识别为垃圾信息", "note": "如果是误判，请联系管理员。"}
+    assert kwargs == {"original": "hi", "reason_html": "的消息被 AI 识别为垃圾信息", "note": "如果是误判，请联系管理员。"}
     assert calls.clean.calls == []
 
 
@@ -897,6 +910,7 @@ def test_a_keyword_hit_in_a_caption_is_deleted_and_never_reaches_the_ai(monkeypa
     (_, punished), kwargs = punish.calls[0]
     assert punished is msg
     assert kwargs["reason_html"] == "发送的消息包含垃圾内容 <tg-spoiler>&lt;博彩&gt;</tg-spoiler>"
+    assert kwargs["original"] == "来玩博彩"
     assert ai.calls == []
 
 
@@ -912,7 +926,8 @@ def test_a_global_word_list_hit_only_warns(monkeypatch):
     assert "&lt;博彩&gt;</tg-spoiler>，已被自动删除。\n这是第" in bot.sent[0]
     assert "移出群组" in bot.sent[0] and bot.bans == []
     assert "小美" not in bot.sent[0] and '<a href="tg://user?id=7">该用户</a>' in bot.sent[0]
-    assert bot.markups[0].inline_keyboard[0][0].callback_data == admin_ban_views.ban_data(-100, 7)
+    assert buttons(bot.markups[0]) == [admin_ban_views.view_data(-100, 55), admin_ban_views.ban_data(-100, 7)]
+    assert deleted_messages.ORIGINALS.get(-100, 55) == "来玩博彩"
 
 
 def test_messages_the_keywords_miss_go_to_the_ai(monkeypatch):
@@ -962,7 +977,10 @@ def test_the_link_filter_catches_hidden_text_links(monkeypatch):
     assert bot.deleted == [55]
     assert "<tg-spoiler>https://spam.example/&lt;x&gt;</tg-spoiler>" in bot.sent[0]
     assert "小美" not in bot.sent[0]
-    assert bot.markups[0].inline_keyboard[0][0].text == admin_ban_views.BAN_LABEL
+    assert [button.text for button in bot.markups[0].inline_keyboard[0]] == [
+        admin_ban_views.VIEW_LABEL,
+        admin_ban_views.BAN_LABEL,
+    ]
 
 
 def test_the_link_filter_catches_links_on_inline_bot_buttons(monkeypatch):
@@ -973,6 +991,8 @@ def test_the_link_filter_catches_links_on_inline_bot_buttons(monkeypatch):
 
     assert bot.deleted == [55]
     assert "<tg-spoiler>https://t.me/spamgroup</tg-spoiler>" in bot.sent[0]
+    # 广告在按钮上，原文也记下按钮上的文字
+    assert deleted_messages.ORIGINALS.get(-100, 55) == "加入福利群\n👍"
 
 
 def test_button_labels_are_checked_against_spam_words(monkeypatch):
@@ -1075,7 +1095,8 @@ def test_a_guest_bot_ad_is_filtered_as_the_callers_message_and_goes_no_further(m
     assert bot.deleted == [55]
     assert "<tg-spoiler>https://spam.example/shop</tg-spoiler>" in bot.sent[0]
     assert admin_ban_views.neutral_mention(7) in bot.sent[0]
-    assert bot.markups[0].inline_keyboard[0][0].callback_data == admin_ban_views.ban_data(-100, 7)
+    assert buttons(bot.markups[0]) == [admin_ban_views.view_data(-100, 55), admin_ban_views.ban_data(-100, 7)]
+    assert deleted_messages.ORIGINALS.get(-100, 55) == "全网最大海外机房号商\n海外账户自助购买网站"
 
 
 def test_other_bot_messages_are_left_alone_and_go_no_further(monkeypatch):

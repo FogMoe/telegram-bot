@@ -221,6 +221,12 @@ def button_labels(message: Message) -> tuple[str, ...]:
     return tuple(button.text for button in _buttons(message) if button.text)
 
 
+def readable_text(message: Message) -> str:
+    """消息里读得到的文字：正文或说明文字，再加上按钮上的文字（经 inline bot 发的广告常把内容放在按钮上）。"""
+    parts = (message.text or message.caption, *button_labels(message))
+    return "\n".join(part for part in parts if part)
+
+
 def _origin_name(message: Message) -> str | None:
     origin: Any = message.forward_origin
     if origin is None:
@@ -313,6 +319,7 @@ async def review_message(message: Message, bot: Any) -> None:
     await spam_strikes.penalize(
         bot,
         message,
+        original=readable_text(message),
         reason_html="的消息被 AI 识别为垃圾信息",
         note="如果是误判，请联系管理员。",
     )
