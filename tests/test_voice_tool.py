@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from fogmoe_telegram_bot.features.ai import tool_runner
+from fogmoe_telegram_bot.features.ai import tool_loop_delivery
 from fogmoe_telegram_bot.features.ai.tools import voice_tools
 from fogmoe_telegram_bot.features.ai.tools.models import GenerateVoiceArgs, parameters_schema
 
@@ -37,7 +37,7 @@ def test_generate_voice_tool_uses_fish_audio_defaults(monkeypatch):
 
 
 def test_generate_voice_public_result_hides_audio_id():
-    result = tool_runner._public_tool_result(
+    result = tool_loop_delivery.public_tool_result(
         "generate_voice",
         {
             "status": "generated",

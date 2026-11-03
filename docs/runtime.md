@@ -127,7 +127,7 @@ PTB handler（concurrent_updates 有界）
 
 - **扣费规则不变。** 扣费发生在 `charge` 阶段，截止时间不触发退款，也没有补偿式回滚；扣费、历史写入的顺序与语义都与改造前一致。
   这是已确认的产品规则（2026-10）：扣费之后失败或超时的轮次不退款。
-- **历史保持配对。** 工具阶段到期时，`tool_runner` 给这一轮里每个还没有结果的 `tool_call` 补一条结果：
+- **历史保持配对。** 工具阶段到期时，工具循环（`tool_loop_deadline.close_interrupted_round`）给这一轮里每个还没有结果的 `tool_call` 补一条结果：
   正在运行的那个是 `{"error": "interrupted", "outcome": "unknown", ...}`（可能已经完成，不要假定失败、不要重复执行），
   后面没来得及运行的是 `{"error": "not_executed", ...}`。这样 assistant 的 `tool_calls` 与 `tool` 结果一一配对，
   下一轮不会因为不配对被 provider 拒绝。这一轮里已经完成的工具照常留下结果，它们带回的 Telegram 事件

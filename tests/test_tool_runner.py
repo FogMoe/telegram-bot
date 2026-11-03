@@ -2,7 +2,8 @@ import asyncio
 
 import pytest
 
-from fogmoe_telegram_bot.features.ai import tool_runner
+from fogmoe_telegram_bot.features.ai import tool_loop_messages, tool_runner
+from fogmoe_telegram_bot.features.ai.types import TOOL_CONTEXT_MESSAGES_KEY
 
 
 @pytest.fixture(autouse=True)
@@ -110,7 +111,7 @@ def test_assistant_message_fallback_does_not_scan_for_other_providers():
         _Message(None, later_tool_calls),
     )
 
-    assistant_message, tool_calls = tool_runner._resolve_assistant_message(
+    assistant_message, tool_calls = tool_loop_messages.resolve_assistant_message(
         response,
         provider="openai",
         provider_name="OpenAI",
@@ -129,7 +130,7 @@ def test_fogmoe_fallback_keeps_choice_zero_tool_calls():
         _Message(None, later_tool_calls),
     )
 
-    assistant_message, tool_calls = tool_runner._resolve_assistant_message(
+    assistant_message, tool_calls = tool_loop_messages.resolve_assistant_message(
         response,
         provider="fogmoe",
         provider_name="FOGMOE",
@@ -538,7 +539,7 @@ def test_run_tool_loop_injects_telegram_events_before_final_reply(monkeypatch):
         "execute_telegram_command",
         lambda **kwargs: {
             "success": True,
-            tool_runner.TOOL_CONTEXT_MESSAGES_KEY: [
+            TOOL_CONTEXT_MESSAGES_KEY: [
                 "command-event",
                 "reply-event",
             ],

@@ -35,7 +35,7 @@
 
 ## 注意事项
 
-- 工具处理函数必须是同步函数，且返回可 JSON 序列化的 dict。
+- 工具处理函数可以是 async 函数、同步函数（走有界线程适配器）或用 `@inline_tool` 标记的内联函数，区分规则见 `dispatch.py`，由工具循环的 `../tool_loop_execution.py` 调用；都返回可 JSON 序列化的 dict。
 - 依赖聊天/用户上下文的工具务必通过 `context.get_tool_request_context()` 读取。
 - 尽量避免长耗时网络调用，超时设置要保守。
 

@@ -1,6 +1,6 @@
 """工具的执行方式：async、同步（线程适配器）与内联。
 
-工具注册表里的处理函数有三种，由 `tool_runner._call_tool` 区分：
+工具注册表里的处理函数有三种，由 `tool_loop_execution._call_tool` 区分：
 
 - **async 函数**：直接在事件循环里 `await`。访问数据库的工具、调用别的 async 能力的工具属于这一类。
 - **同步函数**（默认）：放进有界的线程适配器（`core.blocking.tools()`）执行，并发有上限。
