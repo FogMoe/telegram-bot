@@ -11,7 +11,12 @@ from telegram.error import BadRequest
 from telegram.ext import ApplicationHandlerStop
 
 from fogmoe_telegram_bot.core import balance
-from fogmoe_telegram_bot.features.moderation import admin_ban_views, spam_control, spam_strikes
+from fogmoe_telegram_bot.features.moderation import (
+    admin_ban_views,
+    spam_control,
+    spam_control_views,
+    spam_strikes,
+)
 from fogmoe_telegram_bot.features.moderation.operations import deleted_messages, join_messages
 from fogmoe_telegram_bot.features.moderation.operations import spam_control as spam_rules
 from fogmoe_telegram_bot.features.moderation.repositories.spam_settings import SpamSettings
@@ -693,11 +698,14 @@ def test_status_texts():
     assert text(None, available=False) == "AI 识别暂未开放。"
     assert text(group()) == "AI 识别已开启，有效期至 2026-10-17 12:00 UTC（还剩 10 天）。"
     assert text(group(days_left=0.5)).endswith("（不到 1 天）。")
-    assert "今天的检查次数已达上限" in text(group(), limit_reached=True)
-    assert "服务暂时不可用" in text(group(), available=False)
+    assert text(group(), limit_reached=True).endswith("在此之前只使用关键词过滤。")
+    assert text(group(), available=False).endswith("AI 识别服务暂时不可用，目前只使用关键词过滤。")
+    # 单独开着 AI 识别：总开关关着时照常运行，失效时也没有关键词兜底
     assert text(group(), filter_enabled=False).endswith(
-        "垃圾信息过滤总开关已关闭，AI 识别不会运行；使用 /spam 重新开启。"
+        "垃圾信息过滤总开关没有开启，只用 AI 识别，不检查链接、@提及和垃圾词。"
     )
+    assert text(group(), filter_enabled=False, limit_reached=True).endswith("在此之前不检查消息。")
+    assert text(group(), filter_enabled=False, available=False).endswith("目前不检查消息。")
     assert text(group(enabled=False)).startswith("AI 识别已暂停，有效期至 2026-10-17 12:00 UTC")
     assert text(group(days_left=-1)) == (
         "本群的 AI 识别已于 2026-10-06 12:00 UTC 到期。/spam ai renew 续费 30 天（100 金币）。"
@@ -740,35 +748,34 @@ def run_ai(update, context, args, *, filter_enabled=True):
     asyncio.run(handlers.spam_ai_command(update, context, args, filter_enabled=filter_enabled))
 
 
-def test_enabling_charges_with_the_command_message_identity(monkeypatch, settings_override):
+@pytest.mark.parametrize("filter_enabled", [True, False])
+def test_enabling_charges_with_the_command_message_identity(monkeypatch, settings_override, filter_enabled):
     settings_override(TYPESAFE_API_KEY="ts-key")
     enable = Recorder(result=PayResult(PayStatus.CHARGED, NOW))
     monkeypatch.setattr(operations, "enable", enable)
     update, context, args = ai_command("on")
 
-    run_ai(update, context, args)
+    # AI 识别可以单独开启，不需要先打开 /spam 总开关
+    run_ai(update, context, args, filter_enabled=filter_enabled)
 
     assert enable.calls == [((-100, 7, "spamai:-100:11"), {})]
     assert replies(update)[0].startswith("已开启 AI 识别")
 
 
 @pytest.mark.parametrize(
-    ("key", "filter_enabled", "can_delete", "reply"),
+    ("key", "can_delete", "reply"),
     [
-        (None, True, True, "AI 识别暂未开放。"),
-        ("ts-key", False, True, "请先开启垃圾信息过滤功能（使用 /spam 命令），才能开启 AI 识别。"),
-        ("ts-key", True, False, "机器人需要有删除消息的权限才能使用 AI 识别。"),
+        (None, True, "AI 识别暂未开放。"),
+        ("ts-key", False, "机器人需要有删除消息的权限才能使用 AI 识别。"),
     ],
 )
-def test_enabling_checks_preconditions_before_charging(
-    monkeypatch, settings_override, key, filter_enabled, can_delete, reply
-):
+def test_enabling_checks_preconditions_before_charging(monkeypatch, settings_override, key, can_delete, reply):
     settings_override(TYPESAFE_API_KEY=key)
     renew = Recorder()
     monkeypatch.setattr(operations, "renew", renew)
     update, context, args = ai_command("renew", can_delete=can_delete)
 
-    run_ai(update, context, args, filter_enabled=filter_enabled)
+    run_ai(update, context, args)
 
     assert replies(update) == [reply]
     assert renew.calls == []
@@ -850,7 +857,7 @@ def test_reminders_are_sent_once_per_claimed_expiry(monkeypatch):
 
     assert [args for args, _ in send.calls] == [
         (-100, "本群的 AI 识别将于 2026-10-07 12:00 UTC 到期。管理员可以用 /spam ai renew 续费 30 天（100 金币）。"),
-        (-300, "本群的 AI 识别已到期，现在只使用关键词过滤。管理员可以用 /spam ai renew 续费 30 天（100 金币）。"),
+        (-300, "本群的 AI 识别已到期，不再用 AI 检查消息。管理员可以用 /spam ai renew 续费 30 天（100 金币）。"),
     ]
 
 
@@ -868,21 +875,21 @@ def group_message_update(msg):
     )
 
 
-def stub_settings(monkeypatch, *, block_links=False, block_mentions=False):
+def stub_settings(monkeypatch, *, enabled=True, block_links=False, block_mentions=False):
     async def get_settings(chat_id):
-        return SpamSettings(enabled=True, block_links=block_links, block_mentions=block_mentions)
+        return SpamSettings(enabled=enabled, block_links=block_links, block_mentions=block_mentions)
 
     monkeypatch.setattr(spam_rules, "get_settings", get_settings)
 
 
-def stub_filter(monkeypatch, *, keyword_hit, custom_keywords=True):
+def stub_filter(monkeypatch, *, keyword_hit, custom_keywords=True, enabled=True):
     async def has_custom(chat_id):
         return custom_keywords
 
     async def find_spam_word(text, chat_id):
         return "<博彩>" if keyword_hit else None
 
-    stub_settings(monkeypatch)
+    stub_settings(monkeypatch, enabled=enabled, block_links=not enabled, block_mentions=not enabled)
     monkeypatch.setattr(spam_rules, "has_custom_keywords", has_custom)
     monkeypatch.setattr(spam_rules, "find_spam_word", find_spam_word)
     punish = Recorder()
@@ -939,6 +946,59 @@ def test_messages_the_keywords_miss_go_to_the_ai(monkeypatch):
 
     assert bot.deleted == [] and punish.calls == []
     assert ai.calls == [((msg, bot), {})]
+
+
+def test_with_the_filter_off_a_running_ai_check_sees_messages_the_keywords_would_catch(monkeypatch):
+    # 总开关关掉时链接与 @提及过滤的设置还留着（stub_filter 里打开了），也不该生效
+    punish, ai = stub_filter(monkeypatch, keyword_hit=True, custom_keywords=False, enabled=False)
+    monkeypatch.setattr(handlers, "is_running", Recorder(result=True))
+    bot = FakeBot()
+    msg = message(text="来玩博彩 https://spam.example @spammer")
+
+    asyncio.run(spam_control.process_message(group_message_update(msg), filter_context(bot)))
+
+    assert bot.deleted == [] and bot.sent == [] and punish.calls == []
+    assert ai.calls == [((msg, bot), {})]
+
+
+def test_with_the_filter_off_admins_are_not_sent_to_the_ai(monkeypatch):
+    punish, ai = stub_filter(monkeypatch, keyword_hit=False, enabled=False)
+    monkeypatch.setattr(handlers, "is_running", Recorder(result=True))
+    context = filter_context(FakeBot())
+    context.chat_data["is_admin:-100:7"] = True
+
+    asyncio.run(spam_control.process_message(group_message_update(message(text="大家好")), context))
+
+    assert ai.calls == []
+
+
+def test_groups_with_nothing_on_skip_the_admin_lookup(monkeypatch):
+    punish, ai = stub_filter(monkeypatch, keyword_hit=True, enabled=False)
+    monkeypatch.setattr(handlers, "is_running", Recorder(result=False))
+    lookup = Recorder()
+    bot = FakeBot()
+    bot.get_chat_member = lookup
+    context = SimpleNamespace(bot=bot, chat_data={})
+
+    asyncio.run(spam_control.process_message(group_message_update(message(text="来玩博彩")), context))
+
+    assert lookup.calls == [] and ai.calls == [] and bot.deleted == []
+
+
+@pytest.mark.parametrize(("configured", "checking", "running"), [(True, True, True), (False, True, False), (True, False, False)])
+def test_the_ai_check_runs_only_when_configured_and_paid(monkeypatch, configured, checking, running):
+    monkeypatch.setattr(judge, "is_configured", lambda: configured)
+    monkeypatch.setattr(operations, "is_checking", Recorder(result=checking))
+
+    assert asyncio.run(handlers.is_running(-100)) is running
+
+
+@pytest.mark.parametrize(("ai_running", "extra"), [(False, False), (True, True)])
+def test_turning_the_filter_off_says_whether_the_ai_check_keeps_running(ai_running, extra):
+    text = spam_control_views.disabled_text(ai_running)
+
+    assert text.startswith(spam_control_views.DISABLED_TEXT)
+    assert ("AI 识别不受影响，仍在运行；如需暂停，使用 /spam ai off。" in text) is extra
 
 
 @pytest.mark.parametrize(
