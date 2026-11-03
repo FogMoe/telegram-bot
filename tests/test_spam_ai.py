@@ -6,8 +6,9 @@ from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from telegram import MessageEntity
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
 from telegram.error import BadRequest
+from telegram.ext import ApplicationHandlerStop
 
 from fogmoe_telegram_bot.core import balance
 from fogmoe_telegram_bot.features.moderation import admin_ban_views, spam_control, spam_strikes
@@ -80,6 +81,8 @@ def test_the_request_carries_the_message_sender_and_one_noul_question(settings_o
             forwarded_from="福利频道",
             hidden_links=("https://spam.example",),
             reply_to_text="有人吗",
+            via_bot="adbot",
+            buttons=("加入福利群",),
         )
     )
 
@@ -93,6 +96,8 @@ def test_the_request_carries_the_message_sender_and_one_noul_question(settings_o
             "forwarded_from": "福利频道",
             "hidden_links": ["https://spam.example"],
             "reply_to_text": "有人吗",
+            "via_bot": "adbot",
+            "buttons": ["加入福利群"],
         },
     }
     question = request["questions"]["spam"]
@@ -105,6 +110,13 @@ def test_long_texts_are_truncated():
 
     assert len(state["message"]["text"]) == judge.MAX_TEXT_CHARS + 1
     assert len(state["message"]["reply_to_text"]) == judge.MAX_REPLY_CHARS + 1
+
+
+def test_buttons_and_hidden_links_are_capped():
+    state = judge.build_state(review(buttons=("z" * 100,) * 30, hidden_links=("https://a.example",) * 30))
+
+    assert len(state["message"]["buttons"]) == len(state["message"]["hidden_links"]) == judge.MAX_LIST_ITEMS
+    assert len(state["message"]["buttons"][0]) == judge.MAX_BUTTON_CHARS + 1
 
 
 def test_parse_judgment_reads_the_probability_model_and_tokens():
@@ -444,6 +456,10 @@ def message(*, user_id=7, is_bot=False, sender_chat=None, chat_type="supergroup"
         caption_entities=(),
         forward_origin=None,
         reply_to_message=None,
+        reply_markup=None,
+        via_bot=None,
+        guest_bot_caller_user=None,
+        guest_bot_caller_chat=None,
     )
     values.update(fields)
     return SimpleNamespace(**values)
@@ -558,6 +574,29 @@ def test_review_input_reads_captions_hidden_links_forwards_and_replies():
     assert data.forwarded_from == "福利频道"
     assert data.reply_to_text == "图片说明"
     assert (data.sender_name, data.sender_username, data.group_title) == ("小美", "xm", "FogMoe 交流群")
+    assert (data.via_bot, data.buttons) == (None, ())
+
+
+def inline_bot_ad(**fields):
+    """经 inline bot 发的广告：一张图，没有说明文字，广告在按钮上。"""
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("加入福利群", url="https://t.me/spamgroup")],
+            [InlineKeyboardButton("👍", callback_data="like")],
+        ]
+    )
+    values = dict(text=None, caption=None, reply_markup=keyboard, via_bot=SimpleNamespace(username="adbot"))
+    values.update(fields)
+    return message(**values)
+
+
+def test_review_input_reads_inline_bot_buttons():
+    data = handlers.review_input(inline_bot_ad())
+
+    assert (data.text, data.is_caption) == ("", True)
+    assert data.via_bot == "adbot"
+    assert data.buttons == ("加入福利群", "👍")
+    assert data.hidden_links == ("https://t.me/spamgroup",)
 
 
 @pytest.mark.parametrize(
@@ -811,6 +850,7 @@ def group_message_update(msg):
     return SimpleNamespace(
         message=msg,
         edited_message=None,
+        effective_message=msg,
         effective_chat=SimpleNamespace(id=-100, type="supergroup"),
     )
 
@@ -923,3 +963,127 @@ def test_the_link_filter_catches_hidden_text_links(monkeypatch):
     assert "<tg-spoiler>https://spam.example/&lt;x&gt;</tg-spoiler>" in bot.sent[0]
     assert "小美" not in bot.sent[0]
     assert bot.markups[0].inline_keyboard[0][0].text == admin_ban_views.BAN_LABEL
+
+
+def test_the_link_filter_catches_links_on_inline_bot_buttons(monkeypatch):
+    stub_settings(monkeypatch, block_links=True)
+    bot = FakeBot()
+
+    asyncio.run(spam_control.process_message(group_message_update(inline_bot_ad()), filter_context(bot)))
+
+    assert bot.deleted == [55]
+    assert "<tg-spoiler>https://t.me/spamgroup</tg-spoiler>" in bot.sent[0]
+
+
+def test_button_labels_are_checked_against_spam_words(monkeypatch):
+    seen = []
+
+    async def find_spam_word(text, chat_id):
+        seen.append(text)
+        return "福利"
+
+    punish, ai = stub_filter(monkeypatch, keyword_hit=True)
+    monkeypatch.setattr(spam_rules, "find_spam_word", find_spam_word)
+    bot = FakeBot()
+
+    asyncio.run(spam_control.process_message(group_message_update(inline_bot_ad()), filter_context(bot)))
+
+    assert seen == ["加入福利群\n👍"]
+    assert bot.deleted == [55] and len(punish.calls) == 1 and ai.calls == []
+
+
+def test_inline_bot_buttons_reach_the_ai_without_any_text(monkeypatch):
+    punish, ai = stub_filter(monkeypatch, keyword_hit=False)
+    bot = FakeBot()
+    msg = inline_bot_ad()
+
+    asyncio.run(spam_control.process_message(group_message_update(msg), filter_context(bot)))
+
+    assert ai.calls == [((msg, bot), {})]
+
+
+def test_an_inline_bot_message_with_nothing_to_read_is_skipped(monkeypatch):
+    punish, ai = stub_filter(monkeypatch, keyword_hit=False)
+    bot = FakeBot()
+
+    asyncio.run(spam_control.process_message(group_message_update(inline_bot_ad(reply_markup=None)), filter_context(bot)))
+
+    assert ai.calls == [] and bot.deleted == []
+
+
+# ---------------------------------------------------------------------------
+# 访客 bot（Bot API 10.0 Guest Mode）的回复与别的 bot 的消息
+# ---------------------------------------------------------------------------
+
+AD_BOT = SimpleNamespace(id=900, is_bot=True, username="Dhm_9ecded5dbot", full_name="Dhm 9ecded5d Bot")
+
+
+def guest_reply(**fields):
+    """成员 @ 出来的访客 bot 的回复：发送者是 bot，@ 它的人在 guest_bot_caller_user。"""
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("海外账户自助购买网站", url="https://spam.example/shop")]])
+    values = dict(
+        from_user=AD_BOT,
+        guest_bot_caller_user=message().from_user,
+        text="全网最大海外机房号商",
+        reply_to_message=SimpleNamespace(text="@Dhm_9ecded5dbot", caption=None),
+        reply_markup=keyboard,
+    )
+    values.update(fields)
+    return message(**values)
+
+
+def test_a_guest_bot_reply_counts_against_the_member_who_called_it():
+    msg = guest_reply()
+
+    assert spam_strikes.strike_target(msg) == 7
+    assert spam_strikes.sender_html(msg) == admin_ban_views.neutral_mention(7)
+    assert handlers.should_review(msg)
+    data = handlers.review_input(msg)
+    assert (data.sender_name, data.sender_username, data.via_bot) == ("小美", "xm", "Dhm_9ecded5dbot")
+    assert (data.reply_to_text, data.hidden_links) == ("@Dhm_9ecded5dbot", ("https://spam.example/shop",))
+
+
+def test_a_guest_bot_called_as_a_channel_has_nobody_to_punish():
+    msg = guest_reply(guest_bot_caller_user=None, guest_bot_caller_chat=SimpleNamespace(title="某频道"))
+
+    assert spam_strikes.strike_target(msg) is None
+    assert spam_strikes.sender_html(msg) == "该频道"
+    assert not handlers.should_review(msg)
+
+
+@pytest.mark.parametrize(
+    ("msg", "expected"),
+    [
+        (guest_reply(), True),
+        (message(from_user=AD_BOT), True),
+        (message(), False),
+        (message(is_bot=True, sender_chat=SimpleNamespace(title="频道")), False),
+    ],
+    ids=["guest-reply", "bot", "person", "as-channel"],
+)
+def test_only_messages_bots_send_as_themselves_count_as_bot_messages(msg, expected):
+    assert spam_control.SENT_BY_BOT.filter(msg) is expected
+
+
+def test_a_guest_bot_ad_is_filtered_as_the_callers_message_and_goes_no_further(monkeypatch):
+    stub_settings(monkeypatch, block_links=True)
+    bot = FakeBot()
+
+    with pytest.raises(ApplicationHandlerStop):
+        asyncio.run(spam_control.process_bot_message(group_message_update(guest_reply()), filter_context(bot)))
+
+    assert bot.deleted == [55]
+    assert "<tg-spoiler>https://spam.example/shop</tg-spoiler>" in bot.sent[0]
+    assert admin_ban_views.neutral_mention(7) in bot.sent[0]
+    assert bot.markups[0].inline_keyboard[0][0].callback_data == admin_ban_views.ban_data(-100, 7)
+
+
+def test_other_bot_messages_are_left_alone_and_go_no_further(monkeypatch):
+    punish, ai = stub_filter(monkeypatch, keyword_hit=True)
+    bot = FakeBot()
+
+    with pytest.raises(ApplicationHandlerStop):
+        asyncio.run(spam_control.process_bot_message(group_message_update(message(from_user=AD_BOT)), filter_context(bot)))
+
+    assert bot.deleted == [] and bot.sent == []
+    assert punish.calls == [] and ai.calls == []

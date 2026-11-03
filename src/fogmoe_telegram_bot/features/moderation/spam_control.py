@@ -8,9 +8,16 @@ import logging
 import threading
 import time
 
-from telegram import Update
+from telegram import Message, Update
 from telegram.constants import ParseMode
-from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    ApplicationHandlerStop,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.redaction import report_error
@@ -256,23 +263,23 @@ async def _sender_is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, use
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """群消息的过滤：链接、@提及、垃圾词依次检查，都没命中时交给 AI 识别。"""
     effective_message = update.message or update.edited_message
-
-    # 文本消息检查正文，图片、视频等检查说明文字
-    if not effective_message or not (effective_message.text or effective_message.caption):
+    if not effective_message or update.effective_chat.type not in ["group", "supergroup"]:
         return
-    if update.effective_chat.type not in ["group", "supergroup"]:
+
+    # 文本消息检查正文，图片、视频等检查说明文字；经 inline bot 发的消息下面按钮上的文字也一起检查
+    parts = (effective_message.text or effective_message.caption, *spam_ai_handlers.button_labels(effective_message))
+    message_text = "\n".join(part for part in parts if part)
+    links = spam_ai_handlers.hidden_links(effective_message)
+    if len(message_text) < 2 and not links:
         return
 
     chat_id = update.effective_chat.id
-    message_text = effective_message.text or effective_message.caption
-    if len(message_text) < 2:
-        return
 
     settings = await spam_rules.get_settings(chat_id)
     if not settings.enabled:
         return
 
-    user_id = effective_message.from_user.id
+    user_id = spam_strikes.sender_user(effective_message).id
     if await _sender_is_admin(context, chat_id, user_id):
         return
     # 警告里不显示发送者的名字；以个人身份发言的，警告下面带管理员的封禁按钮
@@ -283,8 +290,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if settings.block_links:
         found_url = spam_rules.find_link(message_text)
         if found_url is None:
-            # 文字链接（「点击这里」背后的网址）不出现在正文里
-            links = spam_ai_handlers.hidden_links(effective_message)
+            # 文字链接（「点击这里」背后的网址）和按钮上的链接不出现在正文里
             found_url = links[0] if links else None
         if found_url is not None:
             warning_count = spam_rules.add_warning(chat_id, user_id)
@@ -350,6 +356,38 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await spam_ai_handlers.maybe_review(effective_message, context.bot)
 
 
+class _SentByBot(filters.MessageFilter):
+    """别的 bot 以自己的身份发的消息。默认收不到；在 BotFather 打开 Bot-to-Bot Communication 之后，
+    机器人作为群管理员会收到。匿名管理员、以频道身份发言的消息 from_user 也是 bot 账号，但带 sender_chat，不算。"""
+
+    __slots__ = ()
+
+    def filter(self, message: Message) -> bool:
+        user = message.from_user
+        return message.sender_chat is None and user is not None and user.is_bot
+
+
+SENT_BY_BOT = _SentByBot(name="SentByBot")
+
+
+async def process_bot_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """别的 bot 发的消息：访客 bot 的回复按 @ 它的人发的消息过滤，其余不管。
+    处理完不再交给其他功能，免得关键词回复、AI 对话去回复 bot，两个 bot 互相回个没完。"""
+    message = update.effective_message
+    caller = message.guest_bot_caller_user
+    logger.info(
+        f"收到 bot 消息 - 群组: {message.chat_id}, bot: @{message.from_user.username}, "
+        f"访客调用者: {caller.id if caller else None}, 按钮: {len(spam_ai_handlers.button_labels(message))} 个, "
+        f"内容: {(message.text or message.caption or '')[:50]}"
+    )
+    if caller is not None:
+        try:
+            await process_message(update, context)
+        except Exception:
+            logger.exception("过滤访客 bot 的回复时出错")
+    raise ApplicationHandlerStop
+
+
 def _schedule_warning_reset() -> None:
     """每 `WARNING_RESET_SECONDS` 秒清零一次警告计数（守护线程上的定时器）。"""
 
@@ -367,10 +405,19 @@ def setup_spam_control_handlers(dispatcher):
 
     dispatcher.add_handler(CommandHandler("spam", toggle_spam_control))
     dispatcher.add_handler(CallbackQueryHandler(spam_help_callback, pattern=r"^spam_help$"))
-    # 优先级高于关键词回复（group 10），先过滤垃圾信息；编辑后的消息也检查
+    # 别的 bot 发的消息排在所有功能之前（历史记录在 group -100），处理完就拦下
     dispatcher.add_handler(
         MessageHandler(
-            (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & filters.ChatType.GROUPS &
+            SENT_BY_BOT & (filters.UpdateType.MESSAGE | filters.UpdateType.EDITED_MESSAGE),
+            process_bot_message,
+        ),
+        group=-50,
+    )
+    # 优先级高于关键词回复（group 10），先过滤垃圾信息；编辑后的消息也检查。
+    # 经 inline bot 发的消息没有说明文字也要检查按钮
+    dispatcher.add_handler(
+        MessageHandler(
+            (filters.TEXT | filters.CAPTION | filters.VIA_BOT) & ~filters.COMMAND & filters.ChatType.GROUPS &
             (filters.UpdateType.MESSAGE | filters.UpdateType.EDITED_MESSAGE),
             process_message
         ),

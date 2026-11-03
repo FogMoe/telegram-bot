@@ -141,6 +141,7 @@ def test_register_handlers_preserves_handler_and_job_registration_order():
         ("MessageHandler", 10, "_MergedFilter", "process_group_message"),
         ("CommandHandler", 0, "spam", "toggle_spam_control"),
         ("CallbackQueryHandler", 0, "^spam_help$", "spam_help_callback"),
+        ("MessageHandler", -50, "_MergedFilter", "process_bot_message"),
         ("MessageHandler", 5, "_MergedFilter", "process_message"),
         ("MessageHandler", 5, "_Migrate", "migrate_chat"),
         ("CallbackQueryHandler", 0, "^mod:", "admin_ban_callback"),
