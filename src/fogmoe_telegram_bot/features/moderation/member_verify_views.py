@@ -29,6 +29,7 @@ STALE = "验证已失效或已处理。"
 PASSED_ALERT = "验证成功！"
 PASSED_TEXT = "验证通过，欢迎加入群组！"
 FAILED_ALERT = f"答错 {MAX_MISTAKES} 次，验证失败。"
+LEFT_TEXT = "新成员在验证前离开了群组。"
 UNMUTE_FAILED = "验证时出现错误，请稍后再试。"
 
 
