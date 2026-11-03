@@ -66,8 +66,47 @@ jobs:
       - name: Pytest (MySQL integration tests run in their own job)
         run: uv run pytest -ra --ignore=tests/integration --run-slow
 
+  changes:
+    name: Detect MySQL changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      mysql: ${{ steps.detect.outputs.mysql }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # pull_request 检出的是合并提交，HEAD^1 就是目标分支
+          fetch-depth: 2
+
+      - id: detect
+        name: Does this change touch MySQL?
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request) base=HEAD^1 ;;
+            merge_group)
+              git fetch --no-tags --depth=1 origin "$MERGE_GROUP_BASE"
+              base=$MERGE_GROUP_BASE
+              ;;
+            *)
+              # 推送到 main、手动触发：总是跑，兜住 PR 里按规则跳过的情况
+              echo "mysql=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          mysql=$(python3 scripts/ci_mysql_changes.py "$base") || mysql=true
+          echo "mysql=$mysql" >> "$GITHUB_OUTPUT"
+          if [ "$mysql" = false ]; then
+            echo "::notice::没有涉及 MySQL 的改动，跳过 MySQL 集成测试"
+          fi
+
   integration:
     name: MySQL integration tests
+    needs: changes
+    # 条件跳过的必需检查算通过；changes 失败时输出为空，照常运行
+    if: ${{ !cancelled() && needs.changes.outputs.mysql != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
