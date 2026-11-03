@@ -21,6 +21,7 @@ from fogmoe_telegram_bot.features.moderation import admin_ban_views as views
 from fogmoe_telegram_bot.features.moderation import spam_strikes
 from fogmoe_telegram_bot.features.moderation.admin_ban_views import AdminAction
 from fogmoe_telegram_bot.features.moderation.operations import member_verify as verification
+from fogmoe_telegram_bot.features.moderation.operations import verify_game
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,7 @@ async def _ban_in_group(
     # 验证消息：结束这一轮验证，免得到点又处理一次；整条消息换成封禁结果
     if await verification.find_round_message(action.user_id, action.chat_id) == message_id:
         await verification.claim_round(action.user_id, action.chat_id, message_id)
+        verify_game.GAMES.drop(action.chat_id, action.user_id, message_id)
         return views.verify_banned_text(action.user_id, admin_html, basic_group), keyboard
     return f"{text_html}\n\n{views.group_banned_line(admin_html, basic_group)}", keyboard
 
