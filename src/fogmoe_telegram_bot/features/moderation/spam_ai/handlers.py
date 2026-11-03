@@ -1,4 +1,5 @@
 """/spam ai：群管理员按 30 天付费开启 AI 垃圾识别；新成员的前几条消息交给 Jev 判断，判定为垃圾信息的删除并计入处罚。
+可以单独开启，不需要打开 /spam 总开关；总开关关着时不查链接、@提及和垃圾词，只用 AI 检查。
 
 适配层：子命令的回复、把一条 Telegram 消息整理成判断的输入、在后台执行检查、定时发到期提醒。
 付费与检查规则在 `operations.py`，模型请求在 `judge.py`，警告与移出在 `features/moderation/spam_strikes.py`。
@@ -71,12 +72,13 @@ def status_text(
         )
     else:
         status = f"AI 识别已开启，有效期至 {until}（{remaining(group.paid_until, now)}）。"
-        if not filter_enabled:
-            status += "\n垃圾信息过滤总开关已关闭，AI 识别不会运行；使用 /spam 重新开启。"
-        elif not available:
-            status += "\nAI 识别服务暂时不可用，目前只使用关键词过滤。"
+        fallback = "只使用关键词过滤" if filter_enabled else "不检查消息"
+        if not available:
+            status += f"\nAI 识别服务暂时不可用，目前{fallback}。"
         elif limit_reached:
-            status += "\n今天的检查次数已达上限，UTC 0 点恢复，在此之前只使用关键词过滤。"
+            status += f"\n今天的检查次数已达上限，UTC 0 点恢复，在此之前{fallback}。"
+        elif not filter_enabled:
+            status += "\n垃圾信息过滤总开关没有开启，只用 AI 识别，不检查链接、@提及和垃圾词。"
     return f"{status}\n\n{USAGE}"
 
 
@@ -115,18 +117,9 @@ async def _bot_can_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return bool(getattr(member, "can_delete_messages", False))
 
 
-async def _pay(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    *,
-    renewing: bool,
-    filter_enabled: bool,
-) -> None:
+async def _pay(update: Update, context: ContextTypes.DEFAULT_TYPE, *, renewing: bool) -> None:
     if not judge.is_configured():
         await _reply(update, NOT_AVAILABLE)
-        return
-    if not filter_enabled:
-        await _reply(update, "请先开启垃圾信息过滤功能（使用 /spam 命令），才能开启 AI 识别。")
         return
     can_delete = await _bot_can_delete(update, context)
     if can_delete is None:
@@ -187,7 +180,7 @@ async def spam_ai_command(
                 ),
             )
         elif sub_command in ("on", "renew"):
-            await _pay(update, context, renewing=sub_command == "renew", filter_enabled=filter_enabled)
+            await _pay(update, context, renewing=sub_command == "renew")
         elif sub_command == "off":
             await _pause(update)
         else:
@@ -269,6 +262,11 @@ def should_review(message: Message) -> bool:
     """只检查算在真人头上的消息：频道自动转发、以频道或群身份发言、机器人自己发的消息都不检查；
     访客 bot 的回复算 @ 它的人发的。"""
     return not message.is_automatic_forward and spam_strikes.strike_target(message) is not None
+
+
+async def is_running(chat_id: int) -> bool:
+    """本群现在有没有在用 AI 检查：服务可用，付过费、没暂停、没到期。状态有缓存，可以每条消息都问。"""
+    return judge.is_configured() and await operations.is_checking(chat_id)
 
 
 async def maybe_review(message: Message, bot: Any) -> None:
@@ -354,7 +352,7 @@ async def migrate_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 def reminder_text(kind: ReminderKind, paid_until: datetime) -> str:
     if kind is ReminderKind.EXPIRING:
         return f"本群的 AI 识别将于 {format_time(paid_until)} 到期。管理员可以用 {RENEW_HINT}。"
-    return f"本群的 AI 识别已到期，现在只使用关键词过滤。管理员可以用 {RENEW_HINT}。"
+    return f"本群的 AI 识别已到期，不再用 AI 检查消息。管理员可以用 {RENEW_HINT}。"
 
 
 async def remind_expiry_job(context: ContextTypes.DEFAULT_TYPE) -> None:

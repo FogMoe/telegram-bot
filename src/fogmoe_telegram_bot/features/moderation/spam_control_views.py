@@ -34,7 +34,7 @@ HELP_TEXT = (
     "/spam add &lt;关键词&gt; - 添加自定义垃圾词\n"
     "/spam add //&lt;正则表达式&gt; - 添加正则表达式匹配\n"
     "/spam del &lt;关键词&gt; - 删除自定义垃圾词\n\n"
-    "<b>AI 识别（付费）：</b>\n"
+    "<b>AI 识别（付费，可单独开启）：</b>\n"
     "/spam ai - 查看 AI 识别状态\n"
     "/spam ai on - 开启 AI 识别\n"
     "/spam ai off - 暂停 AI 识别\n"
@@ -52,6 +52,7 @@ HELP_TEXT = (
     "由开通或续费的管理员支付，到期不会自动扣费\n"
     f"• 开启 AI 识别后，每位成员接下来在本群发的 {spam_ai_operations.CHECKED_MESSAGES_PER_MEMBER} 条消息会由 AI 检查，"
     "被检查的消息会发送给第三方 AI 服务判断\n"
+    "• AI 识别不需要打开 /spam 总开关；总开关关着时不检查链接、@提及和垃圾词，只用 AI 检查\n"
     "• 使用前请确保机器人有删除消息的权限"
 )
 
@@ -68,7 +69,7 @@ HELP_TEXT_PLAIN = (
     "/spam list - 列出自定义垃圾词\n"
     "/spam add <词> - 添加垃圾词\n"
     "/spam del <词> - 删除垃圾词\n\n"
-    "AI 识别（付费）：\n"
+    "AI 识别（付费，可单独开启）：\n"
     "/spam ai - 查看 AI 识别状态\n"
     "/spam ai on/off - 开启/暂停 AI 识别\n"
     f"/spam ai renew - 续费 {spam_ai_operations.PERIOD_DAYS} 天\n"
@@ -93,6 +94,13 @@ BAD_OPTION = "参数错误。请使用 on 或 off。"
 # Markdown
 ENABLED_TEXT = "垃圾信息过滤功能已 ***开启***。我将自动删除可能的垃圾消息并发出警告。"
 DISABLED_TEXT = "垃圾信息过滤功能已 ***关闭***。"
+
+
+def disabled_text(ai_running: bool) -> str:
+    """关掉总开关之后的回复；单独开着的 AI 识别不受影响，提醒一句。"""
+    if not ai_running:
+        return DISABLED_TEXT
+    return f"{DISABLED_TEXT}\nAI 识别不受影响，仍在运行；如需暂停，使用 /spam ai off。"
 
 
 def help_keyboard() -> InlineKeyboardMarkup:

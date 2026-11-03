@@ -113,10 +113,21 @@ async def toggle_spam_control(update: Update, context: ContextTypes.DEFAULT_TYPE
                 reply_markup=views.help_keyboard(),
             )
         else:
-            await update.message.reply_text(views.DISABLED_TEXT, parse_mode=ParseMode.MARKDOWN)
+            await update.message.reply_text(
+                views.disabled_text(await _ai_still_running(chat_id)), parse_mode=ParseMode.MARKDOWN
+            )
     except Exception as e:
         notice = report_error(logger, "更新垃圾信息过滤状态时出错", e)
         await update.message.reply_text(f"操作失败，请稍后再试。\n{notice}")
+
+
+async def _ai_still_running(chat_id: int) -> bool:
+    """关掉总开关之后 AI 识别是否还在运行，只用来多提醒一句；总开关已经关掉了，读不到状态时不提，不当作操作失败。"""
+    try:
+        return await spam_ai_handlers.is_running(chat_id)
+    except Exception:
+        logger.exception("读取群 %s 的 AI 识别状态失败", chat_id)
+        return False
 
 
 async def _blocking_command(update: Update, context: ContextTypes.DEFAULT_TYPE, sub_command, args):
@@ -261,7 +272,8 @@ async def _sender_is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, use
 
 
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """群消息的过滤：链接、@提及、垃圾词依次检查，都没命中时交给 AI 识别。"""
+    """群消息的过滤：总开关打开时链接、@提及、垃圾词依次检查，都没命中时交给 AI 识别；
+    总开关关着、单独开了 AI 识别的群只交给 AI。"""
     effective_message = update.message or update.edited_message
     if not effective_message or update.effective_chat.type not in ["group", "supergroup"]:
         return
@@ -275,11 +287,15 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
     settings = await spam_rules.get_settings(chat_id)
-    if not settings.enabled:
+    # 先看有没有要检查的，再查发送者是不是管理员，免得什么都没开的群每条消息都去问 Telegram
+    if not settings.enabled and not await spam_ai_handlers.is_running(chat_id):
         return
 
     user_id = spam_strikes.sender_user(effective_message).id
     if await _sender_is_admin(context, chat_id, user_id):
+        return
+    if not settings.enabled:
+        await spam_ai_handlers.maybe_review(effective_message, context.bot)
         return
     # 警告里不显示发送者的名字；警告下面带管理员看原文的按钮，以个人身份发言的再加封禁按钮
     sender = spam_strikes.sender_html(effective_message)
