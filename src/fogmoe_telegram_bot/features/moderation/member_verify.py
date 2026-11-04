@@ -3,13 +3,15 @@
 禁言、发欢迎消息、点【开始验证】后把欢迎消息换成九宫格小游戏、解除禁言或移出群组；开关、每一轮验证的记录与认领在
 `operations/member_verify.py`，出题与判题在 `operations/verify_game.py`，文案与按钮在 `member_verify_views.py`。
 群里的消息不显示新成员的名字（广告号的名字本身就是广告）；验证没通过时删掉加群消息，机器人移出成员产生的
-系统消息也删掉。欢迎消息上的管理员封禁按钮由 `admin_ban.py` 处理。
+系统消息也删掉；欢迎消息换成说明（已被移出、验证前离开了群组），`NOTICE_SECONDS` 秒后再删掉。
+欢迎消息上的管理员封禁按钮由 `admin_ban.py` 处理。
 """
 
 import logging
 
 from telegram import ChatPermissions, Update
 from telegram.constants import ChatMemberStatus
+from telegram.error import TelegramError
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
@@ -23,6 +25,8 @@ from fogmoe_telegram_bot.features.moderation.operations.verify_game import Outco
 # 恢复任务的周期：重启后第一次在 RECOVERY_FIRST_SECONDS 秒后运行，之后每隔 RECOVERY_INTERVAL 秒。
 RECOVERY_INTERVAL = 30
 RECOVERY_FIRST_SECONDS = 5
+# 没通过验证（被移出、验证前离开）之后，欢迎消息换成的说明在群里留这么多秒再删掉
+NOTICE_SECONDS = 60
 
 # 在开启验证功能前详细检查必要权限
 async def check_bot_permissions(bot, chat_id):
@@ -150,15 +154,15 @@ async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 # 某一轮验证到期仍未通过：移出群组并编辑欢迎消息
-async def expire_verification(bot, chat_id, user_id, message_id):
+async def expire_verification(bot, job_queue, chat_id, user_id, message_id):
     # 已验证、已离群或已被新一轮取代时，这一轮的记录已经不在
     if not await verification.claim_round(user_id, chat_id, message_id):
         return
     verify_game.GAMES.drop(chat_id, user_id, message_id)
-    await remove_unverified(bot, chat_id, user_id, message_id, views.TIMEOUT_TEXT)
+    await remove_unverified(bot, job_queue, chat_id, user_id, message_id, views.timeout_text(user_id))
 
-# 已认领的一轮验证没通过：移出仍被禁言的成员，删掉加群消息，欢迎消息换成 text
-async def remove_unverified(bot, chat_id, user_id, message_id, text):
+# 已认领的一轮验证没通过：移出仍被禁言的成员，删掉加群消息，欢迎消息换成移出说明 text，过一会儿再删掉
+async def remove_unverified(bot, job_queue, chat_id, user_id, message_id, text):
     try:
         member = await bot.get_chat_member(chat_id, user_id)
     except Exception as e:
@@ -178,20 +182,40 @@ async def remove_unverified(bot, chat_id, user_id, message_id, text):
         await bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
-            text=text
+            text=text,
+            parse_mode="HTML",
         )
     except Exception as e:
         print(f"编辑消息 {message_id} 出错: {e}")
+        return
+    delete_notice_later(job_queue, chat_id, message_id)
+
+# 欢迎消息已经换成说明：NOTICE_SECONDS 秒后删掉。只删换成功的，没换成的不知道现在是什么内容。
+# 进程重启会丢掉这个定时器，这条说明就留在群里
+def delete_notice_later(job_queue, chat_id, message_id):
+    job_queue.run_once(delete_notice_job, when=NOTICE_SECONDS, data=(chat_id, message_id))
+
+# 说明到点删掉；管理员已经手动删了也没关系
+async def delete_notice_job(context: ContextTypes.DEFAULT_TYPE):
+    chat_id, message_id = context.job.data
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except TelegramError as e:
+        logging.getLogger(__name__).info(
+            "删除验证说明失败（群 %s，消息 %s）: %s", chat_id, message_id, e
+        )
 
 async def verification_timeout_job(context: ContextTypes.DEFAULT_TYPE):
     chat_id, user_id, message_id = context.job.data
-    await expire_verification(context.bot, chat_id, user_id, message_id)
+    await expire_verification(context.bot, context.job_queue, chat_id, user_id, message_id)
 
 async def recover_verification_tasks(context: ContextTypes.DEFAULT_TYPE):
     """启动后与周期性的恢复：处理已经到期、定时器却随进程重启丢失的验证。"""
     for task in await verification.due_rounds():
         try:
-            await expire_verification(context.bot, task.chat_id, task.user_id, task.message_id)
+            await expire_verification(
+                context.bot, context.job_queue, task.chat_id, task.user_id, task.message_id
+            )
         except Exception:
             logging.getLogger(__name__).exception(
                 "处理群组 %s 成员 %s 的过期验证失败", task.chat_id, task.user_id
@@ -228,7 +252,7 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await pass_verification(query, context.bot, chat_id, user_id, message_id)
         return
     if outcome is Outcome.FAILED:
-        await fail_verification(query, context.bot, chat_id, user_id, message_id)
+        await fail_verification(query, context.bot, context.job_queue, chat_id, user_id, message_id)
         return
     if outcome is not None or button.kind == "start":
         # 换了新题；点的是旧题或【开始验证】时，之前可能没换成功，再换一次
@@ -296,14 +320,14 @@ async def pass_verification(query, bot, chat_id, user_id, message_id):
     await answer_alert(query, views.PASSED_ALERT)
 
 # 答错次数用完：认领这一轮验证并移出群组（不封禁）
-async def fail_verification(query, bot, chat_id, user_id, message_id):
+async def fail_verification(query, bot, job_queue, chat_id, user_id, message_id):
     verify_game.GAMES.drop(chat_id, user_id, message_id)
     if not await verification.claim_round(user_id, chat_id, message_id):
         await query.answer(views.STALE, show_alert=True)
         return
     # 这一轮已经认领，超时不会再处理：弹框失败也要照常移出
     await answer_alert(query, views.FAILED_ALERT)
-    await remove_unverified(bot, chat_id, user_id, message_id, views.FAILED_TEXT)
+    await remove_unverified(bot, job_queue, chat_id, user_id, message_id, views.failed_text(user_id))
 
 # 弹框失败（网络出错、回调已过期）只记一笔，不打断验证本身的处理
 async def answer_alert(query, text):
@@ -341,10 +365,12 @@ async def handle_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text="新成员在验证前离开了群组。"
+                text=views.LEFT_TEXT
             )
         except Exception as e:
             print(f"编辑消息出错: {e}")
+        else:
+            delete_notice_later(context.job_queue, chat_id, message_id)
         await spam_strikes.delete_join_message(context.bot, chat_id, user.id)
 
     # 「X 离开了群组」「机器人 移除了 X」也会显示名字：没验证就走的、被机器人移出的都删掉

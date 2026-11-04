@@ -29,8 +29,7 @@ STALE = "验证已失效或已处理。"
 PASSED_ALERT = "验证成功！"
 PASSED_TEXT = "验证通过，欢迎加入群组！"
 FAILED_ALERT = f"答错 {MAX_MISTAKES} 次，验证失败。"
-FAILED_TEXT = "验证失败，您已被移出群组。"
-TIMEOUT_TEXT = "验证超时，您已被移出群组。"
+LEFT_TEXT = "新成员在验证前离开了群组。"
 UNMUTE_FAILED = "验证时出现错误，请稍后再试。"
 
 
@@ -124,6 +123,19 @@ def game_text(user_id: int, game: Game) -> str:
         f"第 {game.streak + 1}/{ROUNDS_TO_PASS} 题：在下面的九宫格里点出弹框提示的图标。\n"
         f"忘了是哪个就点【{HINT_LABEL}】；答错 {MAX_MISTAKES} 次会被移出群组{mistakes}。"
     )
+
+
+def _removed(reason: str, user_id: int) -> str:
+    """没通过验证、已经移出群组：欢迎消息换成这句。被移出的人看不到它，所以不写「您」。"""
+    return f"{reason}，{admin_ban_views.neutral_mention(user_id, '新成员')} 已被移出群组。"
+
+
+def failed_text(user_id: int) -> str:
+    return _removed("验证失败", user_id)
+
+
+def timeout_text(user_id: int) -> str:
+    return _removed("验证超时", user_id)
 
 
 def prompt(game: Game, outcome: Outcome | None = None) -> str:

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from telegram.constants import ChatMemberStatus
+from telegram.error import BadRequest
 
 from fogmoe_telegram_bot.features.moderation import admin_ban_views, member_verify
 from fogmoe_telegram_bot.features.moderation import member_verify_views as views
@@ -93,6 +94,7 @@ class _FakeBot:
         self.kicked = []
         self.edited = []
         self.edited_texts = []
+        self.parse_modes = []
         self.deleted = []
         self.fail_restrict = False
 
@@ -110,9 +112,10 @@ class _FakeBot:
     async def unban_chat_member(self, chat_id, user_id):
         pass
 
-    async def edit_message_text(self, chat_id, message_id, text):
+    async def edit_message_text(self, chat_id, message_id, text, parse_mode=None):
         self.edited.append(message_id)
         self.edited_texts.append(text)
+        self.parse_modes.append(parse_mode)
 
     async def send_message(self, chat_id, text):
         pass
@@ -122,6 +125,21 @@ class _FakeBot:
 
     async def get_me(self):
         return SimpleNamespace(id=BOT_ID)
+
+
+class _FakeJobQueue:
+    """只记下定时任务；`run_all` 当作都已经到点，一次全部执行。"""
+
+    def __init__(self):
+        self.jobs = []
+
+    def run_once(self, callback, when, data=None):
+        self.jobs.append((callback, when, data))
+
+    def run_all(self, bot):
+        jobs, self.jobs = self.jobs, []
+        for callback, _when, data in jobs:
+            asyncio.run(callback(SimpleNamespace(bot=bot, job=SimpleNamespace(data=data))))
 
 
 class _FakeQuery:
@@ -153,18 +171,19 @@ def _later():
     return datetime.now() + timedelta(minutes=5)
 
 
-def _click(bot, message_id, data="verify_42", **failures):
+def _click(bot, message_id, data="verify_42", *, jobs=None, **failures):
     query = _FakeQuery(data, message_id, **failures)
     update = SimpleNamespace(callback_query=query, effective_chat=SimpleNamespace(id=CHAT_ID))
-    asyncio.run(member_verify.verify_callback(update, SimpleNamespace(bot=bot)))
+    context = SimpleNamespace(bot=bot, job_queue=jobs or _FakeJobQueue())
+    asyncio.run(member_verify.verify_callback(update, context))
     return query
 
 
-def _play(bot, message_id=2, *, correct=True, **failures):
+def _play(bot, message_id=2, *, correct=True, **options):
     """点这一局当前这道题的格子：correct 时点目标，否则点旁边一格。"""
     game = verify_game.GAMES.get(CHAT_ID, USER_ID, message_id)
     cell = game.target if correct else (game.target + 1) % verify_game.GRID_SIZE
-    return _click(bot, message_id, views.pick_data(USER_ID, game.question, cell), **failures)
+    return _click(bot, message_id, views.pick_data(USER_ID, game.question, cell), **options)
 
 
 def test_starting_shows_the_grid_and_puts_the_target_only_in_the_popup(tasks):
@@ -200,16 +219,20 @@ def test_enough_correct_answers_in_a_row_unmute(tasks):
 def test_too_many_mistakes_remove_the_member(tasks):
     tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
     join_messages.JOINS.record(CHAT_ID, USER_ID, 1)
-    bot = _FakeBot()
+    bot, jobs = _FakeBot(), _FakeJobQueue()
     _click(bot, message_id=2)
 
     for _ in range(verify_game.MAX_MISTAKES):
-        query = _play(bot, correct=False)
+        query = _play(bot, correct=False, jobs=jobs)
 
     assert bot.restricted == [] and bot.kicked == [USER_ID]
     assert query.answers == [views.FAILED_ALERT]
-    assert bot.edited_texts == [views.FAILED_TEXT] and bot.deleted == [1]
+    assert bot.edited_texts == [views.failed_text(USER_ID)] and bot.deleted == [1]
     assert tasks.rows == {}
+
+    jobs.run_all(bot)  # 移出说明过一会儿也删掉
+
+    assert bot.deleted == [1, 2]
 
 
 def test_a_failed_popup_still_removes_the_member(tasks):
@@ -280,11 +303,15 @@ def test_failed_unmute_keeps_the_round_open_and_the_game_won(tasks):
     assert bot.restricted == [USER_ID] and tasks.rows == {}
 
 
+def _expire(bot, message_id, jobs=None):
+    asyncio.run(member_verify.expire_verification(bot, jobs or _FakeJobQueue(), CHAT_ID, USER_ID, message_id))
+
+
 def test_timeout_of_old_round_after_rejoin_does_nothing(tasks):
     tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
     bot = _FakeBot()
 
-    asyncio.run(member_verify.expire_verification(bot, CHAT_ID, USER_ID, 1))
+    _expire(bot, 1)
 
     assert bot.kicked == []
     assert tasks.rows[(USER_ID, CHAT_ID)][0] == 2
@@ -294,18 +321,48 @@ def test_timeout_kicks_member_still_muted(tasks):
     tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
     bot = _FakeBot()
 
-    asyncio.run(member_verify.expire_verification(bot, CHAT_ID, USER_ID, 2))
+    _expire(bot, 2)
 
     assert bot.kicked == [USER_ID]
     assert bot.edited == [2]
     assert tasks.rows == {}
 
 
+def test_the_removal_notice_hides_the_name_and_is_deleted_later(tasks):
+    # 被移出的人看不到这条说明：不写「您」，也不显示名字；留一会儿再删掉
+    tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
+    bot, jobs = _FakeBot(), _FakeJobQueue()
+
+    _expire(bot, 2, jobs)
+
+    (text,) = bot.edited_texts
+    assert text == views.timeout_text(USER_ID) and bot.parse_modes == ["HTML"]
+    assert "您" not in text and f'<a href="tg://user?id={USER_ID}">新成员</a>' in text
+    assert bot.deleted == []
+    assert [when for _, when, _ in jobs.jobs] == [member_verify.NOTICE_SECONDS]
+
+    jobs.run_all(bot)
+
+    assert bot.deleted == [2]
+
+
+def test_a_notice_an_admin_already_deleted_is_left_alone(tasks):
+    class _GoneBot(_FakeBot):
+        async def delete_message(self, chat_id, message_id):
+            raise BadRequest("Message to delete not found")
+
+    tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
+    bot, jobs = _GoneBot(), _FakeJobQueue()
+    _expire(bot, 2, jobs)
+
+    jobs.run_all(bot)  # 不抛出
+
+
 def test_timeout_spares_member_an_admin_already_unmuted(tasks):
     tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
     bot = _FakeBot(status=ChatMemberStatus.MEMBER)
 
-    asyncio.run(member_verify.expire_verification(bot, CHAT_ID, USER_ID, 2))
+    _expire(bot, 2)
 
     assert bot.kicked == []
     assert tasks.rows == {}
@@ -315,12 +372,13 @@ def test_recovery_after_restart_handles_only_expired_rounds(tasks):
     # 重启后内存里的定时器都没了，恢复任务按表里的到期时间处理
     tasks.rows[(USER_ID, CHAT_ID)] = (2, datetime.now() - timedelta(seconds=1))
     tasks.rows[(7, CHAT_ID)] = (3, _later())
-    bot = _FakeBot()
+    bot, jobs = _FakeBot(), _FakeJobQueue()
 
-    asyncio.run(member_verify.recover_verification_tasks(SimpleNamespace(bot=bot)))
+    asyncio.run(member_verify.recover_verification_tasks(SimpleNamespace(bot=bot, job_queue=jobs)))
 
     assert bot.kicked == [USER_ID]
     assert list(tasks.rows) == [(7, CHAT_ID)]
+    assert [data for _, _, data in jobs.jobs] == [(CHAT_ID, 2)]
 
 
 class _Recorder:
@@ -333,25 +391,30 @@ class _Recorder:
         return self.result
 
 
-def _left(bot, *, removed_by):
+def _left(bot, *, removed_by, jobs=None):
     left = SimpleNamespace(id=USER_ID, full_name="加V领福利")
     service_message = SimpleNamespace(left_chat_member=left, from_user=removed_by, delete=_Recorder())
     update = SimpleNamespace(effective_chat=SimpleNamespace(id=CHAT_ID), message=service_message)
-    asyncio.run(member_verify.handle_member_left(update, SimpleNamespace(bot=bot)))
+    context = SimpleNamespace(bot=bot, job_queue=jobs or _FakeJobQueue())
+    asyncio.run(member_verify.handle_member_left(update, context))
     return service_message
 
 
 def test_leaving_before_verifying_closes_the_round_and_cleans_up(tasks):
     tasks.rows[(USER_ID, CHAT_ID)] = (2, _later())
     join_messages.JOINS.record(CHAT_ID, USER_ID, 1)
-    bot = _FakeBot()
+    bot, jobs = _FakeBot(), _FakeJobQueue()
 
-    service_message = _left(bot, removed_by=SimpleNamespace(id=USER_ID))
+    service_message = _left(bot, removed_by=SimpleNamespace(id=USER_ID), jobs=jobs)
 
     assert tasks.rows == {}
-    assert bot.edited == [2] and bot.edited_texts == ["新成员在验证前离开了群组。"]
+    assert bot.edited == [2] and bot.edited_texts == [views.LEFT_TEXT]
     assert bot.deleted == [1]  # 加群消息
     assert service_message.delete.calls == [((), {})]  # 「X 离开了群组」
+
+    jobs.run_all(bot)  # 说明过一会儿也删掉
+
+    assert bot.deleted == [1, 2]
 
 
 def test_removal_by_the_bot_deletes_the_service_message(tasks):
@@ -363,11 +426,11 @@ def test_removal_by_the_bot_deletes_the_service_message(tasks):
 
 
 def test_a_verified_member_leaving_on_their_own_is_left_alone(tasks):
-    bot = _FakeBot()
+    bot, jobs = _FakeBot(), _FakeJobQueue()
 
-    service_message = _left(bot, removed_by=SimpleNamespace(id=USER_ID))
+    service_message = _left(bot, removed_by=SimpleNamespace(id=USER_ID), jobs=jobs)
 
-    assert service_message.delete.calls == [] and bot.edited == []
+    assert service_message.delete.calls == [] and bot.edited == [] and jobs.jobs == []
 
 
 def test_a_timed_out_member_also_loses_the_join_message(tasks):
@@ -375,7 +438,7 @@ def test_a_timed_out_member_also_loses_the_join_message(tasks):
     join_messages.JOINS.record(CHAT_ID, USER_ID, 1)
     bot = _FakeBot()
 
-    asyncio.run(member_verify.expire_verification(bot, CHAT_ID, USER_ID, 2))
+    _expire(bot, 2)
 
     assert bot.kicked == [USER_ID] and bot.deleted == [1]
 
