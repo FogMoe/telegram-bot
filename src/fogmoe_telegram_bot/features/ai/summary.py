@@ -12,13 +12,9 @@ import re
 from fogmoe_telegram_bot.core import background, config, mysql_connection
 from fogmoe_telegram_bot.core.token_estimator import estimate_tokens
 
-from .provider_resolver import (
-    completion_kwargs_for_task,
-    get_models_for_task,
-    get_provider_order_for_task,
-)
+from .task_runner import Candidate, run_with_fallback
 from .tool_runner import run_tool_loop
-from .tools.context import clear_tool_request_context, set_tool_request_context
+from .tools.context import tool_request_scope
 from .tools.schemas import SUMMARY_SEARCH_PRIOR_CONTEXT_TOOL
 from .tools.summary_tools import search_prior_context_tool
 
@@ -343,59 +339,31 @@ async def _run_summary_agent(
     user_id: int,
     record_id: int,
 ) -> tuple[str, str]:
-    last_error: Exception | None = None
-    tool_context = {
+    tool_context: dict[str, object] = {
         "user_id": user_id,
         "summary_record_id": record_id,
     }
-    set_tool_request_context(tool_context)
-    try:
-        for provider in get_provider_order_for_task("summary"):
-            try:
-                models = get_models_for_task(provider, "summary")
-            except Exception as exc:
-                logging.warning(
-                    "Summary skipped invalid provider=%s: %s",
-                    provider,
-                    exc,
-                )
-                last_error = exc
-                continue
 
-            for model in models:
-                try:
-                    content, _tool_logs = await run_tool_loop(
-                        provider,
-                        model,
-                        messages,
-                        tool_context,
-                        provider_name="Summary",
-                        context_hard_limit_ratio=SUMMARY_CONTEXT_HARD_LIMIT_RATIO,
-                        max_iterations=SUMMARY_TOOL_MAX_ITERATIONS,
-                        completion_kwargs=completion_kwargs_for_task(
-                            provider,
-                            "summary",
-                        ),
-                        tool_definitions=SUMMARY_TOOLS,
-                        tool_handlers=SUMMARY_TOOL_HANDLERS,
-                        system_prompt_override=config.SUMMARY_SYSTEM_PROMPT,
-                    )
-                    summary_text = str(content or "").strip()
-                    if not summary_text:
-                        raise ValueError("summary model returned empty content")
-                    return summary_text, str(model)
-                except Exception as exc:
-                    logging.warning(
-                        "Summary failed via provider=%s model=%s: %s",
-                        provider,
-                        model,
-                        exc,
-                    )
-                    last_error = exc
-    finally:
-        clear_tool_request_context()
+    async def attempt(candidate: Candidate) -> tuple[str, str]:
+        with tool_request_scope(tool_context):
+            content, _tool_logs = await run_tool_loop(
+                candidate.provider,
+                candidate.model,
+                messages,
+                tool_context,
+                provider_name="Summary",
+                context_hard_limit_ratio=SUMMARY_CONTEXT_HARD_LIMIT_RATIO,
+                max_iterations=SUMMARY_TOOL_MAX_ITERATIONS,
+                tool_definitions=SUMMARY_TOOLS,
+                tool_handlers=SUMMARY_TOOL_HANDLERS,
+                system_prompt_override=config.SUMMARY_SYSTEM_PROMPT,
+            )
+        summary_text = str(content or "").strip()
+        if not summary_text:
+            raise ValueError("summary model returned empty content")
+        return summary_text, candidate.model
 
-    raise RuntimeError("All providers failed for summary generation") from last_error
+    return await run_with_fallback("summary", attempt, tools_are_read_only=True)
 
 
 async def _generate_summary(

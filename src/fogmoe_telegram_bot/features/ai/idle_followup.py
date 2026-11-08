@@ -34,11 +34,6 @@ from fogmoe_telegram_bot.features.ai import ai_chat, job_claims, summary
 from fogmoe_telegram_bot.features.ai.conversation_locks import get_conversation_lock
 from fogmoe_telegram_bot.features.ai.job_claims import ClaimLostError
 from fogmoe_telegram_bot.features.ai.outbound import send_generated_media
-from fogmoe_telegram_bot.features.ai.provider_resolver import (
-    completion_kwargs_for_task,
-    get_models_for_task,
-    get_provider_order_for_task,
-)
 from fogmoe_telegram_bot.features.ai.reply_filter import normalize_ai_reply_text
 from fogmoe_telegram_bot.features.ai.router import runtime_error_cause
 from fogmoe_telegram_bot.features.ai.sticker_sender import (
@@ -46,13 +41,13 @@ from fogmoe_telegram_bot.features.ai.sticker_sender import (
     normalize_sticker_directives,
     send_ai_reply_with_stickers,
 )
+from fogmoe_telegram_bot.features.ai.task_runner import Candidate, run_with_fallback
 from fogmoe_telegram_bot.features.ai.tool_history import tool_logs_to_record_entries
 from fogmoe_telegram_bot.features.ai.tool_runner import run_tool_loop
 from fogmoe_telegram_bot.features.ai.tools import (
     AI_TOOL_HANDLERS,
     OPENAI_TOOLS,
-    clear_tool_request_context,
-    set_tool_request_context,
+    tool_request_scope,
 )
 from fogmoe_telegram_bot.features.ai.tools.memory_tools import read_diary_page_tool
 from fogmoe_telegram_bot.features.ai.tools.schemas import IDLE_RECAP_READ_DIARY_TOOL
@@ -333,52 +328,29 @@ async def _run_recap_agent(
     user_id: int,
     response_format: dict[str, Any],
 ) -> str:
-    last_error: Exception | None = None
-    for provider in get_provider_order_for_task("recap"):
-        try:
-            models = get_models_for_task(provider, "recap")
-        except Exception as exc:
-            logger.warning(
-                "Idle recap skipped invalid provider=%s: %s",
-                provider,
-                exc,
+    tool_context: dict[str, object] = {"user_id": user_id}
+    completion_kwargs = {
+        "response_format": response_format,
+        "drop_params": False,
+    }
+
+    async def attempt(candidate: Candidate) -> str:
+        with tool_request_scope(tool_context):
+            content, _ = await run_tool_loop(
+                candidate.provider,
+                candidate.model,
+                messages,
+                tool_context,
+                provider_name="Idle recap",
+                completion_timeout=IDLE_RECAP_TIMEOUT_SECONDS,
+                completion_kwargs=completion_kwargs,
+                tool_definitions=IDLE_RECAP_TOOLS,
+                tool_handlers=IDLE_RECAP_TOOL_HANDLERS,
+                system_prompt_override=config.IDLE_RECAP_SYSTEM_PROMPT,
             )
-            last_error = exc
-            continue
+        return content
 
-        for model in models:
-            set_tool_request_context({"user_id": user_id})
-            try:
-                completion_kwargs = {
-                    **completion_kwargs_for_task(provider, "recap"),
-                    "response_format": response_format,
-                    "drop_params": False,
-                }
-                content, _ = await run_tool_loop(
-                    provider,
-                    model,
-                    messages,
-                    {"user_id": user_id},
-                    provider_name="Idle recap",
-                    completion_timeout=IDLE_RECAP_TIMEOUT_SECONDS,
-                    completion_kwargs=completion_kwargs,
-                    tool_definitions=IDLE_RECAP_TOOLS,
-                    tool_handlers=IDLE_RECAP_TOOL_HANDLERS,
-                    system_prompt_override=config.IDLE_RECAP_SYSTEM_PROMPT,
-                )
-                return content
-            except Exception as exc:
-                logger.warning(
-                    "Idle recap failed via provider=%s model=%s: %s",
-                    provider,
-                    model,
-                    exc,
-                )
-                last_error = exc
-            finally:
-                clear_tool_request_context()
-
-    raise RuntimeError("All providers failed for idle recap") from last_error
+    return await run_with_fallback("recap", attempt, tools_are_read_only=True)
 
 
 async def _generate_recap(

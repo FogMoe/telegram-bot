@@ -1,20 +1,21 @@
-import logging
-import time
+"""主聊天的入口：把一轮对话交给共用的回退执行器，再把执行结果整理成一段回复与工具日志。
 
-from fogmoe_telegram_bot.core import ai_providers, metrics
+provider 与模型的顺序、跳过、熔断和失败分类在 `task_runner.run_with_fallback`；这里只放主聊天特有的部分：
+每次尝试跑一次工具循环（`_run_chat_candidate`），看不了图的服务换成文字历史，以及把截止时间、
+工具之后的失败、上下文超限转成固定的提示文案（`runtime_error_cause` 能识别它们）。
+"""
+
+import logging
+
+from fogmoe_telegram_bot.core import metrics
 from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline
 
 from .chat_capabilities import chat_model_for_service, chat_service_supports_vision
-from .chat_provider import run_chat_provider
-from .context_budget import ContextBudgetExceededError
-from .errors import SafetyBlockError, is_timeout_error
+from .errors import find_context_budget_error, is_timeout_error
 from .message_content import messages_have_images, strip_image_content
-from .provider_resolver import get_provider_order_for_task
-from .tools import (
-    cleanup_linux_sandbox_async,
-    clear_tool_request_context,
-    set_tool_request_context,
-)
+from .task_runner import AllProvidersFailedError, Candidate, ProviderCircuit, run_with_fallback
+from .tool_runner import run_tool_loop
+from .tools import cleanup_linux_sandbox_async, tool_request_scope
 from .types import (
     AIResponse,
     PartialAIResponseError,
@@ -26,8 +27,11 @@ from .types import (
 AI_PROVIDER_CIRCUIT_FAILURE_THRESHOLD = 3
 AI_PROVIDER_CIRCUIT_WINDOW_SECONDS = 5 * 60
 AI_PROVIDER_CIRCUIT_COOLDOWN_SECONDS = 30 * 60
-_provider_failure_streaks: dict[str, list[float]] = {}
-_provider_circuit_open_until: dict[str, float] = {}
+CHAT_CIRCUIT = ProviderCircuit(
+    failure_threshold=AI_PROVIDER_CIRCUIT_FAILURE_THRESHOLD,
+    window_seconds=AI_PROVIDER_CIRCUIT_WINDOW_SECONDS,
+    cooldown_seconds=AI_PROVIDER_CIRCUIT_COOLDOWN_SECONDS,
+)
 
 PARTIAL_AI_RESPONSE_ERROR_MESSAGE = (
     "看起来对话出现了一些小问题呢。"
@@ -70,21 +74,6 @@ TURN_SHUTDOWN_ERROR_MESSAGE = (
 )
 
 
-def _context_budget_error_message(_: ContextBudgetExceededError) -> str:
-    return CONTEXT_BUDGET_ERROR_MESSAGE
-
-
-def _find_context_budget_error(exc: BaseException) -> ContextBudgetExceededError | None:
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, ContextBudgetExceededError):
-            return current
-        current = current.__cause__ or current.__context__
-    return None
-
-
 def runtime_error_cause(message: str) -> str | None:
     if message == PARTIAL_AI_RESPONSE_ERROR_MESSAGE:
         return "partial_ai_response_failed"
@@ -97,75 +86,6 @@ def runtime_error_cause(message: str) -> str | None:
     if message == TURN_SHUTDOWN_ERROR_MESSAGE:
         return "turn_interrupted_by_shutdown"
     return None
-
-
-def _provider_circuit_is_open(service_name: str, now: float | None = None) -> bool:
-    current_time = time.monotonic() if now is None else now
-    open_until = _provider_circuit_open_until.get(service_name)
-    if not open_until:
-        return False
-    if current_time < open_until:
-        return True
-
-    _provider_circuit_open_until.pop(service_name, None)
-    _provider_failure_streaks.pop(service_name, None)
-    return False
-
-
-def _record_provider_success(service_name: str) -> None:
-    _provider_failure_streaks.pop(service_name, None)
-    _provider_circuit_open_until.pop(service_name, None)
-
-
-def _record_provider_failure(service_name: str, now: float | None = None) -> None:
-    current_time = time.monotonic() if now is None else now
-    cutoff = current_time - AI_PROVIDER_CIRCUIT_WINDOW_SECONDS
-    recent_failures = [
-        failure_time
-        for failure_time in _provider_failure_streaks.get(service_name, [])
-        if failure_time >= cutoff
-    ]
-    recent_failures.append(current_time)
-    _provider_failure_streaks[service_name] = recent_failures
-
-    if len(recent_failures) >= AI_PROVIDER_CIRCUIT_FAILURE_THRESHOLD:
-        open_until = current_time + AI_PROVIDER_CIRCUIT_COOLDOWN_SECONDS
-        _provider_circuit_open_until[service_name] = open_until
-        _provider_failure_streaks.pop(service_name, None)
-        logging.warning(
-            "%s 熔断 %s 秒：%s 秒内连续失败 %s 次",
-            service_name,
-            AI_PROVIDER_CIRCUIT_COOLDOWN_SECONDS,
-            AI_PROVIDER_CIRCUIT_WINDOW_SECONDS,
-            AI_PROVIDER_CIRCUIT_FAILURE_THRESHOLD,
-        )
-
-
-async def _call_service_with_context(
-    service_name: str,
-    messages,
-    user_id: int,
-    tool_context: dict[str, object] | None,
-    visible_content_handler: VisibleContentHandler | None,
-    deadline: Deadline | None = None,
-) -> AIResponse:
-    request_context = dict(tool_context or {})
-    request_context.setdefault("user_id", user_id)
-    set_tool_request_context(request_context)
-    try:
-        return await run_chat_provider(
-            service_name,
-            messages,
-            user_id,
-            tool_context,
-            visible_content_handler=visible_content_handler,
-            deadline=deadline,
-        )
-    finally:
-        try:
-            await cleanup_linux_sandbox_async()
-        finally:
-            clear_tool_request_context()
 
 
 def _messages_for_service(
@@ -189,32 +109,101 @@ def _messages_for_service(
     return strip_image_content(messages)
 
 
-def _deadline_response(
-    exc: TurnDeadlineError,
-    service_name: str,
+async def _cleanup_sandbox(provider_name: str) -> None:
+    """清理这次尝试开的沙箱。清理失败不影响这次尝试的结果，否则会被当成 provider 失败而换下一个重跑。"""
+    try:
+        await cleanup_linux_sandbox_async()
+    except Exception:
+        logging.exception("%s sandbox cleanup failed", provider_name)
+
+
+async def _run_chat_candidate(
+    candidate: Candidate,
+    *,
+    messages,
+    text_fallback_messages,
+    tool_context: dict[str, object] | None,
+    request_context: dict[str, object],
     visible_content_handler: VisibleContentHandler | None,
+    deadline: Deadline | None,
 ) -> AIResponse:
+    """用一个 provider 的一个模型跑一次主聊天的工具循环；provider 之间的差异只来自声明。"""
+    provider_name = candidate.spec.display_name
+    try:
+        if deadline is not None and deadline.expired:
+            # 回退链走到一半时间已经用完：不再尝试后面的模型与 provider。
+            raise TurnDeadlineError(deadline.expiry_reason, "fallback", [])
+        service_messages = _messages_for_service(
+            candidate.provider,
+            messages,
+            text_fallback_messages,
+        )
+        with tool_request_scope(request_context):
+            try:
+                return await run_tool_loop(
+                    candidate.provider,
+                    candidate.model,
+                    list(service_messages),
+                    tool_context,
+                    provider_name=provider_name,
+                    skip_tools=candidate.spec.skip_tools,
+                    visible_content_handler=visible_content_handler,
+                    deadline=deadline,
+                )
+            finally:
+                await _cleanup_sandbox(provider_name)
+    except TurnDeadlineError as exc:
+        logging.warning(
+            "%s turn stopped during %s (%s); not retrying",
+            provider_name,
+            exc.phase,
+            exc.reason,
+        )
+        if exc.phase == "model" and exc.reason != REASON_SHUTDOWN:
+            # 正在等待模型响应时到期：对这个 provider 来说就是一次超时。
+            CHAT_CIRCUIT.record_failure(candidate.provider)
+        raise
+    except PartialAIResponseError as exc:
+        if find_context_budget_error(exc) is None:
+            if is_timeout_error(exc):
+                logging.warning(
+                    "%s timed out after partial AI response; not retrying",
+                    provider_name,
+                )
+            else:
+                logging.error(
+                    "%s failed after partial AI response; not retrying: %s",
+                    provider_name,
+                    exc,
+                    exc_info=True,
+                )
+        raise
+
+
+def _deadline_response(exc: TurnDeadlineError) -> AIResponse:
     """整轮截止时间到期（或进程停止）：保留已有的工具日志，回复固定的提示文案。
 
     与 `PartialAIResponseError` 的区别：已经向用户发送过可见内容时仍然给提示，
     因为这一轮没有正常结束，用户需要知道。
     """
-    logging.warning(
-        "%s turn stopped during %s (%s); not retrying",
-        service_name,
-        exc.phase,
-        exc.reason,
-    )
     metrics.counter("turn.deadline_hits", reason=exc.reason, phase=exc.phase).inc()
-    if exc.phase == "model" and exc.reason != REASON_SHUTDOWN:
-        # 正在等待模型响应时到期：对这个 provider 来说就是一次超时。
-        _record_provider_failure(service_name)
     message = (
         TURN_SHUTDOWN_ERROR_MESSAGE
         if exc.reason == REASON_SHUTDOWN
         else TURN_DEADLINE_ERROR_MESSAGE
     )
     return message, exc.tool_logs
+
+
+def _partial_response(exc: PartialAIResponseError) -> AIResponse:
+    """执行过工具或发出过可见内容之后失败：不重试，已有的工具日志照常交回去写历史。"""
+    context_error = find_context_budget_error(exc)
+    if context_error is not None:
+        logging.warning("AI 请求超过上下文硬上限: %s", context_error)
+        return CONTEXT_BUDGET_ERROR_MESSAGE, exc.tool_logs
+    if delivered_to_user(exc.tool_logs):
+        return "", exc.tool_logs
+    return PARTIAL_AI_RESPONSE_ERROR_MESSAGE, exc.tool_logs
 
 
 async def _try_ai_services(
@@ -225,80 +214,35 @@ async def _try_ai_services(
     text_fallback_messages=None,
     deadline: Deadline | None = None,
 ) -> tuple[AIResponse | None, Exception | None]:
-    last_error = None
+    request_context = dict(tool_context or {})
+    request_context.setdefault("user_id", user_id)
 
-    for service_name in get_provider_order_for_task("chat"):
-        if deadline is not None and deadline.expired:
-            # 回退链走到一半时间已经用完：不再尝试后面的 provider。
-            return _deadline_response(
-                TurnDeadlineError(deadline.expiry_reason, "fallback", []),
-                service_name,
-                visible_content_handler,
-            ), None
-
-        if _provider_circuit_is_open(service_name):
-            logging.warning("%s 当前处于熔断冷却中，跳过调用", service_name)
-            continue
-
-        service_messages = _messages_for_service(
-            service_name,
-            messages,
-            text_fallback_messages,
+    async def attempt(candidate: Candidate) -> AIResponse:
+        return await _run_chat_candidate(
+            candidate,
+            messages=messages,
+            text_fallback_messages=text_fallback_messages,
+            tool_context=tool_context,
+            request_context=request_context,
+            visible_content_handler=visible_content_handler,
+            deadline=deadline,
         )
-        try:
-            response = await _call_service_with_context(
-                service_name,
-                service_messages.copy(),
-                user_id,
-                tool_context,
-                visible_content_handler,
-                deadline,
-            )
-            _record_provider_success(service_name)
-            return response, None
-        except TurnDeadlineError as exc:
-            return _deadline_response(exc, service_name, visible_content_handler), None
-        except SafetyBlockError:
-            provider_spec = ai_providers.lookup(service_name)
-            if provider_spec is not None and provider_spec.safety_blocks_fall_through:
-                logging.warning(
-                    "%s triggered safety block, trying next service",
-                    provider_spec.display_name,
-                )
-                last_error = SafetyBlockError("SafetyBlockError")
-                continue
-            raise
-        except PartialAIResponseError as exc:
-            context_error = _find_context_budget_error(exc)
-            if context_error is not None:
-                logging.warning("AI 请求超过上下文硬上限: %s", context_error)
-                return (_context_budget_error_message(context_error), exc.tool_logs), None
-            if is_timeout_error(exc):
-                logging.warning(
-                    "%s timed out after partial AI response; not retrying",
-                    service_name,
-                )
-            else:
-                logging.error(
-                    "%s failed after partial AI response; not retrying: %s",
-                    service_name,
-                    exc,
-                    exc_info=True,
-                )
-            if delivered_to_user(exc.tool_logs):
-                return ("", exc.tool_logs), None
-            return (PARTIAL_AI_RESPONSE_ERROR_MESSAGE, exc.tool_logs), None
-        except Exception as exc:
-            context_error = _find_context_budget_error(exc)
-            if context_error is not None:
-                logging.warning("AI 请求超过上下文硬上限: %s", context_error)
-                return (_context_budget_error_message(context_error), []), None
-            logging.warning("%s 调用失败: %s", service_name, exc)
-            _record_provider_failure(service_name)
-            last_error = exc
-            continue
 
-    return None, last_error
+    try:
+        response = await run_with_fallback("chat", attempt, circuit=CHAT_CIRCUIT)
+    except AllProvidersFailedError as exc:
+        return None, exc.last_error
+    except TurnDeadlineError as exc:
+        return _deadline_response(exc), None
+    except PartialAIResponseError as exc:
+        return _partial_response(exc), None
+    except Exception as exc:
+        context_error = find_context_budget_error(exc)
+        if context_error is None:
+            raise
+        logging.warning("AI 请求超过上下文硬上限: %s", context_error)
+        return (CONTEXT_BUDGET_ERROR_MESSAGE, []), None
+    return response, None
 
 
 async def get_ai_response(

@@ -57,8 +57,8 @@ uv run python scripts/gen_ai_flow_doc.py
 
 | 步骤 | 代码 | 文件 |
 |---|---|---|
-| 按顺序选模型服务、熔断、看不了图时换成文字、失败分类 | `get_ai_response`、`_try_ai_services`、`_messages_for_service`、`_provider_circuit_is_open` | [ai/router.py](../src/fogmoe_telegram_bot/features/ai/router.py) |
-| 主模型失败后用备用模型、跳过的工具 | `run_chat_provider`、`skip_tools` | [ai/chat_provider.py](../src/fogmoe_telegram_bot/features/ai/chat_provider.py) |
+| 每次尝试跑一次工具循环（带上声明里隐藏的工具）、看不了图时换成文字、失败转成提示 | `get_ai_response`、`_try_ai_services`、`_run_chat_candidate`、`_messages_for_service`、`skip_tools` | [ai/router.py](../src/fogmoe_telegram_bot/features/ai/router.py) |
+| 按顺序换 provider 与备用模型、安全拦截、熔断（主聊天、摘要、回顾与 `run_ai_task` 共用） | `run_with_fallback`、`ProviderCircuit`、`CHAT_CIRCUIT` | [ai/task_runner.py](../src/fogmoe_telegram_bot/features/ai/task_runner.py) |
 | 拼好上下文（人设 + 用户状态） | `compose_system_prompt` | [ai/prompts.py](../src/fogmoe_telegram_bot/features/ai/prompts.py) |
 | 工具循环、边做边说、工具执行后的重试 | `run_tool_loop`、`emit_visible_content`、`_create_chat_completion_with_post_tool_retries`、`resolve_assistant_message` | [ai/tool_runner.py](../src/fogmoe_telegram_bot/features/ai/tool_runner.py)、[ai/tool_loop_delivery.py](../src/fogmoe_telegram_bot/features/ai/tool_loop_delivery.py)、[ai/tool_loop_messages.py](../src/fogmoe_telegram_bot/features/ai/tool_loop_messages.py) |
 | 一次工具调用：参数校验、执行、媒体立刻发出、只把公开部分交回模型、附带的事件 | `_validate_tool_args`、`_call_tool`、`send_media_result_immediately`、`public_tool_result`、`context_messages_from_tool_result` | [ai/tool_loop_execution.py](../src/fogmoe_telegram_bot/features/ai/tool_loop_execution.py)、[ai/tool_loop_delivery.py](../src/fogmoe_telegram_bot/features/ai/tool_loop_delivery.py) |
@@ -66,8 +66,9 @@ uv run python scripts/gen_ai_flow_doc.py
 | 单次请求上限、按服务的协议整理消息 | `create_chat_completion`、`enforce_messages_context_budget`、`sanitize_messages_for_provider` | [ai/litellm_client.py](../src/fogmoe_telegram_bot/features/ai/litellm_client.py)、[ai/context_budget.py](../src/fogmoe_telegram_bot/features/ai/context_budget.py)、[ai/litellm_message_sanitizer.py](../src/fogmoe_telegram_bot/features/ai/litellm_message_sanitizer.py) |
 | 发到 Telegram | `TelegramVisibleContentHandler` | [ai/telegram_visible_sender.py](../src/fogmoe_telegram_bot/features/ai/telegram_visible_sender.py) |
 
-出问题时的处理规则见 [ai-provider-architecture.md](ai-provider-architecture.md) 的「主聊天的 fallback」：
-上下文超限 `ContextBudgetExceededError`、工具执行后失败 `PartialAIResponseError`、安全拦截 `SafetyBlockError`。
+出问题时的处理规则见 [ai-provider-architecture.md](ai-provider-architecture.md) 的「回退规则」与「主聊天的 fallback」：
+上下文超限 `ContextBudgetExceededError`、执行过工具或发出过可见内容之后失败 `PartialAIResponseError`（由 `has_side_effects` 判断）、
+安全拦截 `SafetyBlockError`。
 
 ## 4. 工具箱
 

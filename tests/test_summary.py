@@ -7,6 +7,7 @@ from fogmoe_telegram_bot.core import background
 from fogmoe_telegram_bot.features.ai import summary
 from fogmoe_telegram_bot.features.ai.tools.context import get_tool_request_context
 from fogmoe_telegram_bot.features.ai.tools.schemas import OPENAI_TOOLS
+from fogmoe_telegram_bot.features.ai.types import PartialAIResponseError
 
 
 def test_generate_summary_counts_with_response_model(monkeypatch):
@@ -84,24 +85,9 @@ def test_fetch_previous_summary_uses_only_earlier_valid_record(monkeypatch):
     assert "summary IS NOT NULL" in captured["sql"]
 
 
-def test_run_summary_agent_exposes_only_summary_search_tool(monkeypatch):
+def test_run_summary_agent_exposes_only_summary_search_tool(monkeypatch, settings_override):
     captured = {}
-
-    monkeypatch.setattr(
-        summary,
-        "get_provider_order_for_task",
-        lambda task: ["gemini"],
-    )
-    monkeypatch.setattr(
-        summary,
-        "get_models_for_task",
-        lambda provider, task: ["summary-model"],
-    )
-    monkeypatch.setattr(
-        summary,
-        "completion_kwargs_for_task",
-        lambda provider, task: {},
-    )
+    settings_override(AI_SUMMARY_PROVIDER="gemini", GEMINI_SUMMARY_MODEL="summary-model")
 
     async def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
         captured.update(
@@ -140,8 +126,32 @@ def test_run_summary_agent_exposes_only_summary_search_tool(monkeypatch):
     assert "max_tokens" not in captured["kwargs"]
     assert captured["kwargs"]["context_hard_limit_ratio"] == 1.5
     assert captured["kwargs"]["max_iterations"] == 4
-    assert captured["kwargs"]["completion_kwargs"] == {}
+    assert "completion_kwargs" not in captured["kwargs"]
     assert get_tool_request_context() == {}
+
+
+def test_run_summary_agent_reruns_its_read_only_tools_on_the_fallback_model(
+    monkeypatch, settings_override
+):
+    settings_override(
+        AI_SUMMARY_PROVIDER="gemini",
+        GEMINI_SUMMARY_MODEL="primary",
+        GEMINI_SUMMARY_FALLBACK_MODEL="fallback",
+    )
+    models = []
+
+    async def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
+        models.append(model)
+        if model == "primary":
+            raise PartialAIResponseError("failed after search", [{"type": "tool_result"}])
+        return "generated summary", []
+
+    monkeypatch.setattr(summary, "run_tool_loop", fake_run_tool_loop)
+
+    result = asyncio.run(summary._run_summary_agent([{"role": "user", "content": "x"}], 1, 2))
+
+    assert result == ("generated summary", "fallback")
+    assert models == ["primary", "fallback"]
 
 
 def test_format_history_labels_bot_event_as_observed_runtime_state():

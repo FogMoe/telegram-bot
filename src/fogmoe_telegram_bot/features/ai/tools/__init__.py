@@ -1,5 +1,10 @@
 from .code_tools import execute_python_code_tool
-from .context import clear_tool_request_context, get_tool_request_context, set_tool_request_context
+from .context import (
+    clear_tool_request_context,
+    get_tool_request_context,
+    set_tool_request_context,
+    tool_request_scope,
+)
 from .http_tools import fetch_url_tool
 from .image_tools import generate_image_tool
 from .memory_tools import (
@@ -22,6 +27,7 @@ __all__ = [
     "set_tool_request_context",
     "clear_tool_request_context",
     "get_tool_request_context",
+    "tool_request_scope",
     "fetch_url_tool",
     "generate_image_tool",
     "generate_voice_tool",

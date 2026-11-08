@@ -764,16 +764,14 @@ class TestDeadline:
         from fogmoe_telegram_bot.features.conversation import turn_services
 
         settings_override(AI_CHAT_ORDER="openai", OPENAI_CHAT_MODEL="gpt")
-        router._provider_failure_streaks.clear()
-        router._provider_circuit_open_until.clear()
+        router.CHAT_CIRCUIT.reset()
 
         async def hang(*args, **kwargs):
             await asyncio.sleep(30)
 
         monkeypatch.setattr(tool_runner, "create_chat_completion", hang)
         yield turn_services._run_model
-        router._provider_failure_streaks.clear()
-        router._provider_circuit_open_until.clear()
+        router.CHAT_CIRCUIT.reset()
 
     def test_the_deadline_reaches_the_model_stage(self):
         world = World()

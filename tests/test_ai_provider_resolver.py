@@ -108,23 +108,7 @@ def test_get_models_for_task_deduplicates_identical_primary_and_fallback(monkeyp
     assert provider_resolver.get_models_for_task("gemini", "chat") == ["gemini-chat"]
 
 
-def test_completion_kwargs_are_empty_for_all_providers(monkeypatch):
-    monkeypatch.setattr(config, "GEMINI_OPENAI_COMPATIBLE", False)
-
-    assert provider_resolver.completion_kwargs_for_task("gemini", "vision") == {}
-    assert provider_resolver.completion_kwargs_for_task("gemini", "summary") == {}
-    assert provider_resolver.completion_kwargs_for_task("gemini", "recap") == {}
-    assert provider_resolver.completion_kwargs_for_task("fogmoe", "chat") == {}
-    assert provider_resolver.completion_kwargs_for_task("fogmoe", "summary") == {}
-    assert provider_resolver.completion_kwargs_for_task("fogmoe", "advisor") == {}
-
-    monkeypatch.setattr(config, "GEMINI_OPENAI_COMPATIBLE", True)
-
-    assert provider_resolver.completion_kwargs_for_task("gemini", "summary") == {}
-    assert provider_resolver.completion_kwargs_for_task("gemini", "recap") == {}
-
-
-def test_run_ai_task_uses_resolved_models_with_fallback_and_kwarg_override(monkeypatch):
+def test_run_ai_task_uses_resolved_models_with_fallback_and_passes_kwargs(monkeypatch):
     calls = []
     messages = [{"role": "user", "content": "hello"}]
 
@@ -137,11 +121,6 @@ def test_run_ai_task_uses_resolved_models_with_fallback_and_kwarg_override(monke
         task_runner,
         "get_models_for_task",
         lambda provider, task: ["primary-model", "fallback-model"],
-    )
-    monkeypatch.setattr(
-        task_runner,
-        "_provider_completion_kwargs",
-        lambda provider, task: {"temperature": 1},
     )
 
     async def fake_create_chat_completion(provider, model, request_messages, **kwargs):
