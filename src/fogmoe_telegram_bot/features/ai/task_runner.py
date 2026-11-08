@@ -10,7 +10,9 @@
 - 安全拦截：声明了 `translates_safety_blocks` 的 provider 把「被安全策略拦截」的错误转成 `SafetyBlockError`。
   还有备用模型就换模型；模型用完时，声明了 `safety_blocks_fall_through` 的换下一个 provider（不计熔断），
   其余上抛；
-- 其他失败换下一个模型或 provider。传了 `circuit` 的任务在一个 provider 的模型都失败时记一次熔断失败。
+- 其他失败换下一个模型或 provider。传了 `circuit` 的任务在一个 provider 的模型都失败时记一次熔断失败；
+- 传了 `deadline` 的任务（主聊天）：看每个 provider（包括要跳过的）、试每个模型之前都检查，到期就抛
+  `TurnDeadlineError`（`phase="fallback"`），不再尝试，也不记熔断失败。
 
 每次尝试做什么由调用方的 `attempt` 决定（一次模型调用，或一次工具循环），工具请求上下文也由 `attempt`
 用 `tools.context.tool_request_scope` 设置：这个模块在 advisor 工具的调用链上，不能 import 工具包。
@@ -25,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fogmoe_telegram_bot.core import ai_providers
+from fogmoe_telegram_bot.core.deadline import Deadline
 
 from .errors import SafetyBlockError, find_context_budget_error
 from .litellm_client import create_chat_completion
@@ -123,6 +126,16 @@ class ProviderCircuit:
         self._open_until.clear()
 
 
+def _raise_if_deadline_expired(task: str, deadline: Deadline | None) -> None:
+    if deadline is not None and deadline.expired:
+        logging.warning(
+            "AI task %s stopped falling back: turn deadline reached (%s)",
+            task,
+            deadline.expiry_reason,
+        )
+        raise TurnDeadlineError(deadline.expiry_reason, "fallback", [])
+
+
 def _as_safety_block(spec: ai_providers.ProviderSpec, exc: Exception) -> SafetyBlockError | None:
     if isinstance(exc, SafetyBlockError):
         return exc
@@ -140,6 +153,7 @@ async def run_with_fallback[T](
     *,
     tools_are_read_only: bool = False,
     circuit: ProviderCircuit | None = None,
+    deadline: Deadline | None = None,
 ) -> T:
     """按任务的 provider 与模型顺序调用 `attempt`，返回第一次成功的结果；规则见模块说明。
 
@@ -148,6 +162,7 @@ async def run_with_fallback[T](
     """
     last_error: Exception | None = None
     for name in get_provider_order_for_task(task):
+        _raise_if_deadline_expired(task, deadline)
         spec = ai_providers.lookup(name)
         if spec is None:
             logging.warning("AI task %s skipped unknown provider %s", task, name)
@@ -171,6 +186,7 @@ async def run_with_fallback[T](
             continue
 
         for index, model in enumerate(models):
+            _raise_if_deadline_expired(task, deadline)
             error: Exception
             try:
                 result = await attempt(Candidate(spec, model))

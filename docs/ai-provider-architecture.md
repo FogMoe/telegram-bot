@@ -88,6 +88,8 @@ provider 特有的协议要求由什么承载。权威定义是代码，本页�
 4. 安全拦截按上一节处理；其余失败换下一个模型，模型用完换下一个 provider。
 5. 传了熔断的任务（目前只有主聊天）在一个 provider 的模型都以普通失败结束时记一次熔断失败，成功时清零；
    上下文超限、工具之后的失败与安全拦截不计入。
+6. 传了整轮截止时间的任务（目前只有主聊天）在看每个 provider（包括要跳过的）、试每个模型之前检查它，
+   到期就抛 `TurnDeadlineError`（`phase=fallback`），不再尝试，也不记熔断失败。
 
 全部失败或被跳过时抛 `AllProvidersFailedError`，`last_error` 是最后一次失败。
 
@@ -95,12 +97,12 @@ provider 特有的协议要求由什么承载。权威定义是代码，本页�
 
 `router.get_ai_response` 把一轮对话交给 `run_with_fallback("chat", ...)`，熔断用 `CHAT_CIRCUIT`，阈值是
 `AI_PROVIDER_CIRCUIT_FAILURE_THRESHOLD`、`AI_PROVIDER_CIRCUIT_WINDOW_SECONDS`、`AI_PROVIDER_CIRCUIT_COOLDOWN_SECONDS`。
-每次尝试（`_run_chat_candidate`）：
+同时传入整轮 `Deadline`：回退链走到一半时间已经用完（包括后面的 provider 全都会被跳过的情况），返回固定的超时提示，
+不给没被调用过的 provider 记失败（`phase=fallback`）。每次尝试（`_run_chat_candidate`）：
 
-1. 整轮截止时间已经到期就不再调用，返回固定的超时提示，不给这个 provider 记失败（`phase=fallback`）。
-2. 消息含图片而该 provider 不支持视觉（`chat_service_supports_vision`）时，改用纯文本历史
+1. 消息含图片而该 provider 不支持视觉（`chat_service_supports_vision`）时，改用纯文本历史
    （`text_fallback_messages`，没有则去掉图片）。
-3. 在一份新的工具请求上下文里（`tool_request_scope`）直接 `await` 工具循环（原生 async，没有线程池），
+2. 在一份新的工具请求上下文里（`tool_request_scope`）直接 `await` 工具循环（原生 async，没有线程池），
    带上声明里的展示名与 `skip_tools`，结束后清理沙箱（清理失败只记日志，不影响这次的结果）。
    传入的整轮 `Deadline` 一路带到工具循环，等待模型时到期给这个 provider 记一次熔断失败。规则见 [runtime.md](runtime.md)。
 

@@ -8,6 +8,7 @@ import pytest
 
 from fogmoe_telegram_bot.core import ai_providers
 from fogmoe_telegram_bot.core.ai_providers import Capabilities
+from fogmoe_telegram_bot.core.deadline import REASON_DEADLINE, Deadline
 from fogmoe_telegram_bot.features.ai.context_budget import ContextBudgetExceededError
 from fogmoe_telegram_bot.features.ai.errors import SafetyBlockError
 from fogmoe_telegram_bot.features.ai.task_runner import (
@@ -187,6 +188,37 @@ def test_a_context_error_in_the_cause_chain_also_stops_the_fallback(summary_orde
 
     with pytest.raises(RuntimeError, match="provider rejected"):
         asyncio.run(run_with_fallback("summary", attempt))
+
+    assert calls == [("gemini", "g1")]
+
+
+def test_an_expired_deadline_stops_before_any_provider_even_one_that_would_be_skipped(summary_order):
+    circuit = make_circuit()
+    for _ in range(3):
+        circuit.record_failure("gemini")
+    deadline = Deadline(60)
+    deadline.expire(REASON_DEADLINE)
+    attempt, calls = scripted({})
+
+    with pytest.raises(TurnDeadlineError) as exc_info:
+        asyncio.run(run_with_fallback("summary", attempt, circuit=circuit, deadline=deadline))
+
+    assert exc_info.value.phase == "fallback"
+    assert calls == []
+    assert circuit.failure_count("openai") == 0
+
+
+def test_a_deadline_reached_during_an_attempt_stops_before_the_fallback_model(summary_order):
+    deadline = Deadline(60)
+    calls = []
+
+    async def attempt(candidate):
+        calls.append((candidate.provider, candidate.model))
+        deadline.expire(REASON_DEADLINE)
+        raise RuntimeError("failed just as time ran out")
+
+    with pytest.raises(TurnDeadlineError):
+        asyncio.run(run_with_fallback("summary", attempt, deadline=deadline))
 
     assert calls == [("gemini", "g1")]
 

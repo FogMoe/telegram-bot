@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from fogmoe_telegram_bot.core import blocking, metrics
-from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline
+from fogmoe_telegram_bot.core.deadline import REASON_DEADLINE, REASON_SHUTDOWN, Deadline
 from fogmoe_telegram_bot.features.ai import job_claims, router, tool_runner
 from fogmoe_telegram_bot.features.ai.generated_image_sender import _collect_generated_images
 from fogmoe_telegram_bot.features.ai.tool_history import tool_logs_to_record_entries
@@ -635,6 +635,33 @@ def test_an_expired_deadline_never_calls_a_provider_or_blames_one(monkeypatch, t
     assert router.CHAT_CIRCUIT.failure_count("openai") == 0
     assert router.CHAT_CIRCUIT.failure_count("gemini") == 0
     assert metrics.snapshot().counter("turn.deadline_hits", reason="deadline", phase="fallback") == 1
+
+
+@pytest.mark.parametrize(
+    ("reason", "notice"),
+    [
+        (REASON_DEADLINE, router.TURN_DEADLINE_ERROR_MESSAGE),
+        (REASON_SHUTDOWN, router.TURN_SHUTDOWN_ERROR_MESSAGE),
+    ],
+)
+def test_an_expired_turn_gets_its_notice_even_when_every_provider_is_skipped(
+    monkeypatch, two_providers, reason, notice
+):
+    fake, calls = script(Response(Message("too late")))
+    monkeypatch.setattr(tool_runner, "create_chat_completion", fake)
+    for provider in ("openai", "gemini"):
+        for _ in range(router.AI_PROVIDER_CIRCUIT_FAILURE_THRESHOLD):
+            router.CHAT_CIRCUIT.record_failure(provider)
+    deadline = Deadline(60)
+    deadline.expire(reason)
+
+    response = run_loop(
+        router.get_ai_response([{"role": "user", "content": "hi"}], user_id=1, deadline=deadline)
+    )
+
+    assert response == (notice, [])
+    assert calls == []
+    assert metrics.snapshot().counter("turn.deadline_hits", reason=reason, phase="fallback") == 1
 
 
 @pytest.mark.slow

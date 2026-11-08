@@ -130,9 +130,6 @@ async def _run_chat_candidate(
     """用一个 provider 的一个模型跑一次主聊天的工具循环；provider 之间的差异只来自声明。"""
     provider_name = candidate.spec.display_name
     try:
-        if deadline is not None and deadline.expired:
-            # 回退链走到一半时间已经用完：不再尝试后面的模型与 provider。
-            raise TurnDeadlineError(deadline.expiry_reason, "fallback", [])
         service_messages = _messages_for_service(
             candidate.provider,
             messages,
@@ -229,7 +226,13 @@ async def _try_ai_services(
         )
 
     try:
-        response = await run_with_fallback("chat", attempt, circuit=CHAT_CIRCUIT)
+        # 回退链走到一半时间已经用完：不再尝试后面的模型与 provider（包括要跳过的）。
+        response = await run_with_fallback(
+            "chat",
+            attempt,
+            circuit=CHAT_CIRCUIT,
+            deadline=deadline,
+        )
     except AllProvidersFailedError as exc:
         return None, exc.last_error
     except TurnDeadlineError as exc:
