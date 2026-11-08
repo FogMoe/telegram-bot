@@ -86,6 +86,18 @@ async def generate_summary_immediately(user_id: int) -> str | None:
         return None
 
 
+async def refresh_summary_after_overflow(user_id: int) -> None:
+    """活跃历史溢出：先尝试立即生成摘要并放回历史开头，来不及时退回后台排队。"""
+    summary_text = await generate_summary_immediately(user_id)
+    if summary_text:
+        await mysql_connection.async_update_latest_history_state_summary(
+            user_id,
+            summary_text,
+        )
+    else:
+        schedule_summary_generation(user_id)
+
+
 async def _process_summary_for_user(user_id: int) -> None:
     try:
         async with _summary_slot():

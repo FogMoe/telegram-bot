@@ -23,7 +23,13 @@ from job_support import (
 )
 from mysql_support import execute, fetch, fetch_scalar, run
 
-from fogmoe_telegram_bot.features.ai import conversation_locks, job_claims, scheduler
+from fogmoe_telegram_bot.features.ai import (
+    conversation_locks,
+    job_claims,
+    outbound,
+    scheduler,
+    summary,
+)
 from fogmoe_telegram_bot.features.ai.tools import schedule_tools
 
 REPLY = "drink some water"
@@ -38,9 +44,9 @@ def env(app_database, monkeypatch):
         return []
 
     monkeypatch.setattr(scheduler.ai_chat, "get_ai_response", ai.get_ai_response)
-    monkeypatch.setattr(scheduler, "send_ai_reply_with_stickers", telegram.send_reply)
+    monkeypatch.setattr(outbound, "send_ai_reply_with_stickers", telegram.send_reply)
     monkeypatch.setattr(scheduler, "send_generated_media", no_media)
-    monkeypatch.setattr(scheduler.summary, "schedule_summary_generation", lambda *a, **k: None)
+    monkeypatch.setattr(summary, "schedule_summary_generation", lambda *a, **k: None)
     # 心跳留给专门的测试；其余测试里租约只靠手工到期。
     monkeypatch.setattr(scheduler, "SCHEDULE_HEARTBEAT_SECONDS", 3600)
     # asyncio.Lock 一旦发生过竞争就绑定了那个事件循环；每个测试用自己的会话锁表。

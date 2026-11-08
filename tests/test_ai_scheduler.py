@@ -104,11 +104,7 @@ def test_claimed_schedule_returns_to_pending_if_coins_are_exhausted(monkeypatch)
     )
     monkeypatch.setattr(scheduler, "_release_claim", fake_release_claim)
     monkeypatch.setattr(scheduler, "_begin_generation", fail_if_called)
-    monkeypatch.setattr(
-        scheduler.mysql_connection,
-        "async_insert_chat_record",
-        fail_if_called,
-    )
+    monkeypatch.setattr(scheduler, "write_history", fail_if_called)
     monkeypatch.setattr(scheduler.ai_chat, "get_ai_response", fail_if_called)
 
     run = scheduler._ScheduleRun(_claim(7))
@@ -144,11 +140,7 @@ def test_claimed_schedule_stops_at_daily_trigger_limit(monkeypatch):
         fake_user_coins,
     )
     monkeypatch.setattr(scheduler, "_begin_generation", fake_begin_generation)
-    monkeypatch.setattr(
-        scheduler.mysql_connection,
-        "async_insert_chat_record",
-        fail_if_called,
-    )
+    monkeypatch.setattr(scheduler, "write_history", fail_if_called)
     monkeypatch.setattr(scheduler.ai_chat, "get_ai_response", fail_if_called)
 
     run = scheduler._ScheduleRun(_claim(8))

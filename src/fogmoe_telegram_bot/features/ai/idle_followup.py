@@ -26,32 +26,35 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from telegram.ext import ContextTypes
 
 from fogmoe_telegram_bot.core import config, mysql_connection, process_user
-from fogmoe_telegram_bot.core.archive_utils import send_permanent_records_archive
 from fogmoe_telegram_bot.core.prompt_utils import format_metadata_attrs, xml_escape
-from fogmoe_telegram_bot.core.telegram_history import suppress_telegram_history
-from fogmoe_telegram_bot.core.telegram_utils import partial_send
-from fogmoe_telegram_bot.features.ai import ai_chat, job_claims, summary
+from fogmoe_telegram_bot.features.ai import ai_chat, job_claims
 from fogmoe_telegram_bot.features.ai.conversation_locks import get_conversation_lock
+from fogmoe_telegram_bot.features.ai.history_writer import write_history
 from fogmoe_telegram_bot.features.ai.job_claims import ClaimLostError
-from fogmoe_telegram_bot.features.ai.outbound import send_generated_media
-from fogmoe_telegram_bot.features.ai.reply_filter import normalize_ai_reply_text
-from fogmoe_telegram_bot.features.ai.router import runtime_error_cause
+from fogmoe_telegram_bot.features.ai.outbound import (
+    finish_reply,
+    send_generated_media,
+    send_private_reply,
+)
 from fogmoe_telegram_bot.features.ai.sticker_sender import (
     PartialAIReplySendError,
     normalize_sticker_directives,
-    send_ai_reply_with_stickers,
 )
 from fogmoe_telegram_bot.features.ai.task_runner import Candidate, run_with_fallback
-from fogmoe_telegram_bot.features.ai.tool_history import tool_logs_to_record_entries
+from fogmoe_telegram_bot.features.ai.tool_history import (
+    reply_record_entries,
+    tool_logs_to_record_entries,
+)
 from fogmoe_telegram_bot.features.ai.tool_runner import run_tool_loop
 from fogmoe_telegram_bot.features.ai.tools import (
     AI_TOOL_HANDLERS,
     OPENAI_TOOLS,
+    build_tool_context,
     tool_request_scope,
 )
 from fogmoe_telegram_bot.features.ai.tools.memory_tools import read_diary_page_tool
 from fogmoe_telegram_bot.features.ai.tools.schemas import IDLE_RECAP_READ_DIARY_TOOL
-from fogmoe_telegram_bot.features.ai.types import ABORT_EVENT_KEY, has_side_effects
+from fogmoe_telegram_bot.features.ai.types import has_side_effects
 from fogmoe_telegram_bot.features.ai.user_state import build_user_state_prompt
 
 logger = logging.getLogger(__name__)
@@ -719,23 +722,10 @@ async def _persist_completed_turn(
     tool_logs: list[dict],
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    records = [("user", recap_event)]
+    records: list[tuple[str, object]] = [("user", recap_event)]
     records.extend(tool_logs_to_record_entries(tool_logs))
-    if assistant_message:
-        records.append(("assistant", assistant_message))
-    snapshot_created, _, archived_records = await mysql_connection.async_insert_chat_records(
-        claim.user_id,
-        records,
-    )
-    if snapshot_created:
-        summary.schedule_summary_generation(claim.user_id)
-    if archived_records:
-        await send_permanent_records_archive(
-            context.bot,
-            claim.user_id,
-            archived_records,
-            logger=logger,
-        )
+    records.extend(reply_record_entries(assistant_message, None))
+    await write_history(claim.user_id, records, bot=context.bot, logger=logger)
 
 
 async def _send_followup_outputs(
@@ -746,34 +736,24 @@ async def _send_followup_outputs(
 ) -> str | None:
     """投递跟进内容；已知的投递失败只记录并返回摘要，不影响本地结果的落库。"""
     delivery_errors: list[str] = []
-    if assistant_message:
-        try:
-            await context.bot.send_chat_action(chat_id=user_id, action="typing")
-        except Exception:
-            logger.debug("Failed to send typing action for idle follow-up: user_id=%s", user_id)
-
-        send_func = partial_send(context.bot.send_message, user_id)
-        try:
-            with suppress_telegram_history():
-                await send_ai_reply_with_stickers(
-                    bot=context.bot,
-                    chat_id=user_id,
-                    text=assistant_message,
-                    first_text_send=send_func,
-                    fallback_send=send_func,
-                    logger=logger,
-                )
-        except PartialAIReplySendError as exc:
-            logger.warning(
-                "Idle follow-up was only partially sent: user_id=%s sent_messages=%s error=%s",
-                user_id,
-                len(exc.sent_messages),
-                exc,
-            )
-            delivery_errors.append(job_claims.error_summary(exc))
-        except Exception as exc:
-            logger.exception("Failed to send idle follow-up reply: user_id=%s", user_id)
-            delivery_errors.append(job_claims.error_summary(exc))
+    try:
+        await send_private_reply(
+            bot=context.bot,
+            user_id=user_id,
+            text=assistant_message,
+            logger=logger,
+        )
+    except PartialAIReplySendError as exc:
+        logger.warning(
+            "Idle follow-up was only partially sent: user_id=%s sent_messages=%s error=%s",
+            user_id,
+            len(exc.sent_messages),
+            exc,
+        )
+        delivery_errors.append(job_claims.error_summary(exc))
+    except Exception as exc:
+        logger.exception("Failed to send idle follow-up reply: user_id=%s", user_id)
+        delivery_errors.append(job_claims.error_summary(exc))
 
     try:
         await send_generated_media(
@@ -1002,33 +982,28 @@ async def _run_claim(
         assistant_message, tool_logs = await ai_chat.get_ai_response(
             ai_messages,
             claim.user_id,
-            tool_context={
-                "is_group": False,
-                "group_id": None,
-                "message_id": None,
-                "user_id": claim.user_id,
-                "user_state_prompt": user_state_prompt,
-                ABORT_EVENT_KEY: run.abort_event,
-            },
+            tool_context=build_tool_context(
+                user_id=claim.user_id,
+                user_state_prompt=user_state_prompt,
+                abort_event=run.abort_event,
+            ),
         )
-        assistant_message = normalize_ai_reply_text(assistant_message)
-        failure_cause = runtime_error_cause(assistant_message)
-        if failure_cause:
+        reply = await finish_reply(
+            assistant_message,
+            normalize_stickers=lambda text: normalize_sticker_directives(text, logger=logger),
+        )
+        assistant_message = reply.text
+        if reply.runtime_error:
             if not has_side_effects(tool_logs):
                 raise _NoSideEffectsError(
-                    f"main AI failed during idle follow-up: {failure_cause}"
+                    f"main AI failed during idle follow-up: {reply.runtime_error}"
                 )
             logger.warning(
                 "Idle follow-up main AI failed after tool execution: user_id=%s cause=%s",
                 claim.user_id,
-                failure_cause,
+                reply.runtime_error,
             )
             assistant_message = ""
-        if assistant_message:
-            assistant_message = await normalize_sticker_directives(
-                assistant_message,
-                logger=logger,
-            )
 
         if not await _claim_is_current(claim):
             if tool_logs:

@@ -209,3 +209,10 @@ def tool_logs_to_record_entries(
         )
 
     return record_entries
+
+
+def reply_record_entries(reply_text: str, runtime_error: str | None) -> list[tuple[str, object]]:
+    """AI 最终回复写进历史的条目：脱敏后的回复；空回复与固定的错误提示不写。"""
+    if not reply_text.strip() or runtime_error:
+        return []
+    return [("assistant", redact_text(reply_text))]

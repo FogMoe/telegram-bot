@@ -74,7 +74,7 @@
 进程还在、操作抛出了异常（已知失败）时：
 
 - 定时任务：`claimed` 阶段的失败放回队列重试，次数受 `SCHEDULE_MAX_CLAIM_ATTEMPTS` 限制，本轮轮询不会再次 claim 同一个任务；其余阶段按失败收尾。
-- 空闲跟进：失败发生在 `claimed` 阶段，或者主模型明确失败且没有执行过任何工具（`_NoSideEffectsError`），延迟 `IDLE_FOLLOWUP_RETRY_MINUTES` 后重试，次数受 `IDLE_FOLLOWUP_MAX_RETRIES` 限制；其余失败发生在工具或投递可能已经产生副作用之后，直接结束（`fired`），不重跑。
+- 空闲跟进：失败发生在 `claimed` 阶段，或者主模型明确失败且没有执行过任何工具（工具循环的 `has_side_effects` 为假，`_NoSideEffectsError`），延迟 `IDLE_FOLLOWUP_RETRY_MINUTES` 后重试，次数受 `IDLE_FOLLOWUP_MAX_RETRIES` 限制；其余失败发生在工具或投递可能已经产生副作用之后，直接结束（`fired`），不重跑。
 
 ### 循环任务
 
