@@ -20,6 +20,7 @@ from .types import (
     PartialAIResponseError,
     TurnDeadlineError,
     VisibleContentHandler,
+    delivered_to_user,
 )
 
 AI_PROVIDER_CIRCUIT_FAILURE_THRESHOLD = 3
@@ -167,66 +168,6 @@ async def _call_service_with_context(
             clear_tool_request_context()
 
 
-def _visible_content_was_sent(
-    visible_content_handler: VisibleContentHandler | None,
-) -> bool:
-    if visible_content_handler is None:
-        return False
-    try:
-        sent_count = int(getattr(visible_content_handler, "sent_count", 0))
-    except (TypeError, ValueError):
-        sent_count = 0
-    if sent_count > 0:
-        return True
-
-    sent_messages = getattr(visible_content_handler, "sent_messages", [])
-    if isinstance(sent_messages, list) and any(message is not None for message in sent_messages):
-        return True
-
-    contents = getattr(visible_content_handler, "sent_contents", [])
-    if isinstance(contents, list) and any(str(content).strip() for content in contents):
-        return True
-
-    visible_events = getattr(visible_content_handler, "visible_events", None)
-    if callable(visible_events):
-        try:
-            events = visible_events()
-            return isinstance(events, list) and any(
-                isinstance(event, dict) and str(event.get("content") or "").strip()
-                for event in events
-            )
-        except Exception:
-            logging.exception("Failed to read visible content sent state")
-            return False
-    return False
-
-
-def _visible_content_events(
-    visible_content_handler: VisibleContentHandler | None,
-) -> list[dict]:
-    if visible_content_handler is None:
-        return []
-    visible_events = getattr(visible_content_handler, "visible_events", None)
-    if callable(visible_events):
-        try:
-            events = visible_events()
-            if isinstance(events, list):
-                return events
-        except Exception:
-            logging.exception("Failed to read visible content events")
-    contents = getattr(visible_content_handler, "sent_contents", [])
-    if not isinstance(contents, list):
-        return []
-    return [
-        {
-            "type": "assistant_visible",
-            "content": str(content),
-        }
-        for content in contents
-        if str(content).strip()
-    ]
-
-
 def _messages_for_service(
     service_name: str,
     messages,
@@ -318,12 +259,6 @@ async def _try_ai_services(
         except TurnDeadlineError as exc:
             return _deadline_response(exc, service_name, visible_content_handler), None
         except SafetyBlockError:
-            if _visible_content_was_sent(visible_content_handler):
-                logging.warning(
-                    "%s triggered safety block after sending visible content; not retrying",
-                    service_name,
-                )
-                return ("", _visible_content_events(visible_content_handler)), None
             provider_spec = ai_providers.lookup(service_name)
             if provider_spec is not None and provider_spec.safety_blocks_fall_through:
                 logging.warning(
@@ -350,7 +285,7 @@ async def _try_ai_services(
                     exc,
                     exc_info=True,
                 )
-            if _visible_content_was_sent(visible_content_handler):
+            if delivered_to_user(exc.tool_logs):
                 return ("", exc.tool_logs), None
             return (PARTIAL_AI_RESPONSE_ERROR_MESSAGE, exc.tool_logs), None
         except Exception as exc:
@@ -358,20 +293,6 @@ async def _try_ai_services(
             if context_error is not None:
                 logging.warning("AI 请求超过上下文硬上限: %s", context_error)
                 return (_context_budget_error_message(context_error), []), None
-            if _visible_content_was_sent(visible_content_handler):
-                if is_timeout_error(exc):
-                    logging.warning(
-                        "%s timed out after sending visible content; not retrying",
-                        service_name,
-                    )
-                else:
-                    logging.error(
-                        "%s failed after sending visible content; not retrying: %s",
-                        service_name,
-                        exc,
-                        exc_info=True,
-                    )
-                return ("", _visible_content_events(visible_content_handler)), None
             logging.warning("%s 调用失败: %s", service_name, exc)
             _record_provider_failure(service_name)
             last_error = exc

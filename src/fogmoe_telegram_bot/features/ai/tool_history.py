@@ -4,6 +4,8 @@ from typing import Any
 
 from fogmoe_telegram_bot.core.redaction import redact_text
 
+from .tool_loop_messages import tool_result_json
+
 
 def _telegram_command_name(arguments: object) -> str | None:
     if not isinstance(arguments, dict):
@@ -192,11 +194,7 @@ def tool_logs_to_record_entries(
             continue
 
         _pop_pending_id(pending_tool_call_ids, tool_call_id)
-        tool_result = tool_log.get("result")
-        try:
-            tool_result_str = json.dumps(tool_result, ensure_ascii=False, default=str)
-        except TypeError:
-            tool_result_str = str(tool_result)
+        tool_result_str = tool_result_json(tool_log.get("result"))
 
         record_entries.append(
             (

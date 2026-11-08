@@ -9,7 +9,6 @@
 """
 
 import asyncio
-import json
 import logging
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
@@ -39,6 +38,7 @@ from .tool_loop_messages import (
     assistant_message_to_plain,
     normalise_tool_calls,
     resolve_assistant_message,
+    tool_result_json,
 )
 from .tools import AI_TOOL_HANDLERS, OPENAI_TOOLS
 from .types import (
@@ -47,14 +47,11 @@ from .types import (
     ToolLog,
     TurnDeadlineError,
     VisibleContentHandler,
+    has_side_effects,
     raise_if_aborted,
 )
 
 POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS = (1.0, 3.0)
-
-
-def _has_tool_result(tool_logs: list[ToolLog]) -> bool:
-    return any(log.get("type") == "tool_result" for log in tool_logs)
 
 
 async def _create_chat_completion_with_post_tool_retries(
@@ -76,7 +73,7 @@ async def _create_chat_completion_with_post_tool_retries(
 
     retry_delays = (
         POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS
-        if _has_tool_result(tool_logs)
+        if has_side_effects(tool_logs)
         else ()
     )
     retry_index = 0
@@ -132,6 +129,8 @@ async def run_tool_loop(
 
     原生 async：模型调用 `await`，async 工具直接 `await`，同步工具走有界线程适配器。
     `deadline` 到期时取消正在等待的步骤，抛 `TurnDeadlineError`（带着已有的工具日志）。
+    执行过工具或发出过可见内容之后（`has_side_effects`），其他异常一律包成 `PartialAIResponseError`
+    （带着已有的工具日志）离开循环：调用方不能再换模型或 provider 从头重跑这一轮。
     """
     tools = OPENAI_TOOLS if tool_definitions is None else list(tool_definitions)
     handlers = AI_TOOL_HANDLERS if tool_handlers is None else dict(tool_handlers)
@@ -174,24 +173,17 @@ async def run_tool_loop(
             "context_hard_limit_ratio": context_hard_limit_ratio,
             "timeout": call_timeout,
         }
-        try:
-            async with deadline_guard(deadline):
-                return await _create_chat_completion_with_post_tool_retries(
-                    provider,
-                    model,
-                    messages=filtered_messages,
-                    request_kwargs=request_kwargs,
-                    provider_name=provider_name,
-                    tool_logs=tool_logs,
-                    tools=tools,
-                    tool_choice=tool_choice,
-                )
-        except DeadlineExceeded:
-            raise
-        except Exception as exc:
-            if tool_logs:
-                raise PartialAIResponseError(str(exc), tool_logs) from exc
-            raise
+        async with deadline_guard(deadline):
+            return await _create_chat_completion_with_post_tool_retries(
+                provider,
+                model,
+                messages=filtered_messages,
+                request_kwargs=request_kwargs,
+                provider_name=provider_name,
+                tool_logs=tool_logs,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
 
     # 到期时正在等待的步骤，决定提示和是否把这次计为 provider 失败。
     phase = "model"
@@ -343,7 +335,7 @@ async def run_tool_loop(
                     "role": "tool",
                     "tool_call_id": tool_call_id,
                     "name": function_name,
-                    "content": json.dumps(tool_result, ensure_ascii=False),
+                    "content": tool_result_json(tool_result),
                 })
                 tool_logs.append(
                     tool_result_log(
@@ -368,8 +360,11 @@ async def run_tool_loop(
             deadline.raise_if_expired()
         response = await complete()
 
-        assistant_message = response.choices[0].message
-        raw_tool_calls = getattr(assistant_message, "tool_calls", None)
+        assistant_message, raw_tool_calls = resolve_assistant_message(
+            response,
+            provider=provider,
+            provider_name=provider_name,
+        )
         if raw_tool_calls:
             logging.warning(
                 "%s 工具调用超限后的最终回复仍包含工具调用，忽略工具调用并使用文本内容。",
@@ -385,3 +380,7 @@ async def run_tool_loop(
         )
     except DeadlineExceeded as exc:
         raise TurnDeadlineError(exc.reason, phase, tool_logs) from exc
+    except Exception as exc:
+        if has_side_effects(tool_logs):
+            raise PartialAIResponseError(str(exc), tool_logs) from exc
+        raise

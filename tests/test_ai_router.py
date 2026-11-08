@@ -1,12 +1,13 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
 from fogmoe_telegram_bot.core import config
-from fogmoe_telegram_bot.features.ai import chat_provider, router
+from fogmoe_telegram_bot.features.ai import chat_provider, router, tool_runner
 from fogmoe_telegram_bot.features.ai.context_budget import ContextBudgetExceededError
 from fogmoe_telegram_bot.features.ai.errors import SafetyBlockError
-from fogmoe_telegram_bot.features.ai.types import PartialAIResponseError
+from fogmoe_telegram_bot.features.ai.types import PartialAIResponseError, delivered_to_user
 
 
 @pytest.fixture(autouse=True)
@@ -76,13 +77,67 @@ def test_get_ai_response_retries_image_messages_as_text(monkeypatch):
     ]
 
 
-def test_visible_content_was_sent_counts_media_messages():
-    class _VisibleHandler:
-        sent_count = 0
-        sent_contents = []
-        sent_messages = [object()]
+def test_delivered_to_user_counts_visible_text_and_sent_media():
+    assert not delivered_to_user([{"type": "tool_result", "tool_name": "google_search"}])
+    assert not delivered_to_user([{"type": "assistant_visible", "content": "  "}])
+    assert delivered_to_user([{"type": "assistant_visible", "content": "我查一下"}])
+    assert delivered_to_user(
+        [{"type": "tool_result", "tool_name": "generate_image", "media_sent": True}]
+    )
 
-    assert router._visible_content_was_sent(_VisibleHandler()) is True
+
+def test_a_failure_after_media_was_sent_needs_no_error_notice(monkeypatch):
+    tool_logs = [{"type": "tool_result", "tool_name": "generate_image", "media_sent": True}]
+
+    def failing_service(messages, user_id, tool_context=None, visible_content_handler=None):
+        raise PartialAIResponseError("follow-up failed", tool_logs)
+
+    use_chat_services(monkeypatch, {"gemini": failing_service})
+
+    assert asyncio.run(router.get_ai_response([], user_id=123)) == ("", tool_logs)
+
+
+def test_a_failure_after_tools_never_reruns_them(settings_override, monkeypatch):
+    settings_override(
+        AI_CHAT_ORDER="gemini,openai",
+        GEMINI_CHAT_MODEL="primary",
+        GEMINI_CHAT_FALLBACK_MODEL="fallback",
+        OPENAI_CHAT_MODEL="gpt",
+    )
+    impression_call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "update_impression", "arguments": '{"impression": "likes tea"}'},
+    }
+    responses = [
+        SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="", tool_calls=[impression_call]))]
+        ),
+        SimpleNamespace(choices=[]),
+    ]
+    model_calls = []
+    tool_runs = []
+
+    async def fake_completion(provider, model, *, messages, **kwargs):
+        model_calls.append((provider, model))
+        return responses.pop(0)
+
+    monkeypatch.setattr(tool_runner, "create_chat_completion", fake_completion)
+    monkeypatch.setitem(
+        tool_runner.AI_TOOL_HANDLERS,
+        "update_impression",
+        lambda **kwargs: tool_runs.append(kwargs) or {"status": "updated"},
+    )
+
+    text, tool_logs = asyncio.run(
+        router.get_ai_response([{"role": "user", "content": "remember"}], user_id=123)
+    )
+
+    assert text == router.PARTIAL_AI_RESPONSE_ERROR_MESSAGE
+    assert tool_runs == [{"impression": "likes tea"}]
+    # 同一个模型调用了两次（工具前、工具后），备用模型与下一个 provider 都没有被调用。
+    assert model_calls == [("gemini", "primary"), ("gemini", "primary")]
+    assert [log["type"] for log in tool_logs] == ["assistant_tool_call", "tool_result"]
 
 
 def test_text_only_chat_provider_uses_vision_text_fallback_messages(monkeypatch):

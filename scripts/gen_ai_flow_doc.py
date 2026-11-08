@@ -161,7 +161,7 @@ def limit_rows() -> list[LimitRow]:
         constant(
             tool_runner,
             "POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS",
-            "工具执行过之后，模型调用遇到临时错误时的重试间隔（同一模型，不换 provider）",
+            "执行过工具或发出过可见内容之后，模型调用遇到临时错误时的重试间隔（同一模型，不换 provider）",
         ),
         param(
             "KEEP_RECENT_MESSAGES",

@@ -189,7 +189,7 @@ claim、租约与崩溃恢复见 [job-recovery.md](job-recovery.md)。
 | `请求硬上限（推导）` | `150000` | [features/ai/litellm_client.py](../src/fogmoe_telegram_bot/features/ai/litellm_client.py) | CHAT_TOKEN_LIMIT × 倍数；消息 + 工具 schema + 最大输出 + 预留超过它就报错，不删也不截断任何内容 |
 | `CHAT_CONTEXT_SAFETY_TOKENS` | `2048` | [core/config.py](../src/fogmoe_telegram_bot/core/config.py) | 估算请求大小时额外预留的 token |
 | `run_tool_loop(max_iterations)` | `10` | [features/ai/tool_runner.py](../src/fogmoe_telegram_bot/features/ai/tool_runner.py) | 工具循环最多几轮；用完后不带工具再要一次最终回复 |
-| `POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS` | `(1.0, 3.0)` | [features/ai/tool_runner.py](../src/fogmoe_telegram_bot/features/ai/tool_runner.py) | 工具执行过之后，模型调用遇到临时错误时的重试间隔（同一模型，不换 provider） |
+| `POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS` | `(1.0, 3.0)` | [features/ai/tool_runner.py](../src/fogmoe_telegram_bot/features/ai/tool_runner.py) | 执行过工具或发出过可见内容之后，模型调用遇到临时错误时的重试间隔（同一模型，不换 provider） |
 | `_trim_messages_with_tool_context(keep_non_tool)` | `10` | [core/chat_records.py](../src/fogmoe_telegram_bot/core/chat_records.py) | 压缩时保留最近几条非 tool 消息；它们引用的 tool_call 会一并保留，保持配对 |
 | `PERMANENT_RECORDS_KEEP` | `100` | [core/chat_records.py](../src/fogmoe_telegram_bot/core/chat_records.py) | 每个用户保留的归档快照数（user.permanent_records_limit 可单独设置），更早的打包发给用户后删除 |
 | `SUMMARY_IMMEDIATE_TIMEOUT_SECONDS` | `120.0` | [features/ai/summary.py](../src/fogmoe_telegram_bot/features/ai/summary.py) | 压缩时这一轮最多等多久的即时摘要，超时转后台生成 |

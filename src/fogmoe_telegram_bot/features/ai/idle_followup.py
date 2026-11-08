@@ -56,7 +56,7 @@ from fogmoe_telegram_bot.features.ai.tools import (
 )
 from fogmoe_telegram_bot.features.ai.tools.memory_tools import read_diary_page_tool
 from fogmoe_telegram_bot.features.ai.tools.schemas import IDLE_RECAP_READ_DIARY_TOOL
-from fogmoe_telegram_bot.features.ai.types import ABORT_EVENT_KEY
+from fogmoe_telegram_bot.features.ai.types import ABORT_EVENT_KEY, has_side_effects
 from fogmoe_telegram_bot.features.ai.user_state import build_user_state_prompt
 
 logger = logging.getLogger(__name__)
@@ -1042,7 +1042,7 @@ async def _run_claim(
         assistant_message = normalize_ai_reply_text(assistant_message)
         failure_cause = runtime_error_cause(assistant_message)
         if failure_cause:
-            if not tool_logs:
+            if not has_side_effects(tool_logs):
                 raise _NoSideEffectsError(
                     f"main AI failed during idle follow-up: {failure_cause}"
                 )
