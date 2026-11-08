@@ -17,10 +17,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, TypeVar
 
-from fogmoe_telegram_bot.core import balance, metrics
+from fogmoe_telegram_bot.core import metrics
 from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline, DeadlineExceeded
-from fogmoe_telegram_bot.core.prompt_utils import format_user_state_prompt
-from fogmoe_telegram_bot.core.redaction import redact_text
 from fogmoe_telegram_bot.core.telegram_history import (
     format_user_message as format_xml_message,
 )
@@ -30,16 +28,18 @@ from fogmoe_telegram_bot.core.telegram_history import (
     telegram_history_scope,
 )
 from fogmoe_telegram_bot.core.telegram_utils import partial_send
-from fogmoe_telegram_bot.features.ai import ai_chat
-from fogmoe_telegram_bot.features.ai.reply_filter import normalize_ai_reply_text
+from fogmoe_telegram_bot.features.ai import user_state
+from fogmoe_telegram_bot.features.ai.outbound import finish_reply
 from fogmoe_telegram_bot.features.ai.router import (
     TURN_DEADLINE_ERROR_MESSAGE,
     TURN_SHUTDOWN_ERROR_MESSAGE,
 )
 from fogmoe_telegram_bot.features.ai.tool_history import (
+    reply_record_entries,
     tool_logs_completed_clear,
     tool_logs_to_record_entries,
 )
+from fogmoe_telegram_bot.features.ai.tools.context import build_tool_context
 from fogmoe_telegram_bot.features.ai.types import ToolLog
 
 from . import billing
@@ -103,21 +103,6 @@ def insufficient_balance_text(total_cost: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def format_impression(raw: str | None) -> str:
-    """印象文本：压成单行并截到 500 字符；没有记录时是 `Not recorded`。"""
-    text = (raw or "").strip()
-    if not text:
-        return "Not recorded"
-    text = text.replace("\r", " ").replace("\n", " ")
-    if len(text) > 500:
-        text = text[:497] + "..."
-    return text
-
-
-def format_personal_info(raw: str | None) -> str:
-    return (raw or "").strip()[:500]
-
-
 def merge_history_warning(current: str | None, level: str | None) -> str | None:
     """本轮里多次历史写入的容量提示合并成一个：`overflow` 优先，其余保留最先出现的。"""
     if not level:
@@ -142,24 +127,21 @@ def _edit_stamp(message: Any) -> int | None:
     return int(edit_date.timestamp()) if isinstance(edit_date, datetime) else None
 
 
-def build_tool_context(request: TurnRequest, user_state_prompt: str) -> dict[str, object]:
+def _request_tool_context(request: TurnRequest, user_state_prompt: str) -> dict[str, object]:
     chat = request.chat
     sender = request.sender
-    return {
-        "is_group": chat.is_group,
-        "group_id": chat.chat_id if chat.is_group else None,
-        "chat_id": chat.chat_id,
-        "chat_type": chat.chat_type,
-        "chat_title": chat.title,
-        "message_id": getattr(request.reply_target, "message_id", None),
-        # 编辑过的消息会开始新的一轮；代执行命令的身份因此与编辑前的那一轮不同。
-        "message_edit_stamp": _edit_stamp(request.reply_target),
-        "user_id": sender.user_id,
-        "username": sender.username,
-        "first_name": sender.first_name,
-        "language_code": sender.language_code,
-        "user_state_prompt": user_state_prompt,
-    }
+    return build_tool_context(
+        user_id=sender.user_id,
+        user_state_prompt=user_state_prompt,
+        chat_id=chat.chat_id,
+        chat_type=chat.chat_type,
+        chat_title=chat.title,
+        message_id=getattr(request.reply_target, "message_id", None),
+        message_edit_stamp=_edit_stamp(request.reply_target),
+        username=sender.username,
+        first_name=sender.first_name,
+        language_code=sender.language_code,
+    )
 
 
 class _Stop(Exception):
@@ -359,13 +341,13 @@ class ConversationTurn:
     async def _load_context(self, charge: billing.TurnCharge) -> str:
         user_id = self.request.sender.user_id
         state = await self.services.load_user_state(user_id)
-        return format_user_state_prompt(
-            user_coins=charge.balance_total,
-            user_plan=balance.resolve_user_plan(user_id, charge.balance_paid),
-            user_permission=charge.permission,
-            impression=format_impression(state.impression),
-            personal_info=format_personal_info(charge.info),
-            diary_exists=state.diary_exists,
+        return user_state.user_state_prompt(
+            user_id=user_id,
+            coins_free=charge.balance_free,
+            coins_paid=charge.balance_paid,
+            permission=charge.permission,
+            info=charge.info,
+            record=state,
         )
 
     # -- prepare ------------------------------------------------------------
@@ -555,20 +537,17 @@ class ConversationTurn:
                     ),
                     text_fallback_messages=chat_history,
                     user_id=request.sender.user_id,
-                    tool_context=build_tool_context(request, user_state_prompt),
+                    tool_context=_request_tool_context(request, user_state_prompt),
                     visible_content_handler=visible_content_handler,
                     deadline=request.deadline,
                 )
             )
         self._sent_messages.extend(getattr(visible_content_handler, "sent_messages", []))
-        assistant_message = normalize_ai_reply_text(response.text)
-        runtime_error = ai_chat.runtime_error_cause(assistant_message)
-        if assistant_message.strip():
-            assistant_message = await services.normalize_stickers(assistant_message)
+        reply = await finish_reply(response.text, normalize_stickers=services.normalize_stickers)
         return _Reply(
-            text=assistant_message,
+            text=reply.text,
             tool_logs=response.tool_logs,
-            runtime_error=runtime_error,
+            runtime_error=reply.runtime_error,
             tool_record_entries=tool_logs_to_record_entries(response.tool_logs),
             completed_clear=tool_logs_completed_clear(response.tool_logs),
         )
@@ -579,8 +558,10 @@ class ConversationTurn:
     # -- history_out --------------------------------------------------------
 
     async def _record_output(self, reply: _Reply) -> None:
+        if reply.completed_clear:
+            return
         conversation_id = self.request.conversation_id
-        if reply.tool_record_entries and not reply.completed_clear:
+        if reply.tool_record_entries:
             await self._persist_records(
                 await self.services.insert_records(
                     conversation_id,
@@ -589,12 +570,12 @@ class ConversationTurn:
                 )
             )
 
-        if reply.text.strip() and not reply.runtime_error and not reply.completed_clear:
+        for role, content in reply_record_entries(reply.text, reply.runtime_error):
             await self._persist_records(
                 await self.services.insert_record(
                     conversation_id,
-                    "assistant",
-                    redact_text(reply.text),
+                    role,
+                    content,
                     allow_zero_balance=True,
                 )
             )

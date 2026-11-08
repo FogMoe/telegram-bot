@@ -24,11 +24,9 @@ from telegram import Bot, Message
 from fogmoe_telegram_bot.core import (
     group_chat_history,
     mysql_connection,
-    process_user,
     telegram_history,
 )
 from fogmoe_telegram_bot.core.archive_utils import send_permanent_records_archive
-from fogmoe_telegram_bot.core.redaction import redact_text
 from fogmoe_telegram_bot.core.telegram_utils import partial_send, safe_send_markdown
 from fogmoe_telegram_bot.features.ai import (
     ai_chat,
@@ -36,8 +34,10 @@ from fogmoe_telegram_bot.features.ai import (
     outbound,
     sticker_sender,
     summary,
+    user_state,
 )
 from fogmoe_telegram_bot.features.ai.telegram_visible_sender import TelegramVisibleContentHandler
+from fogmoe_telegram_bot.features.ai.tool_history import reply_record_entries
 
 from . import billing, history_hooks
 from .turn_types import HistoryInsert, ModelRequest, ModelResponse, UserStateRecord
@@ -91,12 +91,7 @@ async def _flush_events(conversation_id: int) -> None:
 
 
 async def _load_user_state(user_id: int) -> UserStateRecord:
-    impression = await process_user.async_get_user_impression(user_id)
-    diary_row = await mysql_connection.fetch_one(
-        "SELECT 1 FROM ai_user_diary_pages WHERE user_id = %s AND content != '' LIMIT 1",
-        (user_id,),
-    )
-    return UserStateRecord(impression=impression, diary_exists=bool(diary_row))
+    return await user_state.load_user_state_record(user_id)
 
 
 async def _insert_records(
@@ -152,9 +147,10 @@ async def _archive_completed_clear(
 ) -> None:
     """把 AI 代执行 /clear 的完整当前轮归档，并重置活跃会话。"""
     await telegram_history.flush_pending_events(conversation_id)
-    clear_records = list(tool_record_entries)
-    if assistant_message.strip() and not runtime_error:
-        clear_records.append(("assistant", redact_text(assistant_message)))
+    clear_records = [
+        *tool_record_entries,
+        *reply_record_entries(assistant_message, runtime_error),
+    ]
 
     clear_record_id, clear_archived_records = (
         await mysql_connection.archive_chat_and_start_new_session(

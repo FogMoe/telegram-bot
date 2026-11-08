@@ -4,7 +4,7 @@
 以及它特有的协议要求都只在这里声明一次。`litellm_models`（模型名）、
 `features/ai/litellm_provider_config`（认证参数）、`features/ai/provider_resolver`（任务到
 provider/模型的解析）、`features/ai/litellm_message_sanitizer`（历史消息协议差异）、
-`features/ai/chat_provider`（聊天入口）与 `core/chat_records`（token 计数用的模型）都从这里读取，
+`features/ai/task_runner`（各任务的回退执行）与 `core/chat_records`（token 计数用的模型）都从这里读取，
 不再各自维护一份 provider 表。契约说明见 docs/ai-provider-architecture.md。
 
 声明只描述 provider，不做网络调用，也不 import features，所以放在 core。
@@ -162,8 +162,8 @@ TASK_SPECS: Mapping[str, TaskSpec] = MappingProxyType(
         spec.name: spec
         for spec in (
             TaskSpec("chat", requires=("tools",)),
-            TaskSpec("recap", "AI_RECAP"),
-            TaskSpec("summary", "AI_SUMMARY"),
+            TaskSpec("recap", "AI_RECAP", requires=("tools",)),
+            TaskSpec("summary", "AI_SUMMARY", requires=("tools",)),
             TaskSpec("translate", "AI_TRANSLATE"),
             TaskSpec("vision", "AI_VISION", requires=("vision",)),
             TaskSpec("classifier", "AI_CLASSIFIER"),

@@ -4,6 +4,8 @@ from typing import Any
 
 from fogmoe_telegram_bot.core.redaction import redact_text
 
+from .tool_loop_messages import tool_result_json
+
 
 def _telegram_command_name(arguments: object) -> str | None:
     if not isinstance(arguments, dict):
@@ -192,11 +194,7 @@ def tool_logs_to_record_entries(
             continue
 
         _pop_pending_id(pending_tool_call_ids, tool_call_id)
-        tool_result = tool_log.get("result")
-        try:
-            tool_result_str = json.dumps(tool_result, ensure_ascii=False, default=str)
-        except TypeError:
-            tool_result_str = str(tool_result)
+        tool_result_str = tool_result_json(tool_log.get("result"))
 
         record_entries.append(
             (
@@ -211,3 +209,10 @@ def tool_logs_to_record_entries(
         )
 
     return record_entries
+
+
+def reply_record_entries(reply_text: str, runtime_error: str | None) -> list[tuple[str, object]]:
+    """AI 最终回复写进历史的条目：脱敏后的回复；空回复与固定的错误提示不写。"""
+    if not reply_text.strip() or runtime_error:
+        return []
+    return [("assistant", redact_text(reply_text))]

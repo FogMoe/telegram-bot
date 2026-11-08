@@ -18,29 +18,29 @@ from datetime import UTC, datetime, timedelta
 from telegram.ext import ContextTypes
 
 from fogmoe_telegram_bot.core import mysql_connection, process_user
-from fogmoe_telegram_bot.core.archive_utils import send_permanent_records_archive
 from fogmoe_telegram_bot.core.prompt_utils import format_metadata_attrs, xml_escape
-from fogmoe_telegram_bot.core.telegram_history import (
-    suppress_telegram_history,
-    telegram_history_scope,
-)
+from fogmoe_telegram_bot.core.telegram_history import suppress_telegram_history
 from fogmoe_telegram_bot.core.telegram_utils import partial_send
-from fogmoe_telegram_bot.features.ai import ai_chat, job_claims, summary
+from fogmoe_telegram_bot.features.ai import ai_chat, job_claims
 from fogmoe_telegram_bot.features.ai.conversation_locks import get_conversation_lock
+from fogmoe_telegram_bot.features.ai.history_writer import write_history
 from fogmoe_telegram_bot.features.ai.job_claims import ClaimLostError
-from fogmoe_telegram_bot.features.ai.outbound import send_generated_media
-from fogmoe_telegram_bot.features.ai.reply_filter import normalize_ai_reply_text
+from fogmoe_telegram_bot.features.ai.outbound import (
+    finish_reply,
+    send_generated_media,
+    send_private_reply,
+)
 from fogmoe_telegram_bot.features.ai.schedule_limits import (
     DAILY_SCHEDULE_TRIGGER_LIMIT,
     reserve_daily_schedule_trigger,
 )
-from fogmoe_telegram_bot.features.ai.sticker_sender import (
-    normalize_sticker_directives,
-    send_ai_reply_with_stickers,
-)
+from fogmoe_telegram_bot.features.ai.sticker_sender import normalize_sticker_directives
 from fogmoe_telegram_bot.features.ai.telegram_visible_sender import TelegramVisibleContentHandler
-from fogmoe_telegram_bot.features.ai.tool_history import tool_logs_to_record_entries
-from fogmoe_telegram_bot.features.ai.types import ABORT_EVENT_KEY
+from fogmoe_telegram_bot.features.ai.tool_history import (
+    reply_record_entries,
+    tool_logs_to_record_entries,
+)
+from fogmoe_telegram_bot.features.ai.tools.context import build_tool_context
 from fogmoe_telegram_bot.features.ai.user_state import build_user_state_prompt
 
 logger = logging.getLogger(__name__)
@@ -165,44 +165,6 @@ def _format_scheduled_message(
     lines.append(f"  <instruction>{xml_escape(instruction)}</instruction>")
     lines.append("</metadata>")
     return "\n".join(lines)
-
-
-async def _handle_overflow_summary(conversation_id: int, level: str | None) -> None:
-    if level != "overflow":
-        return
-    summary_text = await summary.generate_summary_immediately(conversation_id)
-    if summary_text:
-        await mysql_connection.async_update_latest_history_state_summary(
-            conversation_id,
-            summary_text,
-        )
-    else:
-        summary.schedule_summary_generation(conversation_id)
-
-
-async def _persist_tool_logs(
-    conversation_id: int,
-    tool_logs: list[dict],
-    context: ContextTypes.DEFAULT_TYPE,
-    user_id: int,
-) -> None:
-    tool_record_entries = tool_logs_to_record_entries(tool_logs)
-
-    if tool_record_entries:
-        snapshot_created, warning_level, archived_records = await mysql_connection.async_insert_chat_records(
-            conversation_id,
-            tool_record_entries,
-        )
-        if archived_records:
-            await send_permanent_records_archive(
-                context.bot,
-                user_id,
-                archived_records,
-                logger=logger,
-            )
-        await _handle_overflow_summary(conversation_id, warning_level)
-        if snapshot_created and warning_level != "overflow":
-            summary.schedule_summary_generation(conversation_id)
 
 
 def _claim_from_row(row, token: str, attempt: int) -> ScheduleClaim:
@@ -706,39 +668,26 @@ async def _process_schedule_task_locked(
         instruction=claim.instruction,
     )
 
-    snapshot_created, warning_level, archived_records = await mysql_connection.async_insert_chat_record(
+    await write_history(
         user_id,
-        "user",
-        scheduled_message,
+        [("user", scheduled_message)],
+        bot=context.bot,
+        logger=logger,
         system_prompt_extra=user_state_prompt,
     )
-    if archived_records:
-        await send_permanent_records_archive(
-            context.bot,
-            user_id,
-            archived_records,
-            logger=logger,
-        )
-    await _handle_overflow_summary(user_id, warning_level)
-    if snapshot_created and warning_level != "overflow":
-        summary.schedule_summary_generation(user_id)
 
     chat_history = await mysql_connection.async_get_chat_history(user_id)
-    tool_context = {
-        "is_group": False,
-        "group_id": None,
-        "message_id": None,
-        "user_id": user_id,
-        "user_state_prompt": user_state_prompt,
-        ABORT_EVENT_KEY: run.abort_event,
-    }
+    tool_context = build_tool_context(
+        user_id=user_id,
+        user_state_prompt=user_state_prompt,
+        abort_event=run.abort_event,
+    )
 
     try:
         await context.bot.send_chat_action(chat_id=user_id, action="typing")
     except Exception:
         logger.debug("Failed to send typing action for scheduled task %s", schedule_id)
 
-    sent_messages: list = []
     send_func = partial_send(context.bot.send_message, user_id)
     visible_content_handler = TelegramVisibleContentHandler(
         bot=context.bot,
@@ -756,67 +705,37 @@ async def _process_schedule_task_locked(
             tool_context=tool_context,
             visible_content_handler=visible_content_handler,
         )
-    sent_messages.extend(visible_content_handler.sent_messages)
-    assistant_message = normalize_ai_reply_text(assistant_message)
-    runtime_error = ai_chat.runtime_error_cause(assistant_message)
-    if assistant_message.strip():
-        assistant_message = await normalize_sticker_directives(
-            assistant_message,
-            logger=logger,
-        )
+    sent_messages: list = list(visible_content_handler.sent_messages)
+    reply = await finish_reply(
+        assistant_message,
+        normalize_stickers=lambda text: normalize_sticker_directives(text, logger=logger),
+    )
 
     # 工具结果与回复文本此时只存在于内存里，没有安全的中间状态可以恢复：
     # 进入 delivering 之后崩溃一律按结果未知处理，不重跑、不重发。
     await _begin_delivery(run)
 
-    if tool_logs:
-        await _persist_tool_logs(user_id, tool_logs, context, user_id)
-
-    if assistant_message.strip() and not runtime_error:
-        snapshot_created, warning_level, archived_records = await mysql_connection.async_insert_chat_record(
-            user_id,
-            "assistant",
-            assistant_message,
+    await write_history(
+        user_id,
+        tool_logs_to_record_entries(tool_logs),
+        bot=context.bot,
+        logger=logger,
+    )
+    await write_history(
+        user_id,
+        reply_record_entries(reply.text, reply.runtime_error),
+        bot=context.bot,
+        logger=logger,
+    )
+    sent_messages.extend(
+        await send_private_reply(
+            bot=context.bot,
+            user_id=user_id,
+            text=reply.text,
+            runtime_error=reply.runtime_error,
+            logger=logger,
         )
-        if archived_records:
-            await send_permanent_records_archive(
-                context.bot,
-                user_id,
-                archived_records,
-                logger=logger,
-            )
-        await _handle_overflow_summary(user_id, warning_level)
-        if snapshot_created and warning_level != "overflow":
-            summary.schedule_summary_generation(user_id)
-
-    if assistant_message.strip():
-        try:
-            await context.bot.send_chat_action(chat_id=user_id, action="typing")
-        except Exception:
-            logger.debug("Failed to send typing action before scheduled AI reply")
-        send_scope = (
-            telegram_history_scope(
-                user_id=user_id,
-                chat_id=user_id,
-                chat_type="private",
-                origin="bot_runtime",
-                event="error_notice",
-                cause=runtime_error,
-            )
-            if runtime_error
-            else suppress_telegram_history()
-        )
-        with send_scope:
-            sent_messages.extend(
-                await send_ai_reply_with_stickers(
-                    bot=context.bot,
-                    chat_id=user_id,
-                    text=str(assistant_message),
-                    first_text_send=send_func,
-                    fallback_send=send_func,
-                    logger=logger,
-                )
-            )
+    )
     sent_messages.extend(
         await send_generated_media(
             bot=context.bot,
@@ -825,7 +744,7 @@ async def _process_schedule_task_locked(
             logger=logger,
         )
     )
-    if not sent_messages and not assistant_message.strip():
+    if not sent_messages and not reply.text.strip():
         tool_log_types = [
             str(tool_log.get("type", "tool_result"))
             for tool_log in tool_logs

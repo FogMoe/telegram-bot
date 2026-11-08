@@ -1,4 +1,4 @@
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 ToolLog = dict[str, Any]
@@ -25,6 +25,30 @@ def media_delivery_attempted(tool_log: dict[str, Any]) -> bool:
     """这条工具结果的媒体已经即时发送过，或发送时被打断（是否送达未知）：投递阶段都不能再发一次。"""
     return bool(tool_log.get("media_sent")) or (
         tool_log.get(MEDIA_DELIVERY_KEY) == MEDIA_DELIVERY_UNKNOWN
+    )
+
+
+_SIDE_EFFECT_LOG_TYPES = frozenset(
+    {"assistant_tool_call", "tool_result", "assistant_visible", "telegram_event"}
+)
+
+
+def has_side_effects(tool_logs: Iterable[ToolLog]) -> bool:
+    """这一轮是否已经执行过工具或向用户发出过内容。
+
+    「还能不能换模型、换 provider 从头重跑这一轮」只由它判断：工具循环据此把之后的异常包成
+    `PartialAIResponseError` 并在原地重试模型调用，空闲跟进据此决定失败之后能不能重试。
+    工具循环每次执行工具、发出可见内容都会先记一条日志，所以日志就是这一轮的副作用记录。
+    """
+    return any(log.get("type", "tool_result") in _SIDE_EFFECT_LOG_TYPES for log in tool_logs)
+
+
+def delivered_to_user(tool_logs: Iterable[ToolLog]) -> bool:
+    """这一轮是否已经有内容到达用户：可见文字，或即时发出（发送时被打断也算）的生成媒体。"""
+    return any(
+        (log.get("type") == "assistant_visible" and bool(str(log.get("content") or "").strip()))
+        or media_delivery_attempted(log)
+        for log in tool_logs
     )
 
 

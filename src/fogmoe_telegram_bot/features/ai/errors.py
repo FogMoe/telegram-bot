@@ -1,5 +1,7 @@
 from litellm.exceptions import Timeout as LiteLLMTimeout
 
+from .context_budget import ContextBudgetExceededError
+
 
 class SafetyBlockError(RuntimeError):
     """Raised when a provider blocks a response for safety reasons."""
@@ -20,6 +22,14 @@ def is_timeout_error(error: BaseException) -> bool:
         if isinstance(current, (TimeoutError, LiteLLMTimeout)):
             return True
     return False
+
+
+def find_context_budget_error(error: BaseException) -> ContextBudgetExceededError | None:
+    """Return the context budget error in an exception's chain, if any."""
+    for current in _exception_chain(error):
+        if isinstance(current, ContextBudgetExceededError):
+            return current
+    return None
 
 
 def is_retryable_completion_error(error: BaseException) -> bool:

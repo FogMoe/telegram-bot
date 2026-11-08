@@ -19,6 +19,9 @@ from fogmoe_telegram_bot.core import config
 from fogmoe_telegram_bot.core.deadline import Deadline
 from fogmoe_telegram_bot.features.ai.types import ToolLog, VisibleContentHandler
 
+# 印象与日记是否存在：用户状态提示词在 `features/ai/user_state.py` 里拼，三个入口共用。
+from fogmoe_telegram_bot.features.ai.user_state import UserStateRecord as UserStateRecord
+
 from . import billing
 
 # 一次历史写入的结果：(是否生成了快照, 容量提示级别, 因溢出而归档的记录)。
@@ -104,14 +107,6 @@ class PlannedMessage:
     is_media: bool
     edited: bool
     update_id: int | None
-
-
-@dataclass(frozen=True, slots=True)
-class UserStateRecord:
-    """拼用户状态提示词需要、但不在扣费结果里的两项读取。"""
-
-    impression: str | None
-    diary_exists: bool
 
 
 @dataclass(frozen=True, slots=True)

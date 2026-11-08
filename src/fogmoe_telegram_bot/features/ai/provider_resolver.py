@@ -74,7 +74,3 @@ def missing_capability_for_task(provider: str, task: str) -> str | None:
         if not spec.supports(capability):
             return capability
     return None
-
-
-def completion_kwargs_for_task(provider: str, task: str) -> dict[str, Any]:
-    return {}

@@ -24,7 +24,13 @@ from job_support import (
 )
 from mysql_support import execute, run
 
-from fogmoe_telegram_bot.features.ai import conversation_locks, idle_followup, job_claims
+from fogmoe_telegram_bot.features.ai import (
+    conversation_locks,
+    idle_followup,
+    job_claims,
+    outbound,
+    summary,
+)
 from fogmoe_telegram_bot.features.ai.router import AI_SERVICE_ERROR_MESSAGE
 
 REPLY = "just checking in"
@@ -53,9 +59,9 @@ def env(app_database, monkeypatch):
 
     monkeypatch.setattr(idle_followup, "_generate_recap", fake_recap)
     monkeypatch.setattr(idle_followup.ai_chat, "get_ai_response", ai.get_ai_response)
-    monkeypatch.setattr(idle_followup, "send_ai_reply_with_stickers", telegram.send_reply)
+    monkeypatch.setattr(outbound, "send_ai_reply_with_stickers", telegram.send_reply)
     monkeypatch.setattr(idle_followup, "send_generated_media", no_media)
-    monkeypatch.setattr(idle_followup.summary, "schedule_summary_generation", lambda *a, **k: None)
+    monkeypatch.setattr(summary, "schedule_summary_generation", lambda *a, **k: None)
     monkeypatch.setattr(idle_followup, "IDLE_FOLLOWUP_HEARTBEAT_SECONDS", 3600)
     # asyncio.Lock 一旦发生过竞争就绑定了那个事件循环；每个测试用自己的会话锁表。
     monkeypatch.setattr(conversation_locks, "_CONVERSATION_LOCKS", {})

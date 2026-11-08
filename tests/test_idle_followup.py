@@ -226,24 +226,9 @@ def test_generate_recap_requests_strict_sdk_json_schema(monkeypatch):
     assert "旧项目" in captured["messages"][0]["content"]
 
 
-def test_run_recap_agent_exposes_only_read_only_memory_tools(monkeypatch):
+def test_run_recap_agent_exposes_only_read_only_memory_tools(monkeypatch, settings_override):
     captured = {}
-
-    monkeypatch.setattr(
-        idle_followup,
-        "get_provider_order_for_task",
-        lambda task: ["gemini"],
-    )
-    monkeypatch.setattr(
-        idle_followup,
-        "get_models_for_task",
-        lambda provider, task: ["recap-model"],
-    )
-    monkeypatch.setattr(
-        idle_followup,
-        "completion_kwargs_for_task",
-        lambda provider, task: {},
-    )
+    settings_override(AI_RECAP_PROVIDER="gemini", GEMINI_RECAP_MODEL="recap-model")
 
     async def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
         captured.update(

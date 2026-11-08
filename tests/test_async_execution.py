@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from fogmoe_telegram_bot.core import blocking, metrics
-from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline
+from fogmoe_telegram_bot.core.deadline import REASON_DEADLINE, REASON_SHUTDOWN, Deadline
 from fogmoe_telegram_bot.features.ai import job_claims, router, tool_runner
 from fogmoe_telegram_bot.features.ai.generated_image_sender import _collect_generated_images
 from fogmoe_telegram_bot.features.ai.tool_history import tool_logs_to_record_entries
@@ -582,11 +582,9 @@ def two_providers(settings_override, monkeypatch):
         OPENAI_CHAT_MODEL="openai-model",
         GEMINI_CHAT_MODEL="gemini-model",
     )
-    router._provider_failure_streaks.clear()
-    router._provider_circuit_open_until.clear()
+    router.CHAT_CIRCUIT.reset()
     yield
-    router._provider_failure_streaks.clear()
-    router._provider_circuit_open_until.clear()
+    router.CHAT_CIRCUIT.reset()
 
 
 def test_a_failed_provider_falls_back_to_the_next_one_through_the_async_stack(monkeypatch, two_providers):
@@ -634,8 +632,36 @@ def test_an_expired_deadline_never_calls_a_provider_or_blames_one(monkeypatch, t
     assert response == (router.TURN_DEADLINE_ERROR_MESSAGE, [])
     assert calls == []
     # 从没被调用过的 provider 不会因为时间用完而被记一次失败。
-    assert router._provider_failure_streaks == {}
+    assert router.CHAT_CIRCUIT.failure_count("openai") == 0
+    assert router.CHAT_CIRCUIT.failure_count("gemini") == 0
     assert metrics.snapshot().counter("turn.deadline_hits", reason="deadline", phase="fallback") == 1
+
+
+@pytest.mark.parametrize(
+    ("reason", "notice"),
+    [
+        (REASON_DEADLINE, router.TURN_DEADLINE_ERROR_MESSAGE),
+        (REASON_SHUTDOWN, router.TURN_SHUTDOWN_ERROR_MESSAGE),
+    ],
+)
+def test_an_expired_turn_gets_its_notice_even_when_every_provider_is_skipped(
+    monkeypatch, two_providers, reason, notice
+):
+    fake, calls = script(Response(Message("too late")))
+    monkeypatch.setattr(tool_runner, "create_chat_completion", fake)
+    for provider in ("openai", "gemini"):
+        for _ in range(router.AI_PROVIDER_CIRCUIT_FAILURE_THRESHOLD):
+            router.CHAT_CIRCUIT.record_failure(provider)
+    deadline = Deadline(60)
+    deadline.expire(reason)
+
+    response = run_loop(
+        router.get_ai_response([{"role": "user", "content": "hi"}], user_id=1, deadline=deadline)
+    )
+
+    assert response == (notice, [])
+    assert calls == []
+    assert metrics.snapshot().counter("turn.deadline_hits", reason=reason, phase="fallback") == 1
 
 
 @pytest.mark.slow
@@ -655,8 +681,8 @@ def test_the_first_provider_that_runs_into_the_deadline_leaves_no_time_for_the_f
 
     assert response[0] == router.TURN_DEADLINE_ERROR_MESSAGE
     assert len(calls) == 1
-    assert "openai" in router._provider_failure_streaks  # 正在等待的 provider 这次算超时
-    assert "gemini" not in router._provider_failure_streaks
+    assert router.CHAT_CIRCUIT.failure_count("openai") == 1  # 正在等待的 provider 这次算超时
+    assert router.CHAT_CIRCUIT.failure_count("gemini") == 0
 
 
 @pytest.mark.slow
@@ -729,7 +755,7 @@ def test_shutdown_uses_its_own_notice_and_does_not_count_against_the_provider(mo
 
     assert response[0] == router.TURN_SHUTDOWN_ERROR_MESSAGE
     assert router.runtime_error_cause(response[0]) == "turn_interrupted_by_shutdown"
-    assert router._provider_failure_streaks == {}
+    assert router.CHAT_CIRCUIT.failure_count("openai") == 0
 
 
 def test_no_deadline_means_the_old_behaviour(monkeypatch, two_providers):

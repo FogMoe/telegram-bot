@@ -9,7 +9,7 @@ import pytest
 
 from fogmoe_telegram_bot.core import metrics, telegram_history
 from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline
-from fogmoe_telegram_bot.features.ai import router
+from fogmoe_telegram_bot.features.ai import router, user_state
 from fogmoe_telegram_bot.features.conversation import billing, turn
 from fogmoe_telegram_bot.features.conversation.turn_services import TurnServices
 from fogmoe_telegram_bot.features.conversation.turn_types import (
@@ -50,19 +50,19 @@ def test_text_message_cost_tiers(length, cost):
 
 
 def test_impression_is_flattened_truncated_and_has_a_placeholder():
-    assert turn.format_impression(None) == "Not recorded"
-    assert turn.format_impression("  \n ") == "Not recorded"
-    assert turn.format_impression("喜欢\r\n猫") == "喜欢  猫"
+    assert user_state.format_impression(None) == "Not recorded"
+    assert user_state.format_impression("  \n ") == "Not recorded"
+    assert user_state.format_impression("喜欢\r\n猫") == "喜欢  猫"
 
     long_text = "x" * 600
-    shortened = turn.format_impression(long_text)
+    shortened = user_state.format_impression(long_text)
     assert len(shortened) == 500 and shortened.endswith("...")
 
 
 def test_personal_info_is_trimmed_and_capped_without_an_ellipsis():
-    assert turn.format_personal_info(None) == ""
-    assert turn.format_personal_info("  hi  ") == "hi"
-    assert turn.format_personal_info("y" * 700) == "y" * 500
+    assert user_state.format_personal_info(None) == ""
+    assert user_state.format_personal_info("  hi  ") == "hi"
+    assert user_state.format_personal_info("y" * 700) == "y" * 500
 
 
 @pytest.mark.parametrize(
@@ -764,16 +764,14 @@ class TestDeadline:
         from fogmoe_telegram_bot.features.conversation import turn_services
 
         settings_override(AI_CHAT_ORDER="openai", OPENAI_CHAT_MODEL="gpt")
-        router._provider_failure_streaks.clear()
-        router._provider_circuit_open_until.clear()
+        router.CHAT_CIRCUIT.reset()
 
         async def hang(*args, **kwargs):
             await asyncio.sleep(30)
 
         monkeypatch.setattr(tool_runner, "create_chat_completion", hang)
         yield turn_services._run_model
-        router._provider_failure_streaks.clear()
-        router._provider_circuit_open_until.clear()
+        router.CHAT_CIRCUIT.reset()
 
     def test_the_deadline_reaches_the_model_stage(self):
         world = World()

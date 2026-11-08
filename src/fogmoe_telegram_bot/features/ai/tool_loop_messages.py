@@ -36,6 +36,14 @@ def json_safe(value: Any) -> Any:
     return str(value)
 
 
+def tool_result_json(result: Any) -> str:
+    """工具结果的 JSON 文本：回填给模型和写进历史用同一种序列化，不能直接序列化的值转成字符串。"""
+    try:
+        return json.dumps(result, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return str(result)
+
+
 def _drop_none_items(value: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item is not None}
 
@@ -182,7 +190,9 @@ def resolve_assistant_message(
     provider: str,
     provider_name: str,
 ) -> tuple[Any, list[Any] | None]:
-    choices = response.choices
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        raise RuntimeError(f"{provider_name} returned a response without choices")
     assistant_message = choices[0].message
     raw_tool_calls = getattr(assistant_message, "tool_calls", None)
     provider_spec = ai_providers.lookup(provider)

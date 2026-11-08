@@ -7,7 +7,6 @@ import pytest
 
 from fogmoe_telegram_bot.core import config
 from fogmoe_telegram_bot.features.ai.litellm_client import create_chat_completion
-from fogmoe_telegram_bot.features.ai.provider_resolver import completion_kwargs_for_task
 
 TRUTHY_VALUES = {"1", "true", "yes", "on"}
 
@@ -170,7 +169,6 @@ def test_configured_chat_provider_apis_are_reachable():
                     [{"role": "user", "content": "Reply with exactly: ok"}],
                     temperature=0,
                     timeout=timeout_seconds,
-                    **completion_kwargs_for_task(provider, "chat"),
                 )
                 elapsed = time.perf_counter() - started
                 if not getattr(response, "choices", None):

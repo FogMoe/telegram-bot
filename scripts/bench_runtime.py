@@ -279,8 +279,12 @@ class Bench:
 
     async def run_once(self, count: int) -> dict:
         self.results.clear()
-        self.router._provider_failure_streaks.clear()
-        self.router._provider_circuit_open_until.clear()
+        circuit = getattr(self.router, "CHAT_CIRCUIT", None)
+        if circuit is not None:
+            circuit.reset()
+        else:  # 旧版本的熔断状态是 router 的两个模块级字典
+            self.router._provider_failure_streaks.clear()
+            self.router._provider_circuit_open_until.clear()
         notices: list[int] = []
         latencies: dict[int, float] = {}
         loop_lag = {"max": 0.0}

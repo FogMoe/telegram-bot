@@ -9,7 +9,6 @@ from contextlib import asynccontextmanager
 from telegram import Update
 from telegram.ext import TypeHandler
 
-from fogmoe_telegram_bot.core import mysql_connection
 from fogmoe_telegram_bot.core.telegram_history import (
     HistoryHooks,
     prepare_update_history,
@@ -22,14 +21,7 @@ async def handle_history_overflow(user_id: int) -> None:
 
     from fogmoe_telegram_bot.features.ai import summary
 
-    summary_text = await summary.generate_summary_immediately(user_id)
-    if summary_text:
-        await mysql_connection.async_update_latest_history_state_summary(
-            user_id,
-            summary_text,
-        )
-    else:
-        summary.schedule_summary_generation(user_id)
+    await summary.refresh_summary_after_overflow(user_id)
 
 
 def handle_snapshot_created(user_id: int) -> None:

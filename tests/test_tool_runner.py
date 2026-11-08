@@ -708,6 +708,131 @@ def test_run_tool_loop_does_not_retry_non_transient_followup_error(monkeypatch):
     assert sleeps == []
 
 
+def _search_call(call_id="call_1"):
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": "google_search", "arguments": '{"query": "example"}'},
+    }
+
+
+class _NoChoices:
+    choices = []
+
+
+def test_an_error_after_a_tool_round_leaves_the_loop_as_partial(monkeypatch):
+    responses = [_Response(_Message("", [_search_call()])), _NoChoices()]
+    tool_calls = []
+
+    async def fake_create_chat_completion(*args, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
+    monkeypatch.setitem(
+        tool_runner.AI_TOOL_HANDLERS,
+        "google_search",
+        lambda **kwargs: tool_calls.append(kwargs) or {"organic_results": []},
+    )
+
+    with pytest.raises(tool_runner.PartialAIResponseError) as exc_info:
+        asyncio.run(tool_runner.run_tool_loop(
+            "test_provider",
+            "test_model",
+            [{"role": "user", "content": "search example"}],
+            provider_name="Test",
+        ))
+
+    assert tool_calls == [{"query": "example"}]
+    assert [log["type"] for log in exc_info.value.tool_logs] == [
+        "assistant_tool_call",
+        "tool_result",
+    ]
+    assert "without choices" in str(exc_info.value)
+
+
+def test_an_error_before_any_side_effect_is_raised_unchanged(monkeypatch):
+    async def fake_create_chat_completion(*args, **kwargs):
+        return _NoChoices()
+
+    monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        asyncio.run(tool_runner.run_tool_loop(
+            "test_provider",
+            "test_model",
+            [{"role": "user", "content": "hi"}],
+            provider_name="Test",
+        ))
+
+    assert not isinstance(exc_info.value, tool_runner.PartialAIResponseError)
+
+
+def test_visible_content_alone_makes_a_later_error_partial(monkeypatch):
+    class BadRequestError(Exception):
+        status_code = 400
+
+    responses = [
+        _Response(_Message("我先想想。", [_search_call()])),
+        BadRequestError("invalid request"),
+    ]
+
+    async def fake_create_chat_completion(*args, **kwargs):
+        item = responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    async def visible_handler(content):
+        return content
+
+    monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
+
+    with pytest.raises(tool_runner.PartialAIResponseError) as exc_info:
+        asyncio.run(tool_runner.run_tool_loop(
+            "test_provider",
+            "test_model",
+            [{"role": "user", "content": "hi"}],
+            provider_name="Test",
+            skip_tools=["google_search"],
+            visible_content_handler=visible_handler,
+        ))
+
+    assert exc_info.value.tool_logs == [{"type": "assistant_visible", "content": "我先想想。"}]
+
+
+def test_an_unserializable_tool_result_reaches_the_model_as_text(monkeypatch):
+    responses = [_Response(_Message("", [_search_call()])), _Response(_Message("done", None))]
+    calls = []
+    tool_calls = []
+
+    class Opaque:
+        def __str__(self):
+            return "opaque-value"
+
+    async def fake_create_chat_completion(*args, **kwargs):
+        calls.append(kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
+    monkeypatch.setitem(
+        tool_runner.AI_TOOL_HANDLERS,
+        "google_search",
+        lambda **kwargs: tool_calls.append(kwargs) or {"value": Opaque()},
+    )
+
+    message, _ = asyncio.run(tool_runner.run_tool_loop(
+        "test_provider",
+        "test_model",
+        [{"role": "user", "content": "search example"}],
+        provider_name="Test",
+    ))
+
+    assert message == "done"
+    assert tool_calls == [{"query": "example"}]
+    tool_message = next(item for item in calls[1]["messages"] if item.get("role") == "tool")
+    assert tool_message["content"] == '{"value": "opaque-value"}'
+
+
 def test_run_tool_loop_sends_generated_voice_immediately(monkeypatch):
     responses = [
         _Response(

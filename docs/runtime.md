@@ -12,7 +12,7 @@
 PTB handler（concurrent_updates 有界）
   └─ 每用户待处理数 → 会话锁 → 全局槽位          （handlers.py，准入，扣费之前）
        └─ ConversationTurn：plan → charge → … → model → … → delivery   （turn.py）
-            └─ router.get_ai_response：provider 回退、熔断
+            └─ router.get_ai_response → task_runner.run_with_fallback：provider 与模型回退、熔断
                  └─ tool_runner.run_tool_loop
                       ├─ litellm.acompletion            原生 async
                       ├─ async 工具                      直接 await
@@ -114,8 +114,8 @@ PTB handler（concurrent_updates 有界）
 | 排队（等会话锁、等全局槽位） | 拒绝，`BUSY_TEXT`，**没有扣费** |
 | `charge`（写完上一项事件、扣费） | 取消正在等待的数据库操作，回复超时提示，状态 `TurnStatus.DEADLINE_EXCEEDED`；扣费前再检查一次，已经到期就不扣 |
 | `context`、`prepare`（读用户状态、下载并识别媒体）、`history_in`（写入用户消息、读历史） | 回复超时提示，状态 `TurnStatus.DEADLINE_EXCEEDED`，这一轮已扣费，不退 |
-| `model`：等待模型响应 | 取消请求，不再换下一个 provider，回复 `TURN_DEADLINE_ERROR_MESSAGE`；这个 provider 计一次熔断失败 |
-| `model`：provider 回退链走到下一个 provider 时时间已用完 | 不再调用任何 provider，回复 `TURN_DEADLINE_ERROR_MESSAGE`，不给没被调用过的 provider 记失败（`phase=fallback`） |
+| `model`：等待模型响应 | 取消请求，不再换备用模型或下一个 provider，回复 `TURN_DEADLINE_ERROR_MESSAGE`；这个 provider 计一次熔断失败 |
+| `model`：回退链走到下一个模型或 provider 时时间已用完 | 不再调用任何模型，回复 `TURN_DEADLINE_ERROR_MESSAGE`，不给没被调用过的 provider 记失败（`phase=fallback`） |
 | `model`：运行工具 | 取消工具（线程里的同步工具只是不再等它）；回复 `TURN_DEADLINE_ERROR_MESSAGE` |
 | `model`：即时发送可见内容或媒体 | 取消发送，同上 |
 | `model`：即时发送工具生成的媒体 | 取消发送；这个工具的结果照常记进历史并标记「是否送达未知」（`media_delivery: unknown`），投递阶段不会再发一次，后面没运行的工具补 `not_executed` |
@@ -133,7 +133,7 @@ PTB handler（concurrent_updates 有界）
   下一轮不会因为不配对被 provider 拒绝。这一轮里已经完成的工具照常留下结果，它们带回的 Telegram 事件
   （例如代执行命令的回复）也照常记进历史。超时提示是固定的运行时错误文案（`router.runtime_error_cause` 识别为
   `turn_deadline_exceeded`），不当作 AI 回复写进历史，按错误通知的作用域投递。
-- **不重复执行工具副作用。** 到期之后不会换 provider 重跑，也不会重试已经开始的工具；已经在线程里运行的同步工具无法被中断，
+- **不重复执行工具副作用。** 到期之后不会换模型或 provider 重跑，也不会重试已经开始的工具；已经在线程里运行的同步工具无法被中断，
   线程自己跑完、结果被丢弃（线程适配器保证：还在排队、没开始的调用被取消后不会再执行）。
 - **单次模型调用的超时被收紧。** `AI_CHAT_COMPLETION_TIMEOUT_SECONDS`（默认 300 秒）会被收紧到剩余的截止时间之内（至少 1 秒），
   所以一次卡死的 provider 调用不会吃掉比整轮预算更多的时间。默认 360 秒的整轮预算略大于单次调用上限；
