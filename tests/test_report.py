@@ -191,7 +191,8 @@ def admin(user_id, *, is_bot=False, delete=True, restrict=True):
 class FakeBot:
     id = BOT_ID
 
-    def __init__(self, *, members=150, rights=True, dm_errors=(), delete_error=None):
+    def __init__(self, *, members=150, rights=True, dm_errors=(), delete_error=None, bio=None):
+        self.bio = bio
         self.admins = [admin(1), admin(2), admin(BOT_ID, is_bot=True, delete=rights, restrict=rights)]
         self.member_count = members
         self.dm_errors = set(dm_errors)
@@ -230,6 +231,9 @@ class FakeBot:
 
     async def get_chat_member(self, chat_id, user_id):
         return self.chat_members.get(user_id) or SimpleNamespace(status="member", user=user(user_id))
+
+    async def get_chat(self, chat_id):
+        return SimpleNamespace(id=chat_id, bio=self.bio)
 
 
 CHAT = SimpleNamespace(id=CHAT_ID, type="supergroup", title="FogMoe 交流群", username=None)
@@ -342,7 +346,7 @@ def test_the_first_report_notifies_admins_once_and_waits_for_more_votes(jev):
 
 
 def test_enough_votes_and_a_spam_verdict_delete_kick_and_ban_for_a_day(jev):
-    bot = FakeBot(members=150)
+    bot = FakeBot(members=150, bio="博彩代理，加 V")
     run_report(bot, 11)
     bot.dms.clear()
 
@@ -350,7 +354,7 @@ def test_enough_votes_and_a_spam_verdict_delete_kick_and_ban_for_a_day(jev):
 
     assert replies == []  # 群里的移出公告就是回复
     review = jev.calls[0][0][0]
-    assert (review.text, review.sender_name) == ("大家好，看我名字", "加V领福利")
+    assert (review.text, review.sender_name, review.sender_bio) == ("大家好，看我名字", "加V领福利", "博彩代理，加 V")
     assert bot.deleted == [55]
     (chat_id, user_id, until), = bot.bans
     assert (chat_id, user_id) == (CHAT_ID, SPAMMER.id)

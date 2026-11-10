@@ -248,7 +248,8 @@ async def _judge_and_act(
     judgment = None
     if reason is None:
         try:
-            judgment = await judge.judge(spam_ai_handlers.review_input(target))
+            bio = await spam_ai_handlers.sender_bio(bot, target)
+            judgment = await judge.judge(spam_ai_handlers.review_input(target, bio))
         except judge.JudgeError as exc:
             logger.warning("举报：群 %s 消息 %s 的 AI 判断失败: %s", chat_id, message_id, exc)
             reason = views.REASON_JUDGE_FAILED
