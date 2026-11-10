@@ -57,9 +57,9 @@ def _fresh_state(monkeypatch):
 
 @pytest.mark.parametrize(
     ("members", "required"),
-    [(None, 5), (0, 1), (3, 1), (100, 1), (101, 2), (200, 2), (201, 3), (499, 5), (20_000, 5)],
+    [(None, 3), (0, 1), (3, 1), (100, 1), (101, 2), (200, 2), (201, 3), (499, 3), (20_000, 3)],
 )
-def test_one_vote_per_hundred_members_capped_at_five(members, required):
+def test_one_vote_per_hundred_members_capped_at_three(members, required):
     assert votes.required_votes(members) == required
 
 

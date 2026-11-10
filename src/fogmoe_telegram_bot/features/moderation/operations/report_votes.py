@@ -24,7 +24,7 @@ from enum import StrEnum
 from fogmoe_telegram_bot.features.moderation.spam_ai import operations as spam_ai_operations
 
 MEMBERS_PER_VOTE = 100
-MAX_VOTES = 5
+MAX_VOTES = 3
 REPORTABLE_SECONDS = 24 * 3600
 FREE_GROUP_DAILY_CHECKS = 20
 FREE_TOTAL_DAILY_CHECKS = 2000
