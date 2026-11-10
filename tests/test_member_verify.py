@@ -5,8 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 from telegram.constants import ChatMemberStatus
-from telegram.error import BadRequest
+from telegram.error import BadRequest, NetworkError
 
+from fogmoe_telegram_bot.core import telegram_utils
 from fogmoe_telegram_bot.features.moderation import admin_ban_views, member_verify
 from fogmoe_telegram_bot.features.moderation import member_verify_views as views
 from fogmoe_telegram_bot.features.moderation.operations import join_messages, verify_game
@@ -96,12 +97,18 @@ class _FakeBot:
         self.edited_texts = []
         self.parse_modes = []
         self.deleted = []
+        self.sent = []
         self.fail_restrict = False
+        self.restrict_errors = []  # 依次抛出，抛完才成功
+        self.restrict_attempts = 0
 
     async def get_chat_member(self, chat_id, user_id):
         return self.member
 
     async def restrict_chat_member(self, chat_id, user_id, permissions):
+        self.restrict_attempts += 1
+        if self.restrict_errors:
+            raise self.restrict_errors.pop(0)
         if self.fail_restrict:
             raise RuntimeError("network down")
         self.restricted.append(user_id)
@@ -117,8 +124,8 @@ class _FakeBot:
         self.edited_texts.append(text)
         self.parse_modes.append(parse_mode)
 
-    async def send_message(self, chat_id, text):
-        pass
+    async def send_message(self, chat_id, text, parse_mode=None):
+        self.sent.append((text, parse_mode))
 
     async def delete_message(self, chat_id, message_id):
         self.deleted.append(message_id)
@@ -443,7 +450,7 @@ def test_a_timed_out_member_also_loses_the_join_message(tasks):
     assert bot.kicked == [USER_ID] and bot.deleted == [1]
 
 
-def _join(monkeypatch, *, enabled):
+def _join(monkeypatch, *, enabled, bot=None):
     async def is_enabled(chat_id):
         return enabled
 
@@ -460,7 +467,7 @@ def _join(monkeypatch, *, enabled):
         message=SimpleNamespace(message_id=1, new_chat_members=[new_member], reply_text=reply_text),
     )
     context = SimpleNamespace(
-        bot=_FakeBot(), chat_data={}, job_queue=SimpleNamespace(run_once=lambda *args, **kwargs: None)
+        bot=bot or _FakeBot(), chat_data={}, job_queue=SimpleNamespace(run_once=lambda *args, **kwargs: None)
     )
     asyncio.run(member_verify.new_member_handler(update, context))
     return replies
@@ -480,3 +487,53 @@ def test_the_welcome_hides_the_name_and_offers_admins_a_ban_button(tasks, monkey
 def test_join_messages_are_remembered_even_without_verification(tasks, monkeypatch):
     assert _join(monkeypatch, enabled=False) == []
     assert join_messages.JOINS.pop(CHAT_ID, USER_ID) == 1
+
+
+@pytest.fixture
+def no_retry_wait(monkeypatch):
+    async def instant(delay):
+        pass
+
+    monkeypatch.setattr(telegram_utils.asyncio, "sleep", instant)
+
+
+def test_a_network_blip_while_muting_is_retried(tasks, monkeypatch, no_retry_wait):
+    bot = _FakeBot()
+    bot.restrict_errors = [NetworkError("httpx.ConnectError: ")]
+
+    replies = _join(monkeypatch, enabled=True, bot=bot)
+
+    assert bot.restricted == [USER_ID] and len(replies) == 1 and bot.sent == []
+    assert (USER_ID, CHAT_ID) in tasks.rows
+
+
+def test_a_lasting_network_failure_says_the_member_is_unverified(tasks, monkeypatch, no_retry_wait):
+    bot = _FakeBot()
+    bot.restrict_errors = [NetworkError("httpx.ConnectError: ")] * 10
+
+    replies = _join(monkeypatch, enabled=True, bot=bot)
+
+    assert bot.restrict_attempts == telegram_utils.TELEGRAM_SEND_RETRY_ATTEMPTS
+    (text, parse_mode), = bot.sent
+    assert text.startswith(views.restrict_network_text(USER_ID)) and "ERR-" in text
+    assert parse_mode == "HTML" and "权限" not in text
+    assert replies == [] and tasks.rows == {}
+
+
+def test_missing_rights_are_reported_without_retrying(tasks, monkeypatch, no_retry_wait):
+    bot = _FakeBot()
+    bot.restrict_errors = [BadRequest("Not enough rights to restrict/unrestrict chat member")]
+
+    _join(monkeypatch, enabled=True, bot=bot)
+
+    assert bot.restrict_attempts == 1
+    (text, _), = bot.sent
+    assert text.startswith(views.restrict_no_rights_text(USER_ID)) and "网络" not in text
+
+
+def test_an_admin_joining_is_not_announced(tasks, monkeypatch, no_retry_wait):
+    bot = _FakeBot()
+    bot.restrict_errors = [BadRequest("User is an administrator of the chat")]
+
+    assert _join(monkeypatch, enabled=True, bot=bot) == []
+    assert bot.sent == []
