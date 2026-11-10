@@ -8,6 +8,7 @@
 """
 
 import logging
+from functools import partial
 
 from telegram import ChatPermissions, Update
 from telegram.constants import ChatMemberStatus
@@ -16,6 +17,11 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, Mes
 
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.redaction import report_error
+from fogmoe_telegram_bot.core.telegram_utils import (
+    is_retryable_telegram_error,
+    retry_telegram_send,
+    telegram_error_summary,
+)
 from fogmoe_telegram_bot.features.moderation import member_verify_views as views
 from fogmoe_telegram_bot.features.moderation import spam_strikes
 from fogmoe_telegram_bot.features.moderation.operations import join_messages, verify_game
@@ -27,6 +33,26 @@ RECOVERY_INTERVAL = 30
 RECOVERY_FIRST_SECONDS = 5
 # 没通过验证（被移出、验证前离开）之后，欢迎消息换成的说明在群里留这么多秒再删掉
 NOTICE_SECONDS = 60
+
+logger = logging.getLogger(__name__)
+
+# 新成员验证前的权限：什么都不能发
+MUTED = ChatPermissions(
+    can_send_messages=False,
+    can_send_polls=False,
+    can_send_other_messages=False,
+    can_add_web_page_previews=False,
+    can_change_info=False,
+    can_invite_users=False,
+    can_pin_messages=False,
+    can_manage_topics=False,
+    can_send_audios=False,
+    can_send_documents=False,
+    can_send_photos=False,
+    can_send_videos=False,
+    can_send_video_notes=False,
+    can_send_voice_notes=False,
+)
 
 # 在开启验证功能前详细检查必要权限
 async def check_bot_permissions(bot, chat_id):
@@ -83,6 +109,19 @@ async def verify_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"答错 {verify_game.MAX_MISTAKES} 次或超时会被移出群组。"
     )
 
+# 新成员没禁言上：缺权限和网络不通分开说，其他原因（比如对方是管理员）不提示
+async def _announce_restrict_failure(bot, chat_id, user_id, error, notice):
+    if any(reason in str(error).lower() for reason in ("not enough rights", "chat_admin_required")):
+        text = views.restrict_no_rights_text(user_id)
+    elif is_retryable_telegram_error(error):
+        text = views.restrict_network_text(user_id)
+    else:
+        return
+    try:
+        await bot.send_message(chat_id, f"{text}\n{notice}", parse_mode="HTML")
+    except Exception as send_error:
+        logger.warning("没禁言上成员 %s，提示也没发出去: %s", user_id, telegram_error_summary(send_error))
+
 # 新成员加入事件处理
 async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -107,36 +146,15 @@ async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             continue
 
         try:
-            # 禁言新成员（禁止发送消息）
-            await context.bot.restrict_chat_member(
-                chat_id,
-                user_id,
-                ChatPermissions(can_send_messages=False,
-                                can_send_polls=False,
-                                can_send_other_messages=False,
-                                can_add_web_page_previews=False,
-                                can_change_info=False,
-                                can_invite_users=False,
-                                can_pin_messages=False,
-                                can_manage_topics=False,
-                                can_send_audios=False,
-                                can_send_documents=False,
-                                can_send_photos=False,
-                                can_send_videos=False,
-                                can_send_video_notes=False,
-                                can_send_voice_notes=False)
+            # 禁言新成员；连 Telegram 偶尔握手失败，重试几次，免得没禁言上、新成员不验证就能发言
+            await retry_telegram_send(
+                partial(context.bot.restrict_chat_member, chat_id, user_id, MUTED),
+                logger=logger,
+                action=f"restrict new member {user_id}",
             )
         except Exception as e:
-            error_str = str(e)
-            notice = report_error(
-                logging.getLogger(__name__), f"限制成员 {user_id} 失败", e
-            )
-            if "httpx.ConnectError" in error_str or "Not enough rights" in error_str:
-                await context.bot.send_message(
-                    chat_id,
-                    f"验证错误: 无法限制成员 {user_id}，"
-                    f"请检查机器人的管理员权限与网络。\n{notice}"
-                )
+            notice = report_error(logger, f"限制成员 {user_id} 失败", e)
+            await _announce_restrict_failure(context.bot, chat_id, user_id, e, notice)
             continue
 
         # 发送欢迎信息，包含开始验证按钮；不显示名字

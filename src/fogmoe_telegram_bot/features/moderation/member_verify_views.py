@@ -138,6 +138,22 @@ def timeout_text(user_id: int) -> str:
     return _removed("验证超时", user_id)
 
 
+def restrict_no_rights_text(user_id: int) -> str:
+    """没禁言上新成员，因为机器人缺权限。"""
+    return (
+        f"验证错误：机器人没有限制成员的权限，没能禁言 {admin_ban_views.neutral_mention(user_id, '新成员')}，"
+        "该成员未经验证就能发言。请在管理员设置里给机器人打开「封禁用户」权限。"
+    )
+
+
+def restrict_network_text(user_id: int) -> str:
+    """没禁言上新成员，因为重试后仍连不上 Telegram。"""
+    return (
+        f"验证错误：暂时连不上 Telegram，重试后仍没能禁言 {admin_ban_views.neutral_mention(user_id, '新成员')}，"
+        "该成员未经验证就能发言，请管理员留意。"
+    )
+
+
 def prompt(game: Game, outcome: Outcome | None = None) -> str:
     """弹框里的题目，只有本人看得到；刚点完格子时前面先说答对、答错还是题目已经换了。"""
     if outcome is Outcome.NEXT:
