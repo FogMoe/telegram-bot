@@ -374,6 +374,28 @@ def test_enough_votes_and_a_spam_verdict_delete_kick_and_ban_for_a_day(jev):
     assert len(jev.calls) == 1
 
 
+@pytest.mark.parametrize(
+    ("delete_error", "reply", "notice", "buttons"),
+    [
+        (None, "消息已删除", "已删除消息。对方此前已被封禁，没有重复处理。", None),
+        (BadRequest("Message can't be deleted"), "消息没能删除，已通知管理员", "但消息没能删除，请手动删除", ["查看消息"]),
+    ],
+    ids=["deleted", "not-deleted"],
+)
+def test_a_sender_an_admin_already_banned_is_not_banned_or_announced_again(jev, delete_error, reply, notice, buttons):
+    # 管理员先永久封禁了，别的消息又被举报：不能再发公告，更不能把永久封禁改成 24 小时
+    bot = FakeBot(members=40, delete_error=delete_error)
+    bot.chat_members[SPAMMER.id] = SimpleNamespace(status="kicked")
+
+    replies = run_report(bot, 11)
+
+    assert replies == [f"已收到举报（1/1）。AI 确认为垃圾信息，对方此前已被封禁，{reply}。"]
+    assert bot.bans == [] and bot.group_posts == []
+    assert [dm.chat_id for dm in bot.dms] == [1, 2] and notice in bot.dms[0].text
+    markup = bot.dms[0].markup
+    assert (markup and [button.text for button in markup.inline_keyboard[0]]) == buttons
+
+
 def test_a_message_that_could_not_be_deleted_is_flagged_to_admins(jev):
     bot = FakeBot(members=40, delete_error=BadRequest("Message can't be deleted"))
 

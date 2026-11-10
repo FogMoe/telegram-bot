@@ -74,6 +74,13 @@ def pending_keyboard(reported: ReportedMessage) -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup([row]) if row else None
 
 
+def link_keyboard(reported: ReportedMessage) -> InlineKeyboardMarkup | None:
+    """只有「查看消息」：对方已经被封禁、消息还没删掉时用。"""
+    if not reported.link:
+        return None
+    return InlineKeyboardMarkup([[InlineKeyboardButton("查看消息", url=reported.link)]])
+
+
 def banned_keyboard(chat_id: int, user_id: int, until: int, link: str | None = None) -> InlineKeyboardMarkup:
     """自动封禁之后：解除封禁（到期后失效）；消息没删掉时再给一个「查看消息」。"""
     return admin_ban_views.unban_keyboard(chat_id, user_id, until, link)
@@ -135,6 +142,19 @@ def auto_banned_dm(reported: ReportedMessage, count: int, probability: float, *,
     return f"{head}\n\n{_card(reported, count)}"
 
 
+def already_banned_dm(
+    reported: ReportedMessage, count: int, probability: float, *, deleted: bool, basic_group: bool = False
+) -> str:
+    """AI 判定为垃圾信息时对方已经被封禁（管理员先处理了）：只删了消息。"""
+    verdict = f"AI 判定为垃圾信息（概率 {probability:.0%}）"
+    out = admin_ban_views.already_out(basic_group)
+    if deleted:
+        head = f"🚫 <b>举报已自动处理</b>：{verdict}，已删除消息。{out}，没有重复处理。"
+    else:
+        head = f"⚠️ <b>举报需要你处理</b>：{verdict}，{out}，但消息没能删除，请手动删除。"
+    return f"{head}\n\n{_card(reported, count)}"
+
+
 # ---------------------------------------------------------------------------
 # 群里的回复与公告
 # ---------------------------------------------------------------------------
@@ -179,6 +199,14 @@ def reporter_limit_reply(count: int, required: int, notified: int | None) -> str
 def escalated_reply(count: int, required: int, reason: str, notified: int) -> str:
     handed = "已交给管理员处理。" if notified else NO_ADMIN_REACHED
     return f"已收到举报（{count}/{required}）。{reason}，{handed}"
+
+
+def already_banned_reply(count: int, required: int, *, deleted: bool, basic_group: bool = False) -> str:
+    done = "消息已删除" if deleted else "消息没能删除，已通知管理员"
+    return (
+        f"已收到举报（{count}/{required}）。AI 确认为垃圾信息，"
+        f"{admin_ban_views.already_out(basic_group)}，{done}。"
+    )
 
 
 def not_spam_reply(count: int, required: int, notified: int) -> str:

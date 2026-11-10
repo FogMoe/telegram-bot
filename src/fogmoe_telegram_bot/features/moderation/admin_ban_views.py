@@ -19,6 +19,7 @@ UNBAN_EXPIRED = "封禁已经到期，这个按钮不再有效。"
 NOT_ALLOWED = "只有群主或能封禁成员的管理员可以操作。"
 LOOKUP_FAILED = "无法确认你在该群的管理员权限，请稍后再试。"
 BAN_FAILED = "⚠️ 封禁失败，请在群里手动处理。"
+BAN_IN_PROGRESS = "正在处理，请稍候。"
 UNBAN_FAILED = "⚠️ 解除封禁失败，请在群里手动处理。"
 ORIGINAL_GONE = "原文已经不在了：只保存 24 小时，机器人重启后也会清空。"
 ORIGINAL_EMPTY = "这条消息没有文字内容。"
@@ -162,6 +163,23 @@ def dm_banned_line(admin_html: str, deleted: bool, basic_group: bool = False) ->
     if deleted:
         return f"✅ {admin_html} 已删除消息并{_banned(basic_group)}。"
     return f"⚠️ {admin_html} 已{_banned(basic_group)}，但消息没能删除，请手动删除。"
+
+
+def already_out(basic_group: bool = False) -> str:
+    """对方在这次操作之前就已经被封禁。普通群没有封禁名单，只能说不在群里。"""
+    return "对方已经不在群里" if basic_group else "对方此前已被封禁"
+
+
+def already_banned_popup(basic_group: bool = False) -> str:
+    """群里的封禁按钮点在已经封禁的人身上：弹框说明，不改消息。"""
+    return f"{already_out(basic_group)}，不用重复操作。"
+
+
+def dm_already_banned_line(deleted: bool, basic_group: bool = False) -> str:
+    """举报私聊里的封禁按钮点在已经封禁的人身上：只删被举报的消息，不再封禁和公告。"""
+    if deleted:
+        return f"ℹ️ {already_out(basic_group)}，没有重复处理；被举报的消息已删除。"
+    return f"⚠️ {already_out(basic_group)}，但被举报的消息没能删除，请手动删除。"
 
 
 def unbanned_line(admin_html: str) -> str:
