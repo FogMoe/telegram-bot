@@ -220,7 +220,7 @@ async def _judge_and_act(
     admin_ids: Sequence[int],
     bot_member: Any,
 ) -> str | None:
-    """这次举报凑够了票数并接手了判断。返回给举报人的回复；移出成功时群里已有公告，返回 None。"""
+    """这次举报凑够了票数并接手了判断。返回给举报人的回复；这次移出了对方时群里已有公告，返回 None。"""
     chat_id, message_id = reported.chat_id, reported.message_id
     reason = None
     if not judge.is_configured():
@@ -248,7 +248,8 @@ async def _judge_and_act(
     judgment = None
     if reason is None:
         try:
-            judgment = await judge.judge(spam_ai_handlers.review_input(target))
+            bio = await spam_ai_handlers.sender_bio(bot, target)
+            judgment = await judge.judge(spam_ai_handlers.review_input(target, bio))
         except judge.JudgeError as exc:
             logger.warning("举报：群 %s 消息 %s 的 AI 判断失败: %s", chat_id, message_id, exc)
             reason = views.REASON_JUDGE_FAILED
@@ -280,13 +281,23 @@ async def _judge_and_act(
         return views.not_spam_reply(count, required, notified)
 
     deleted = await admin_ban.delete_message(bot, chat_id, message_id)
+    basic_group = admin_ban.is_basic_group(chat_id)
+    if await spam_strikes.already_removed(bot, chat_id, reported.sender_id, basic_group=basic_group):
+        # 管理员已经先封禁了：只删消息，不再发公告，也不把永久封禁改成 24 小时
+        await _notify(
+            bot,
+            admin_ids,
+            views.already_banned_dm(reported, count, probability, deleted=deleted, basic_group=basic_group),
+            None if deleted else views.link_keyboard(reported),
+        )
+        return views.already_banned_reply(count, required, deleted=deleted, basic_group=basic_group)
     sender = spam_strikes.sender_html(target)  # 群里的公告不显示名字
     banned = await spam_strikes.kick(
         bot,
         chat_id,
         reported.sender_id,
         sender,
-        basic_group=admin_ban.is_basic_group(chat_id),
+        basic_group=basic_group,
         offense=views.vote_offense(sender, count),
     )
     if banned:

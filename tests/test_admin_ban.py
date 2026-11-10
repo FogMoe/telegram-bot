@@ -48,8 +48,9 @@ def admin(status="administrator", restrict=True):
 
 
 class FakeBot:
-    def __init__(self, *, clicker=None, ban_error=None, delete_error=None, unban_error=None):
+    def __init__(self, *, clicker=None, target_status="member", ban_error=None, delete_error=None, unban_error=None):
         self.clicker = clicker or admin()
+        self.target = SimpleNamespace(status=target_status)  # 被封禁的人在群里的状态
         self.ban_error = ban_error
         self.delete_error = delete_error
         self.unban_error = unban_error
@@ -59,17 +60,21 @@ class FakeBot:
         self.group_posts = []
 
     async def get_chat_member(self, chat_id, user_id):
-        return self.clicker
+        await asyncio.sleep(0)  # 让同时到达的回调交错执行
+        return self.clicker if user_id == ADMIN_ID else self.target
 
     async def ban_chat_member(self, chat_id, user_id, until_date=None):
         if self.ban_error:
             raise self.ban_error
         self.bans.append((chat_id, user_id, until_date))
+        # 普通群没有封禁名单，被移出的人只是不在群里
+        self.target.status = "kicked" if str(chat_id).startswith("-100") else "left"
 
     async def unban_chat_member(self, chat_id, user_id, only_if_banned=False):
         if self.unban_error:
             raise self.unban_error
         self.unbans.append((chat_id, user_id, only_if_banned))
+        self.target.status = "left"
 
     async def delete_message(self, chat_id, message_id):
         if self.delete_error:
@@ -86,8 +91,8 @@ def markup_with(*datas, link=None):
     return InlineKeyboardMarkup([row])
 
 
-def press(bot, data, *, chat_type="supergroup", message_id=90, markup=None, text_html="⚠️ 注意: 警告", answer=None):
-    query = SimpleNamespace(
+def make_query(data, *, chat_type="supergroup", message_id=90, markup=None, text_html="⚠️ 注意: 警告", answer=None):
+    return SimpleNamespace(
         data=data,
         from_user=SimpleNamespace(id=ADMIN_ID, mention_html=lambda: "<b>管理员</b>"),
         message=SimpleNamespace(
@@ -100,7 +105,15 @@ def press(bot, data, *, chat_type="supergroup", message_id=90, markup=None, text
         edit_message_text=Recorder(),
         edit_message_reply_markup=Recorder(),
     )
-    asyncio.run(admin_ban.admin_ban_callback(SimpleNamespace(callback_query=query), SimpleNamespace(bot=bot)))
+
+
+def callback(bot, query):
+    return admin_ban.admin_ban_callback(SimpleNamespace(callback_query=query), SimpleNamespace(bot=bot))
+
+
+def press(bot, data, **fields):
+    query = make_query(data, **fields)
+    asyncio.run(callback(bot, query))
     return query
 
 
@@ -257,7 +270,7 @@ def test_basic_groups_only_promise_a_removal():
     # 普通群不执行封禁，被移出的人凭邀请链接就能回来
     bot = FakeBot()
 
-    query = press(bot, views.ban_data(-4567, SPAMMER_ID))
+    query = press(FakeBot(), views.ban_data(-4567, SPAMMER_ID))
     dm = press(bot, views.ban_data(-4567, SPAMMER_ID, 55), chat_type="private")
 
     assert edited(query)[0].endswith("🚫 已被 <b>管理员</b> 移出群组。")
@@ -348,6 +361,88 @@ def test_a_report_ban_that_could_not_delete_says_so():
 
     text, _ = edited(query)
     assert bot.bans and "已永久封禁，但消息没能删除，请手动删除" in text
+
+
+# ---------------------------------------------------------------------------
+# 已经封禁过的人
+# ---------------------------------------------------------------------------
+
+
+def test_a_second_report_notice_for_a_banned_user_only_deletes_its_message():
+    # 每位管理员、每条被举报的消息各有一条私聊，按钮都还在
+    bot = FakeBot()
+    press(bot, views.ban_data(CHAT_ID, SPAMMER_ID, 55), chat_type="private")
+    data = views.ban_data(CHAT_ID, SPAMMER_ID, 56)
+
+    query = press(
+        bot, data, chat_type="private", text_html="📣 <b>新举报</b>", markup=markup_with(data, link="https://t.me/c/123/56")
+    )
+
+    assert len(bot.bans) == 1 and len(bot.group_posts) == 1  # 不再封禁，群里不再发公告
+    assert bot.deleted == [55, 56]
+    text, keyboard = edited(query)
+    assert text == "📣 <b>新举报</b>\n\nℹ️ 对方此前已被封禁，没有重复处理；被举报的消息已删除。"
+    assert keyboard is None
+
+
+def test_a_report_notice_for_a_banned_user_keeps_the_link_when_the_message_stays():
+    bot = FakeBot(target_status="kicked", delete_error=BadRequest("Message can't be deleted"))
+    data = views.ban_data(CHAT_ID, SPAMMER_ID, 55)
+
+    query = press(bot, data, chat_type="private", markup=markup_with(data, link="https://t.me/c/123/55"))
+
+    text, keyboard = edited(query)
+    assert bot.bans == [] and bot.group_posts == []
+    assert text.endswith("⚠️ 对方此前已被封禁，但被举报的消息没能删除，请手动删除。")
+    assert [button.text for button in keyboard.inline_keyboard[0]] == ["查看消息"]
+
+
+def test_a_warning_about_a_banned_user_only_loses_its_ban_button():
+    bot = FakeBot(target_status="kicked")
+
+    query = press(bot, views.ban_data(CHAT_ID, SPAMMER_ID), markup=views.warning_keyboard(CHAT_ID, 55, SPAMMER_ID))
+
+    assert query.answer.calls == [(("对方此前已被封禁，不用重复操作。",), {"show_alert": True})]
+    assert bot.bans == [] and query.edit_message_text.calls == []
+    (), kwargs = query.edit_message_reply_markup.calls[0]
+    assert [button.text for button in kwargs["reply_markup"].inline_keyboard[0]] == [views.VIEW_LABEL]
+
+
+def test_someone_who_left_is_still_banned_except_in_basic_groups():
+    # 超级群里发完广告就退群的人照样封禁，免得再回来；普通群没有封禁名单，不在群里就没什么可做
+    supergroup, basic = FakeBot(target_status="left"), FakeBot(target_status="left")
+
+    press(supergroup, views.ban_data(CHAT_ID, SPAMMER_ID, 55), chat_type="private")
+    query = press(basic, views.ban_data(-4567, SPAMMER_ID, 55), chat_type="private")
+
+    assert supergroup.bans == [(CHAT_ID, SPAMMER_ID, None)]
+    assert basic.bans == [] and basic.group_posts == [] and basic.deleted == [55]
+    assert edited(query)[0].endswith("ℹ️ 对方已经不在群里，没有重复处理；被举报的消息已删除。")
+
+
+def test_two_presses_at_once_ban_and_announce_once():
+    bot = FakeBot()
+    data = views.ban_data(CHAT_ID, SPAMMER_ID, 55)
+    first, second = make_query(data, chat_type="private"), make_query(data, chat_type="private")
+
+    async def both():
+        await asyncio.gather(callback(bot, first), callback(bot, second))
+
+    asyncio.run(both())
+
+    assert len(bot.bans) == 1 and len(bot.group_posts) == 1
+    assert second.answer.calls == [((views.BAN_IN_PROGRESS,), {})]
+    assert admin_ban._BANNING == set()
+
+
+def test_a_ban_that_failed_can_be_tried_again():
+    bot = FakeBot(ban_error=BadRequest("Chat not found"))
+    press(bot, views.ban_data(CHAT_ID, SPAMMER_ID))
+    bot.ban_error = None
+
+    query = press(bot, views.ban_data(CHAT_ID, SPAMMER_ID))
+
+    assert bot.bans == [(CHAT_ID, SPAMMER_ID, None)] and edited(query)[0].endswith("永久封禁。")
 
 
 # ---------------------------------------------------------------------------

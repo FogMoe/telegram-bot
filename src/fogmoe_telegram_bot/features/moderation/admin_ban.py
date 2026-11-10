@@ -2,6 +2,7 @@
 
 只有群主和能封禁成员的管理员能点。管理员手动封禁是永久的（自动处罚是 24 小时），封禁时一并删掉对方的加群消息；
 从举报私聊里封禁还会删掉被举报的消息，并在群里发移出公告。在群里的按钮上封禁时，改写那条消息本身，不另发公告。
+同一个人可能有好几个封禁按钮（每位管理员的私聊、每条警告各一个）：对方已经被封禁时不再封禁、不再发公告，只去掉按钮。
 「原文」用回调弹框显示被自动删除的消息，只有点的人看得到，也不记进对方的 AI 对话记录；原文在 `operations/deleted_messages.py`。
 
 按钮与文案在 `admin_ban_views.py`，封禁本身在 `spam_strikes.ban` / `spam_strikes.kick`。
@@ -28,6 +29,8 @@ from fogmoe_telegram_bot.features.moderation.operations import member_verify as 
 logger = logging.getLogger(__name__)
 
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
+# 正在处理的封禁（群, 用户）：两位管理员同时点、或者连点两下时只处理一次
+_BANNING: set[tuple[int, int]] = set()
 
 
 def is_basic_group(chat_id: int) -> bool:
@@ -134,15 +137,37 @@ async def admin_ban_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await query.answer(views.original_popup(original), show_alert=True)
         return
 
+    if action.kind == "unban":
+        await _apply(query, context.bot, action)
+        return
+    key = (action.chat_id, action.user_id)
+    if key in _BANNING:
+        await query.answer(views.BAN_IN_PROGRESS)
+        return
+    _BANNING.add(key)
+    try:
+        if await spam_strikes.already_removed(
+            context.bot, action.chat_id, action.user_id, basic_group=is_basic_group(action.chat_id)
+        ):
+            await _already_banned(query, context.bot, action)
+        else:
+            await _apply(query, context.bot, action)
+    finally:
+        _BANNING.discard(key)
+
+
+async def _apply(query: Any, bot: Any, action: AdminAction) -> None:
+    """执行封禁或解除封禁，并改写按钮所在的消息。"""
+    message = query.message
     admin_html = query.from_user.mention_html()
     if action.kind == "unban":
-        result = await _unban(context.bot, action, admin_html, message)
+        result = await _unban(bot, action, admin_html, message)
         failure = views.UNBAN_FAILED
     elif message.chat.type == "private":
-        result = await _ban_from_dm(context.bot, action, admin_html, message.text_html)
+        result = await _ban_from_dm(bot, action, admin_html, message.text_html)
         failure = views.BAN_FAILED
     else:
-        result = await _ban_in_group(context.bot, action, admin_html, message)
+        result = await _ban_in_group(bot, action, admin_html, message)
         failure = views.BAN_FAILED
     if result is None:
         await query.answer(failure, show_alert=True)  # 保留原来的按钮，可以再试
@@ -154,6 +179,29 @@ async def admin_ban_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard, link_preview_options=NO_PREVIEW)
     except TelegramError as exc:
         logger.warning("更新封禁按钮所在的消息失败: %s", exc)
+
+
+async def _already_banned(query: Any, bot: Any, action: AdminAction) -> None:
+    """对方已经被封禁（别的管理员、别的按钮或自动处罚先处理了）：不再封禁，群里也不再发公告，只去掉这个按钮。
+    举报私聊里的按钮照样删掉被举报的消息。"""
+    message = query.message
+    basic_group = is_basic_group(action.chat_id)
+    remaining = views.without_button(message.reply_markup, query.data)
+    try:
+        if message.chat.type != "private":
+            await query.answer(views.already_banned_popup(basic_group), show_alert=True)
+            await query.edit_message_reply_markup(reply_markup=remaining)
+            return
+        deleted = action.message_id is None or await delete_message(bot, action.chat_id, action.message_id)
+        await query.answer()
+        await query.edit_message_text(
+            f"{message.text_html}\n\n{views.dm_already_banned_line(deleted, basic_group)}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=None if deleted else remaining,  # 消息没删掉时留着「查看消息」
+            link_preview_options=NO_PREVIEW,
+        )
+    except TelegramError as exc:
+        logger.warning("更新已封禁用户的按钮所在的消息失败: %s", exc)
 
 
 def setup_admin_ban_handlers(application) -> None:

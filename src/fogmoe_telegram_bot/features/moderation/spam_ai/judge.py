@@ -20,6 +20,8 @@ REQUEST_TIMEOUT_SECONDS = 5
 # 正文与被回复消息的截断长度，防止长文拉高 token 费用
 MAX_TEXT_CHARS = 2000
 MAX_REPLY_CHARS = 200
+# Telegram 的简介最长 140 字（Premium），留点余量
+MAX_BIO_CHARS = 200
 # 按钮与隐藏链接最多带这么多个，按钮文字截断到这个长度
 MAX_LIST_ITEMS = 10
 MAX_BUTTON_CHARS = 64
@@ -29,10 +31,11 @@ SPAM_QUESTION: dict[str, Any] = {
     "type": "noul",
     "instructions": (
         "Is this post spam: posted to advertise, recruit, or pull group members somewhere else, "
-        "rather than to take part in the conversation? Judge `message` together with `sender.name` "
-        "and `sender.username`. Spammers often put the advertisement in their display name or username "
-        "and then post a short harmless-looking line, such as a greeting or 看我名字, to get the name seen; "
-        "such a post is spam even if the text alone looks ordinary. "
+        "rather than to take part in the conversation? Judge `message` together with `sender.name`, "
+        "`sender.username`, and `sender.bio` (the sender's profile bio; null when empty or hidden). "
+        "Spammers often put the advertisement in their display name, username, or bio "
+        "and then post a short harmless-looking line, such as a greeting or 看我名字/看我简介, "
+        "to get the profile seen; such a post is spam even if the text alone looks ordinary. "
         "`group_title` says what the group is about."
     ),
     "criteria": {
@@ -40,6 +43,9 @@ SPAM_QUESTION: dict[str, Any] = {
             "`sender.name` or `sender.username` itself advertises: a product, service, channel, group, "
             "contact handle (@account, 微信/V, 飞机/TG), recruitment, gambling, adult, 福利, or crypto pitch, "
             "whatever the message says",
+            "`sender.bio` is a sales pitch, whatever the message says: it offers or solicits gambling, "
+            "adult content, 福利, paid or easy-money work, investment returns, or gray-market services, "
+            "or tells readers to contact or join for them",
             "Promotes a product, service, channel, group, bot, or website nobody in the conversation asked about",
             "Recruitment or easy-money offers: part-time work, 刷单, 日结, agents wanted",
             "Gambling (博彩/菠菜), adult content, or 福利 offers",
@@ -51,9 +57,11 @@ SPAM_QUESTION: dict[str, Any] = {
         ],
         "false": [
             "Ordinary chat: greetings, questions, opinions, jokes, even when short or off-topic, "
-            "from a sender whose name and username do not advertise",
+            "from a sender whose name, username, and bio do not advertise",
             "A name that only says who the sender is: a nickname with emoji or symbols, "
             "or a project or community they belong to, with no offer or invitation to contact",
+            "A bio that only introduces the sender: interests, job, location, a motto, or a link or @handle "
+            "to their own site, blog, channel, or contact, with nothing offered or solicited",
             "Talks about a product, coin, price, job, or service as a topic without soliciting anyone",
             "A link or @mention that fits the group's topic or answers someone",
             "Reports, quotes, or complains about spam",
@@ -72,6 +80,7 @@ class MessageForReview:
     is_caption: bool
     sender_name: str
     sender_username: str | None = None
+    sender_bio: str | None = None  # 个人简介；没填、读不到或对方设了隐私时为 None
     group_title: str | None = None
     forwarded_from: str | None = None  # 转发来源的名字（频道、群或用户）
     hidden_links: tuple[str, ...] = ()  # 文字链接与按钮背后的网址，正文里看不到
@@ -100,7 +109,11 @@ def _truncate(text: str | None, limit: int) -> str | None:
 def build_state(message: MessageForReview) -> dict[str, Any]:
     return {
         "group_title": message.group_title,
-        "sender": {"name": message.sender_name, "username": message.sender_username},
+        "sender": {
+            "name": message.sender_name,
+            "username": message.sender_username,
+            "bio": _truncate(message.sender_bio, MAX_BIO_CHARS),
+        },
         "message": {
             "text": _truncate(message.text, MAX_TEXT_CHARS),
             "is_caption": message.is_caption,

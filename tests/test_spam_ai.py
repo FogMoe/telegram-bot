@@ -84,6 +84,7 @@ def test_the_request_carries_the_message_sender_and_one_noul_question(settings_o
     request = judge.build_request(
         review(
             sender_username="xm8888",
+            sender_bio="日结兼职，详情私聊",
             group_title="FogMoe 交流群",
             forwarded_from="福利频道",
             hidden_links=("https://spam.example",),
@@ -96,7 +97,7 @@ def test_the_request_carries_the_message_sender_and_one_noul_question(settings_o
     assert request["model"] == "jev-1.13.0"
     assert request["state"] == {
         "group_title": "FogMoe 交流群",
-        "sender": {"name": "日结兼职 小美", "username": "xm8888"},
+        "sender": {"name": "日结兼职 小美", "username": "xm8888", "bio": "日结兼职，详情私聊"},
         "message": {
             "text": "招聘手机兼职，日结300+，有意私聊",
             "is_caption": False,
@@ -110,6 +111,11 @@ def test_the_request_carries_the_message_sender_and_one_noul_question(settings_o
     question = request["questions"]["spam"]
     assert question["type"] == "noul"
     assert question["criteria"]["true"] and question["criteria"]["false"]
+    assert "`sender.bio`" in question["instructions"]
+
+
+def test_a_sender_without_a_bio_is_sent_as_null():
+    assert judge.build_state(review())["sender"]["bio"] is None
 
 
 def test_long_texts_are_truncated():
@@ -422,7 +428,9 @@ def test_strikes_count_within_a_sliding_window():
 
 
 class FakeBot:
-    def __init__(self, ban_error=None):
+    def __init__(self, ban_error=None, bio=None, chat_error=None):
+        self.bio = bio
+        self._chat_error = chat_error
         self.sent = []
         self.markups = []
         self.bans = []
@@ -440,6 +448,11 @@ class FakeBot:
 
     async def delete_message(self, chat_id, message_id):
         self.deleted.append(message_id)
+
+    async def get_chat(self, chat_id):
+        if self._chat_error:
+            raise self._chat_error
+        return SimpleNamespace(id=chat_id, bio=self.bio)
 
 
 def message(*, user_id=7, is_bot=False, sender_chat=None, chat_type="supergroup", **fields):
@@ -653,6 +666,43 @@ def test_spam_is_deleted_and_counted_as_a_strike(monkeypatch):
     (_, msg), kwargs = calls.punish.calls[0]
     assert kwargs == {"original": "hi", "reason_html": "的消息被 AI 识别为垃圾信息", "note": "如果是误判，请联系管理员。"}
     assert calls.clean.calls == []
+
+
+def test_the_senders_bio_is_judged_with_the_message(monkeypatch):
+    calls = stub_review(monkeypatch, probability=0.1)
+
+    asyncio.run(handlers.review_message(message(text="大家好，看我简介"), FakeBot(bio="博彩代理，日入过万，加 V")))
+
+    (review_data,), _ = calls.judge.calls[0]
+    assert (review_data.text, review_data.sender_bio) == ("大家好，看我简介", "博彩代理，日入过万，加 V")
+
+
+@pytest.mark.parametrize(
+    "bot",
+    [FakeBot(), FakeBot(bio=""), FakeBot(chat_error=BadRequest("Chat not found"))],
+    ids=["hidden", "empty", "lookup-failed"],
+)
+def test_a_bio_that_cannot_be_read_does_not_stop_the_check(monkeypatch, bot):
+    calls = stub_review(monkeypatch, probability=0.93)
+
+    asyncio.run(handlers.review_message(message(), bot))
+
+    (review_data,), _ = calls.judge.calls[0]
+    assert review_data.sender_bio is None and bot.deleted == [55]
+
+
+def test_a_guest_bot_reply_is_judged_with_the_callers_bio():
+    seen = []
+
+    class Bot(FakeBot):
+        async def get_chat(self, chat_id):
+            seen.append(chat_id)
+            return await super().get_chat(chat_id)
+
+    msg = message(user_id=900, is_bot=True, guest_bot_caller_user=SimpleNamespace(id=7, is_bot=False))
+
+    assert asyncio.run(handlers.sender_bio(Bot(bio="加 V 领福利"), msg)) == "加 V 领福利"
+    assert seen == [7]
 
 
 def test_a_clean_message_counts_toward_the_member_quota(monkeypatch):

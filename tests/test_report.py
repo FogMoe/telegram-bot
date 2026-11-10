@@ -57,9 +57,9 @@ def _fresh_state(monkeypatch):
 
 @pytest.mark.parametrize(
     ("members", "required"),
-    [(None, 5), (0, 1), (3, 1), (100, 1), (101, 2), (200, 2), (201, 3), (499, 5), (20_000, 5)],
+    [(None, 3), (0, 1), (3, 1), (100, 1), (101, 2), (200, 2), (201, 3), (499, 3), (20_000, 3)],
 )
-def test_one_vote_per_hundred_members_capped_at_five(members, required):
+def test_one_vote_per_hundred_members_capped_at_three(members, required):
     assert votes.required_votes(members) == required
 
 
@@ -191,7 +191,8 @@ def admin(user_id, *, is_bot=False, delete=True, restrict=True):
 class FakeBot:
     id = BOT_ID
 
-    def __init__(self, *, members=150, rights=True, dm_errors=(), delete_error=None):
+    def __init__(self, *, members=150, rights=True, dm_errors=(), delete_error=None, bio=None):
+        self.bio = bio
         self.admins = [admin(1), admin(2), admin(BOT_ID, is_bot=True, delete=rights, restrict=rights)]
         self.member_count = members
         self.dm_errors = set(dm_errors)
@@ -230,6 +231,9 @@ class FakeBot:
 
     async def get_chat_member(self, chat_id, user_id):
         return self.chat_members.get(user_id) or SimpleNamespace(status="member", user=user(user_id))
+
+    async def get_chat(self, chat_id):
+        return SimpleNamespace(id=chat_id, bio=self.bio)
 
 
 CHAT = SimpleNamespace(id=CHAT_ID, type="supergroup", title="FogMoe 交流群", username=None)
@@ -342,7 +346,7 @@ def test_the_first_report_notifies_admins_once_and_waits_for_more_votes(jev):
 
 
 def test_enough_votes_and_a_spam_verdict_delete_kick_and_ban_for_a_day(jev):
-    bot = FakeBot(members=150)
+    bot = FakeBot(members=150, bio="博彩代理，加 V")
     run_report(bot, 11)
     bot.dms.clear()
 
@@ -350,7 +354,7 @@ def test_enough_votes_and_a_spam_verdict_delete_kick_and_ban_for_a_day(jev):
 
     assert replies == []  # 群里的移出公告就是回复
     review = jev.calls[0][0][0]
-    assert (review.text, review.sender_name) == ("大家好，看我名字", "加V领福利")
+    assert (review.text, review.sender_name, review.sender_bio) == ("大家好，看我名字", "加V领福利", "博彩代理，加 V")
     assert bot.deleted == [55]
     (chat_id, user_id, until), = bot.bans
     assert (chat_id, user_id) == (CHAT_ID, SPAMMER.id)
@@ -368,6 +372,28 @@ def test_enough_votes_and_a_spam_verdict_delete_kick_and_ban_for_a_day(jev):
     # 处理过之后的举报只计票
     assert run_report(bot, 13) == ["已收到举报（3 人），这条消息已经处理过了。"]
     assert len(jev.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("delete_error", "reply", "notice", "buttons"),
+    [
+        (None, "消息已删除", "已删除消息。对方此前已被封禁，没有重复处理。", None),
+        (BadRequest("Message can't be deleted"), "消息没能删除，已通知管理员", "但消息没能删除，请手动删除", ["查看消息"]),
+    ],
+    ids=["deleted", "not-deleted"],
+)
+def test_a_sender_an_admin_already_banned_is_not_banned_or_announced_again(jev, delete_error, reply, notice, buttons):
+    # 管理员先永久封禁了，别的消息又被举报：不能再发公告，更不能把永久封禁改成 24 小时
+    bot = FakeBot(members=40, delete_error=delete_error)
+    bot.chat_members[SPAMMER.id] = SimpleNamespace(status="kicked")
+
+    replies = run_report(bot, 11)
+
+    assert replies == [f"已收到举报（1/1）。AI 确认为垃圾信息，对方此前已被封禁，{reply}。"]
+    assert bot.bans == [] and bot.group_posts == []
+    assert [dm.chat_id for dm in bot.dms] == [1, 2] and notice in bot.dms[0].text
+    markup = bot.dms[0].markup
+    assert (markup and [button.text for button in markup.inline_keyboard[0]]) == buttons
 
 
 def test_a_message_that_could_not_be_deleted_is_flagged_to_admins(jev):

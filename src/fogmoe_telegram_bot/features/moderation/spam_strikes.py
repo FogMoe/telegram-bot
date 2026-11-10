@@ -155,6 +155,17 @@ async def delete_join_message(bot: Any, chat_id: int, user_id: int) -> None:
         logger.info("删除加群消息失败（群 %s，消息 %s）: %s", chat_id, message_id, exc)
 
 
+async def already_removed(bot: Any, chat_id: int, user_id: int, *, basic_group: bool = False) -> bool:
+    """对方已经被封禁，不用再封禁、再发一次公告。普通群没有封禁名单，不在群里就算。
+    查不到时返回 False，照常处理。"""
+    try:
+        member = await bot.get_chat_member(chat_id, user_id)
+    except TelegramError as exc:
+        logger.info("读取成员状态失败（群 %s，用户 %s）: %s", chat_id, user_id, exc)
+        return False
+    return member.status in (("kicked", "left") if basic_group else ("kicked",))
+
+
 async def ban(bot: Any, chat_id: int, user_id: int, *, seconds: int | None = BAN_SECONDS) -> TelegramError | None:
     """封禁并清理（AI 检查计数、加群消息）；`seconds` 为 None 时永久封禁。成功返回 None，失败返回 Telegram 的错误。"""
     until = None if seconds is None else datetime.now(UTC) + timedelta(seconds=seconds)

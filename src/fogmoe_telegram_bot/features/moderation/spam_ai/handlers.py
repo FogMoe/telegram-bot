@@ -240,7 +240,22 @@ def _posting_bot(message: Message) -> str | None:
     return bot.username if bot is not None else None
 
 
-def review_input(message: Message) -> judge.MessageForReview:
+async def sender_bio(bot: Any, message: Message) -> str | None:
+    """发送者的个人简介：广告号常把广告放在简介里，再发一句「看我简介」。
+    简介不在消息里，要另外向 Telegram 读一次；没填、读不到或对方设了隐私时返回 None，照常判断。"""
+    user = spam_strikes.sender_user(message)
+    if user is None:
+        return None
+    try:
+        chat = await bot.get_chat(user.id)
+    except TelegramError as exc:
+        logger.info("AI 垃圾识别：读取用户 %s 的简介失败: %s", user.id, exc)
+        return None
+    return getattr(chat, "bio", None) or None
+
+
+def review_input(message: Message, bio: str | None = None) -> judge.MessageForReview:
+    """`bio` 是发送者的个人简介，由 `sender_bio` 读取。"""
     reply = message.reply_to_message
     reply_text = (reply.text or reply.caption) if reply is not None else None
     user = spam_strikes.sender_user(message)
@@ -249,6 +264,7 @@ def review_input(message: Message) -> judge.MessageForReview:
         is_caption=message.text is None,
         sender_name=user.full_name if user else "",
         sender_username=user.username if user else None,
+        sender_bio=bio,
         group_title=message.chat.title,
         forwarded_from=_origin_name(message),
         hidden_links=hidden_links(message),
@@ -291,7 +307,7 @@ async def review_message(message: Message, bot: Any) -> None:
         logger.info("AI 垃圾识别：群 %s 今天的检查次数已达上限", chat_id)
         return
     try:
-        judgment = await judge.judge(review_input(message))
+        judgment = await judge.judge(review_input(message, await sender_bio(bot, message)))
     except judge.JudgeError as exc:
         logger.warning("AI 垃圾识别：群 %s 消息 %s 判断失败，放行: %s", chat_id, message.message_id, exc)
         return
