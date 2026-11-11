@@ -12,11 +12,21 @@ from .context_budget import enforce_messages_context_budget
 from .errors import is_timeout_error
 from .litellm_message_sanitizer import sanitize_messages_for_provider
 from .litellm_provider_config import provider_params
-from .usage import record_completion_usage
 
 
 def _provider_params(provider: str) -> dict[str, Any]:
     return provider_params(provider)
+
+
+def response_token_counts(response: Any) -> tuple[int, int, int]:
+    """从模型响应里取 `(输入 token, 其中命中缓存的 token, 输出 token)`；响应不带用量时都是 0。"""
+    usage = getattr(response, "usage", None)
+    details = getattr(usage, "prompt_tokens_details", None)
+    return (
+        getattr(usage, "prompt_tokens", None) or 0,
+        getattr(details, "cached_tokens", None) or 0,
+        getattr(usage, "completion_tokens", None) or 0,
+    )
 
 
 class _GeminiNativeAsyncHTTPHandler(AsyncHTTPHandler):
@@ -121,20 +131,15 @@ async def create_chat_completion(
         metrics.histogram("provider.call_seconds", provider=litellm_provider).observe(
             time.perf_counter() - started
         )
-        try:
-            record_completion_usage(
-                litellm_provider,
-                model,
-                litellm_model=litellm_model,
-                response=response,
-            )
-        except Exception:
-            # 计量只是观测：它出错不能丢掉已经成功的回复，更不能触发 provider 回退。
-            logging.exception(
-                "Failed to record AI usage provider=%s model=%s",
-                litellm_provider,
-                litellm_model,
-            )
+        input_tokens, cached_tokens, output_tokens = response_token_counts(response)
+        logging.info(
+            "AI call finished: provider=%s model=%s in_tokens=%s cached_tokens=%s out_tokens=%s",
+            litellm_provider,
+            litellm_model,
+            input_tokens,
+            cached_tokens,
+            output_tokens,
+        )
         return response
     finally:
         metrics.counter("provider.calls", provider=litellm_provider).inc()

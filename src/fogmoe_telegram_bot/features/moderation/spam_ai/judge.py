@@ -14,7 +14,7 @@ from typing import Any
 
 import aiohttp
 
-from fogmoe_telegram_bot.core import config, metrics
+from fogmoe_telegram_bot.core import config
 
 REQUEST_TIMEOUT_SECONDS = 5
 # 正文与被回复消息的截断长度，防止长文拉高 token 费用
@@ -171,17 +171,9 @@ async def request_judgment(session: aiohttp.ClientSession, message: MessageForRe
             if response.status != 200:
                 raise JudgeError(f"HTTP {response.status}")
             payload = await response.json(content_type=None)
-        judgment = parse_judgment(payload)
-    except JudgeError:
-        metrics.counter("ai.typesafe_calls", status="error").inc()
-        raise
     except (TimeoutError, aiohttp.ClientError, ValueError) as exc:
-        metrics.counter("ai.typesafe_calls", status="error").inc()
         raise JudgeError(f"请求失败: {type(exc).__name__}") from exc
-    metrics.counter("ai.typesafe_calls", status="ok").inc()
-    if judgment.input_tokens and judgment.input_tokens > 0:
-        metrics.counter("ai.typesafe_input_tokens").inc(judgment.input_tokens)
-    return judgment
+    return parse_judgment(payload)
 
 
 async def judge(message: MessageForReview) -> Judgment:

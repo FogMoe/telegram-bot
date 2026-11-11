@@ -1,7 +1,7 @@
 """所有 AI 工具的单点声明表（`TOOL_SPECS`）。
 
 新增一个工具只需要在 `TOOL_SPECS` 里加一项：参数模型、schema、处理函数、所属 agent、副作用分级、
-外部计费类别、是否已配置凭据以及媒体即时投递协议都由这里派生，不再跨多文件重复登记。
+是否已配置凭据以及媒体即时投递协议都由这里派生，不再跨多文件重复登记。
 
 暴露给模型的工具列表只由配置决定，不按入口或聊天类型裁剪：历史在私聊、群聊和后台轮之间共享，工具调用
 会留在历史里，列表按轮变化会让模型看到自己调用过的工具消失。不适用的场景由 handler 返回错误。
@@ -291,7 +291,6 @@ class ToolSpec:
     handler: Callable[..., Any]
     agents: tuple[str, ...]
     side_effect: SideEffectKind = SideEffectKind.READ_ONLY
-    billing_category: str | None = None
     is_configured: Callable[[Any], bool] = _always_configured
     media: MediaToolSpec | None = None
 
@@ -359,7 +358,6 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         arg_model=GoogleSearchArgs,
         handler=google_search_tool,
         agents=("main",),
-        billing_category="search",
         is_configured=_serpapi_configured,
     ),
     ToolSpec(
@@ -404,7 +402,6 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         handler=execute_python_code_tool,
         agents=("main",),
         side_effect=SideEffectKind.EXTERNAL_COMPUTE,
-        billing_category="code_exec",
         is_configured=_judge0_configured,
     ),
     ToolSpec(
@@ -421,7 +418,6 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         handler=linux_sandbox_tool,
         agents=("main",),
         side_effect=SideEffectKind.EXTERNAL_COMPUTE,
-        billing_category="sandbox",
         is_configured=_sandbox_configured,
     ),
     ToolSpec(
@@ -434,7 +430,6 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         handler=generate_image_tool,
         agents=("main",),
         side_effect=SideEffectKind.TELEGRAM_MEDIA,
-        billing_category="image_gen",
         is_configured=_image_gen_configured,
         media=IMAGE_MEDIA_SPEC,
     ),
@@ -448,7 +443,6 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         handler=generate_voice_tool,
         agents=("main",),
         side_effect=SideEffectKind.TELEGRAM_MEDIA,
-        billing_category="voice_gen",
         is_configured=_voice_gen_configured,
         media=VOICE_MEDIA_SPEC,
     ),

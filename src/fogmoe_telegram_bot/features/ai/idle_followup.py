@@ -62,7 +62,6 @@ from fogmoe_telegram_bot.features.ai.turn_pipeline import (
     execute_post_input_turn,
     prepare_model_turn,
 )
-from fogmoe_telegram_bot.features.ai.usage import UsageAccumulator, ai_usage_scope
 from fogmoe_telegram_bot.features.ai.user_state import build_user_state_prompt
 
 logger = logging.getLogger(__name__)
@@ -919,17 +918,13 @@ async def _run_claim(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     claim = run.claim
-    usage = UsageAccumulator()
     async with get_conversation_lock(claim.user_id):
-        with ai_usage_scope(entry="idle_followup", accumulator=usage, clear_accumulator=True):
-            await _run_claim_locked(run, context, usage=usage)
+        await _run_claim_locked(run, context)
 
 
 async def _run_claim_locked(
     run: _IdleRun,
     context: ContextTypes.DEFAULT_TYPE,
-    *,
-    usage: UsageAccumulator,
 ) -> None:
     claim = run.claim
     if not await _claim_is_current(claim):
@@ -1011,7 +1006,7 @@ async def _run_claim_locked(
         await _enter_stage(run, job_claims.STAGE_DELIVERING)
         return True
 
-    outcome = await execute_post_input_turn(
+    await execute_post_input_turn(
         policy=IDLE_FOLLOWUP_ENTRY_POLICY,
         run_model_step=lambda: prepare_model_turn(
             policy=IDLE_FOLLOWUP_ENTRY_POLICY,
@@ -1048,13 +1043,6 @@ async def _run_claim_locked(
             claim,
             error=delivery_error,
         ),
-    )
-    if not outcome.delivered:
-        return
-    logger.info(
-        "idle followup turn finished: user_id=%s %s",
-        claim.user_id,
-        usage.snapshot().summary(),
     )
 
 

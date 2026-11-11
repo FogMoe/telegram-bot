@@ -19,7 +19,7 @@ from fogmoe_telegram_bot.core import config
 from fogmoe_telegram_bot.core.deadline import Deadline, DeadlineExceeded
 
 from .errors import is_retryable_completion_error
-from .litellm_client import create_chat_completion
+from .litellm_client import create_chat_completion, response_token_counts
 from .prompts import compose_system_prompt
 from .tool_loop_deadline import (
     close_interrupted_round,
@@ -171,6 +171,9 @@ async def run_tool_loop(
         return list(filtered_messages[turn_start:])
 
     tool_logs: list[ToolLog] = []
+    # 本次循环的模型调用次数与 token 合计（输入、其中命中缓存的、输出），结束时写一行日志。
+    ai_calls = 0
+    token_totals = [0, 0, 0]
     request_timeout: float | None = (
         config.AI_CHAT_COMPLETION_TIMEOUT_SECONDS
         if completion_timeout is None
@@ -189,8 +192,9 @@ async def run_tool_loop(
             "context_hard_limit_ratio": context_hard_limit_ratio,
             "timeout": call_timeout,
         }
+        nonlocal ai_calls
         async with deadline_guard(deadline):
-            return await _create_chat_completion_with_post_tool_retries(
+            response = await _create_chat_completion_with_post_tool_retries(
                 provider,
                 model,
                 messages=filtered_messages,
@@ -200,6 +204,10 @@ async def run_tool_loop(
                 tools=tools,
                 tool_choice=tool_choice,
             )
+        ai_calls += 1
+        for index, count in enumerate(response_token_counts(response)):
+            token_totals[index] += count
+        return response
 
     # 到期时正在等待的步骤，决定提示和是否把这次计为 provider 失败。
     phase = "model"
@@ -445,3 +453,14 @@ async def run_tool_loop(
                 turn_messages=snapshot_turn_messages(),
             ) from exc
         raise
+    finally:
+        logging.info(
+            "%s tool loop finished: model=%s user_id=%s ai_calls=%s in_tokens=%s "
+            "cached_tokens=%s out_tokens=%s tool_calls=%s",
+            provider_name,
+            model,
+            (tool_context or {}).get("user_id"),
+            ai_calls,
+            *token_totals,
+            sum(1 for log in tool_logs if log.get("type") == "assistant_tool_call"),
+        )

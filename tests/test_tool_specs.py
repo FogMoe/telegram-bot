@@ -34,9 +34,6 @@ from fogmoe_telegram_bot.features.ai.tools.rate_limit import (
     UserSessionGate,
     reset_all,
 )
-from fogmoe_telegram_bot.features.ai.usage import (
-    DEFAULT_BILLED_TOOL_CATEGORIES,
-)
 
 
 def _tool_names(tools: list[dict]) -> list[str]:
@@ -58,13 +55,6 @@ def test_tool_specs_is_single_source_of_truth_for_all_20_tools():
     assert set(idle_followup.IDLE_RECAP_TOOL_HANDLERS) == set(recap_names)
     assert _tool_names(summary.SUMMARY_TOOLS) == summary_names
     assert set(summary.SUMMARY_TOOL_HANDLERS) == set(summary_names)
-
-    spec_billed = {
-        spec.name: spec.billing_category
-        for spec in TOOL_SPECS
-        if spec.billing_category is not None
-    }
-    assert spec_billed == dict(DEFAULT_BILLED_TOOL_CATEGORIES)
 
 
 def test_loop_and_delivery_modules_have_no_hardcoded_media_tool_branches():

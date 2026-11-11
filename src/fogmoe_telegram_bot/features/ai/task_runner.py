@@ -40,7 +40,6 @@ from .provider_resolver import (
     missing_capability_for_task,
 )
 from .types import PartialAIResponseError, TurnDeadlineError
-from .usage import ai_usage_scope
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,72 +164,71 @@ async def run_with_fallback[T](
     从头重跑。全部失败或被跳过时抛 `AllProvidersFailedError`。
     """
     last_error: Exception | None = None
-    with ai_usage_scope(task=task):
-        for name in get_provider_order_for_task(task):
+    for name in get_provider_order_for_task(task):
+        _raise_if_deadline_expired(task, deadline)
+        spec = ai_providers.lookup(name)
+        if spec is None:
+            logging.warning("AI task %s skipped unknown provider %s", task, name)
+            last_error = RuntimeError(f"Unsupported AI provider: {name}")
+            continue
+        missing_capability = missing_capability_for_task(spec.name, task)
+        if missing_capability:
+            logging.warning(
+                "AI task %s skipped provider %s: no %s support",
+                task,
+                spec.name,
+                missing_capability,
+            )
+            continue
+        if circuit is not None and circuit.is_open(spec.name):
+            logging.warning("AI task %s skipped provider %s: circuit open", task, spec.name)
+            continue
+        models = get_models_for_task(spec.name, task)
+        if not models:
+            logging.warning("AI task %s skipped provider %s: no model configured", task, spec.name)
+            continue
+
+        for index, model in enumerate(models):
             _raise_if_deadline_expired(task, deadline)
-            spec = ai_providers.lookup(name)
-            if spec is None:
-                logging.warning("AI task %s skipped unknown provider %s", task, name)
-                last_error = RuntimeError(f"Unsupported AI provider: {name}")
-                continue
-            missing_capability = missing_capability_for_task(spec.name, task)
-            if missing_capability:
-                logging.warning(
-                    "AI task %s skipped provider %s: no %s support",
-                    task,
-                    spec.name,
-                    missing_capability,
-                )
-                continue
-            if circuit is not None and circuit.is_open(spec.name):
-                logging.warning("AI task %s skipped provider %s: circuit open", task, spec.name)
-                continue
-            models = get_models_for_task(spec.name, task)
-            if not models:
-                logging.warning("AI task %s skipped provider %s: no model configured", task, spec.name)
-                continue
+            error: Exception
+            try:
+                result = await attempt(Candidate(spec, model))
+            except PartialAIResponseError as exc:
+                if (
+                    not tools_are_read_only
+                    or isinstance(exc, TurnDeadlineError)
+                    or find_context_budget_error(exc) is not None
+                ):
+                    raise
+                error = exc
+            except Exception as exc:
+                if find_context_budget_error(exc) is not None:
+                    raise
+                error = _as_safety_block(spec, exc) or exc
+                last_model = index == len(models) - 1
+                if (
+                    isinstance(error, SafetyBlockError)
+                    and last_model
+                    and not spec.safety_blocks_fall_through
+                ):
+                    raise error
+            else:
+                if circuit is not None:
+                    circuit.record_success(spec.name)
+                return result
+            logging.warning(
+                "AI task %s failed via provider=%s model=%s: %s",
+                task,
+                spec.name,
+                model,
+                error,
+            )
+            last_error = error
 
-            for index, model in enumerate(models):
-                _raise_if_deadline_expired(task, deadline)
-                error: Exception
-                try:
-                    result = await attempt(Candidate(spec, model))
-                except PartialAIResponseError as exc:
-                    if (
-                        not tools_are_read_only
-                        or isinstance(exc, TurnDeadlineError)
-                        or find_context_budget_error(exc) is not None
-                    ):
-                        raise
-                    error = exc
-                except Exception as exc:
-                    if find_context_budget_error(exc) is not None:
-                        raise
-                    error = _as_safety_block(spec, exc) or exc
-                    last_model = index == len(models) - 1
-                    if (
-                        isinstance(error, SafetyBlockError)
-                        and last_model
-                        and not spec.safety_blocks_fall_through
-                    ):
-                        raise error
-                else:
-                    if circuit is not None:
-                        circuit.record_success(spec.name)
-                    return result
-                logging.warning(
-                    "AI task %s failed via provider=%s model=%s: %s",
-                    task,
-                    spec.name,
-                    model,
-                    error,
-                )
-                last_error = error
+        if circuit is not None and not isinstance(last_error, SafetyBlockError):
+            circuit.record_failure(spec.name)
 
-            if circuit is not None and not isinstance(last_error, SafetyBlockError):
-                circuit.record_failure(spec.name)
-
-        raise AllProvidersFailedError(task, last_error) from last_error
+    raise AllProvidersFailedError(task, last_error) from last_error
 
 
 async def run_ai_task(

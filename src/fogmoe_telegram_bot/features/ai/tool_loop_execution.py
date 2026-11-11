@@ -20,9 +20,8 @@ from fogmoe_telegram_bot.core.redaction import describe_exception, log_exception
 
 from .tool_loop_deadline import deadline_guard
 from .tool_loop_messages import json_safe
-from .tools import AI_TOOL_ARG_MODELS, get_media_tool_spec, get_tool_spec
+from .tools import AI_TOOL_ARG_MODELS, get_media_tool_spec
 from .tools.dispatch import is_inline_tool
-from .usage import record_tool_execution_usage
 
 logger = logging.getLogger(__name__)
 
@@ -125,15 +124,8 @@ def _tool_label(function_name: str, handlers: Mapping[str, Any]) -> str:
 def _record_tool_metrics(label: str, started: float, result: Any) -> None:
     metrics.counter("tool.calls", tool=label).inc()
     metrics.histogram("tool.seconds", tool=label).observe(time.perf_counter() - started)
-    failed = bool(isinstance(result, dict) and result.get("error"))
-    if failed:
+    if isinstance(result, dict) and result.get("error"):
         metrics.counter("tool.failures", tool=label).inc()
-    spec = get_tool_spec(label)
-    record_tool_execution_usage(
-        label,
-        billing_category=spec.billing_category if spec is not None else None,
-        failed=failed,
-    )
 
 
 async def execute_tool_call(
