@@ -58,7 +58,7 @@ provider 特有的协议要求由什么承载。权威定义是代码，本页�
 - **安全拦截**：`translates_safety_blocks` 让 `run_with_fallback` 把「被安全策略拦截」的错误转成 `SafetyBlockError`：
   还有备用模型就换模型；模型用完时，`safety_blocks_fall_through` 让它换下一个 provider（不计熔断），
   没有声明的 provider 直接抛出。执行过工具或发出过可见内容之后的拦截按「工具之后的失败」处理，不再重试。
-- **隐藏工具（`skip_tools`）**：主聊天里对该 provider 不暴露的工具名。
+- **隐藏工具（`skip_tools`）**：主聊天里对该 provider 不暴露的工具名（`tests/test_ai_provider_registry.py` 校验名字都存在于 `tools/specs.py` 的 `TOOL_SPECS`）。若模型仍在响应里调用了未暴露的工具，工具循环仍返回一一配对的 `tool_not_supported` 结果，保证历史配对不断裂。
 - **拆分的 choices（`merges_split_tool_call_choices`）**：某些端点把文本与工具调用拆到不同 choices，
   工具循环保留 choice 0 的文本并读取后续 choice 的工具调用。这是对上游缺陷
   [BerriAI/litellm#35444](https://github.com/BerriAI/litellm/issues/35444) 的临时兼容。
@@ -86,8 +86,8 @@ provider 特有的协议要求由什么承载。权威定义是代码，本页�
    整轮截止时间到期、执行过工具或发出过可见内容之后的失败（`PartialAIResponseError`）。
    摘要与空闲回顾的工具都是只读的（`tools_are_read_only`），工具之后的失败仍然换下一个模型从头重跑。
 4. 安全拦截按上一节处理；其余失败换下一个模型，模型用完换下一个 provider。
-5. 传了熔断的任务（目前只有主聊天）在一个 provider 的模型都以普通失败结束时记一次熔断失败，成功时清零；
-   上下文超限、工具之后的失败与安全拦截不计入。
+5. 传了熔断的任务（目前只有主聊天 `CHAT_CIRCUIT`）在一个 provider 的模型都以普通失败结束时记一次熔断失败，成功时清零；
+   上下文超限、工具之后的失败与安全拦截不计入。摘要、空闲回顾、翻译、识图等低频或后台任务有各自的重试策略，故意不与交互式主聊天共用 `CHAT_CIRCUIT`，避免偶发的后台长文本超时把主聊天的活跃 provider 熔断掉。
 6. 传了整轮截止时间的任务（目前只有主聊天）在看每个 provider（包括要跳过的）、试每个模型之前检查它，
    到期就抛 `TurnDeadlineError`（`phase=fallback`），不再尝试，也不记熔断失败。
 
@@ -103,8 +103,10 @@ provider 特有的协议要求由什么承载。权威定义是代码，本页�
 1. 消息含图片而该 provider 不支持视觉（`chat_service_supports_vision`）时，改用纯文本历史
    （`text_fallback_messages`，没有则去掉图片）。
 2. 在一份新的工具请求上下文里（`tool_request_scope`）直接 `await` 工具循环（原生 async，没有线程池），
-   带上声明里的展示名与 `skip_tools`，结束后清理沙箱（清理失败只记日志，不影响这次的结果）。
+   通过 `tools/specs.py` 的 `resolve_agent_tools` 按当前入口、聊天类型、provider 的 `skip_tools` 与配置完备性筛选本次暴露的工具，结束后清理沙箱（清理失败只记日志，不影响这次的结果）。
    传入的整轮 `Deadline` 一路带到工具循环，等待模型时到期给这个 provider 记一次熔断失败。规则见 [runtime.md](runtime.md)。
+
+每次 LiteLLM 调用完成时，`litellm_client` 经 `features/ai/usage.py` 记录输入/缓存/输出 token，并结合 `AI_MODEL_PRICING` 累积微美元成本到当前 `ai_usage_scope` 与进程内指标。
 
 执行结果转成固定的提示文案：截止时间到期返回 `TURN_DEADLINE_ERROR_MESSAGE`（进程停止时是 `TURN_SHUTDOWN_ERROR_MESSAGE`）
 与已有的工具日志；上下文超限返回 `CONTEXT_BUDGET_ERROR_MESSAGE`；执行过工具之后的失败返回

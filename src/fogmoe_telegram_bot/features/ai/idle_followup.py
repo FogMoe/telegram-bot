@@ -33,7 +33,6 @@ from fogmoe_telegram_bot.features.ai.conversation_locks import get_conversation_
 from fogmoe_telegram_bot.features.ai.history_writer import write_history
 from fogmoe_telegram_bot.features.ai.job_claims import ClaimLostError
 from fogmoe_telegram_bot.features.ai.outbound import (
-    finish_reply,
     send_generated_media,
     send_private_reply,
 )
@@ -56,7 +55,13 @@ from fogmoe_telegram_bot.features.ai.tools import (
     build_tool_context,
     tool_request_scope,
 )
-from fogmoe_telegram_bot.features.ai.types import LoopResult, has_side_effects
+from fogmoe_telegram_bot.features.ai.turn_pipeline import (
+    IDLE_FOLLOWUP_ENTRY_POLICY,
+    NoSideEffectsRetryError,
+    PreparedModelTurn,
+    execute_post_input_turn,
+    prepare_model_turn,
+)
 from fogmoe_telegram_bot.features.ai.usage import UsageAccumulator, ai_usage_scope
 from fogmoe_telegram_bot.features.ai.user_state import build_user_state_prompt
 
@@ -136,8 +141,7 @@ class _IdleRun:
         self.abort_event = threading.Event()
 
 
-class _NoSideEffectsError(RuntimeError):
-    """主模型失败且没有执行过任何工具：可以安全地重试。"""
+_NoSideEffectsError = NoSideEffectsRetryError
 
 
 def calculate_ttl_seconds(
@@ -984,72 +988,69 @@ async def _run_claim_locked(
     ai_messages.append({"role": "user", "content": recap_event})
     # 主模型带完整工具集：从这里开始可能产生副作用，崩溃后不再重跑整轮。
     await _enter_stage(run, job_claims.STAGE_GENERATING)
-    loop_result = LoopResult.coerce(
-        await ai_chat.get_ai_response(
-            ai_messages,
-            claim.user_id,
-            tool_context=build_tool_context(
-                user_id=claim.user_id,
-                user_state_prompt=user_state_prompt,
-                abort_event=run.abort_event,
+
+    def _persist_kwargs_for(prepared: PreparedModelTurn) -> dict[str, Any]:
+        if "turn_messages" in inspect.signature(_persist_completed_turn).parameters:
+            return {"turn_messages": prepared.turn_messages}
+        return {}
+
+    async def _before_persist_and_deliver(prepared: PreparedModelTurn) -> bool:
+        if not await _claim_is_current(claim):
+            if prepared.tool_logs:
+                # 用户已经回来了，跟进不再发送；已经执行过的工具仍要写进历史。
+                await _persist_completed_turn(
+                    claim,
+                    recap_event,
+                    "",
+                    prepared.tool_logs,
+                    context,
+                    **_persist_kwargs_for(prepared),
+                )
+            return False
+        # 回复文本与工具结果此时只在内存里；进入 delivering 后崩溃按结果未知处理，不重发。
+        await _enter_stage(run, job_claims.STAGE_DELIVERING)
+        return True
+
+    outcome = await execute_post_input_turn(
+        policy=IDLE_FOLLOWUP_ENTRY_POLICY,
+        run_model_step=lambda: prepare_model_turn(
+            policy=IDLE_FOLLOWUP_ENTRY_POLICY,
+            invoke_model=lambda _visible: ai_chat.get_ai_response(
+                ai_messages,
+                claim.user_id,
+                tool_context=build_tool_context(
+                    user_id=claim.user_id,
+                    user_state_prompt=user_state_prompt,
+                    abort_event=run.abort_event,
+                ),
             ),
+            normalize_stickers=lambda text: normalize_sticker_directives(text, logger=logger),
+            classify_error_text=ai_chat.runtime_error_cause,
+            logger=logger,
+            user_id=claim.user_id,
         ),
-        classify_text=ai_chat.runtime_error_cause,
-    )
-    tool_logs = loop_result.tool_logs
-    reply = await finish_reply(
-        loop_result.text,
-        normalize_stickers=lambda text: normalize_sticker_directives(text, logger=logger),
-        status=loop_result.status,
-    )
-    assistant_message = reply.text
-    if reply.runtime_error:
-        if not has_side_effects(tool_logs):
-            raise _NoSideEffectsError(
-                f"main AI failed during idle follow-up: {reply.runtime_error}"
-            )
-        logger.warning(
-            "Idle follow-up main AI failed after tool execution: user_id=%s cause=%s",
+        before_persist_and_deliver=_before_persist_and_deliver,
+        persist_output=lambda prepared: _persist_completed_turn(
+            claim,
+            recap_event,
+            prepared.text,
+            prepared.tool_logs,
+            context,
+            **_persist_kwargs_for(prepared),
+        ),
+        deliver_output=lambda prepared: _send_followup_outputs(
             claim.user_id,
-            reply.runtime_error,
-        )
-        assistant_message = ""
-
-    persist_kwargs = (
-        {"turn_messages": loop_result.turn_messages}
-        if "turn_messages" in inspect.signature(_persist_completed_turn).parameters
-        else {}
+            prepared.text,
+            prepared.tool_logs,
+            context,
+        ),
+        finalize_turn=lambda _prepared, delivery_error: _mark_claim_fired(
+            claim,
+            error=delivery_error,
+        ),
     )
-    if not await _claim_is_current(claim):
-        if tool_logs:
-            # 用户已经回来了，跟进不再发送；已经执行过的工具仍要写进历史。
-            await _persist_completed_turn(
-                claim,
-                recap_event,
-                "",
-                tool_logs,
-                context,
-                **persist_kwargs,
-            )
+    if not outcome.delivered:
         return
-
-    # 回复文本与工具结果此时只在内存里；进入 delivering 后崩溃按结果未知处理，不重发。
-    await _enter_stage(run, job_claims.STAGE_DELIVERING)
-    await _persist_completed_turn(
-        claim,
-        recap_event,
-        assistant_message,
-        tool_logs,
-        context,
-        **persist_kwargs,
-    )
-    delivery_error = await _send_followup_outputs(
-        claim.user_id,
-        assistant_message,
-        tool_logs,
-        context,
-    )
-    await _mark_claim_fired(claim, error=delivery_error)
     logger.info(
         "idle followup turn finished: user_id=%s %s",
         claim.user_id,

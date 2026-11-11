@@ -65,7 +65,7 @@
 
 「按失败收尾」：一次性任务记为 `failed`，空闲跟进记为 `fired`，原因写进 `error` / `last_error`；循环任务的处理见下文。
 
-**为什么 `generating` 不重跑整轮。** 工具结果只在 `tool_runner` 的内存里累积，整轮结束后才写入对话历史（`tool_logs_to_record_entries`），中途没有可以恢复的点。崩溃之后无法知道哪些工具已经完成，重跑会重放有副作用的工具（写日记、建任务、生图、命令）和已经发出的消息。所以不从中间恢复，也不重跑整轮。
+**为什么 `generating` 不重跑整轮。** 工具结果只在 `tool_runner` 的内存里累积，整轮结束后才由收尾流水线（`turn_pipeline.execute_post_input_turn`）经 `turn_record_entries` 写入对话历史，中途没有可以恢复的点。崩溃之后无法知道哪些工具已经完成，重跑会重放有副作用的工具（写日记、建任务、生图、命令）和已经发出的消息。所以不从中间恢复，也不重跑整轮。
 
 **确认完成与结果未知的区别。** 只有终结事务提交了，才算确认完成（`completed`）。任何在 `generating` 或 `delivering` 阶段被回收的 claim 都记为 `unknown`，包括 Telegram 已经接受了消息、本地还没来得及记录的情况。
 

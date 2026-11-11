@@ -230,10 +230,11 @@ runtime metrics (last 300s): admission.admitted=118 admission.rejected{reason=qu
 | 超时次数 | `turn.deadline_hits{reason=deadline\|shutdown, phase=charge\|context\|prepare\|history_in\|model\|fallback\|tool\|delivery\|history_out}`、`provider.timeouts{provider}`（单次调用超时） |
 | 过载 | `admission.rejected{reason=...}`、`admission.admitted` |
 | provider 失败 | `provider.failures{provider}`、`provider.calls{provider}` |
-| 工具失败 | `tool.failures{tool}`（执行异常，或返回了 `error`）、`tool.calls{tool}` |
-| 一轮的结局 | `turn.finished{status=...}`（`TurnStatus` 的取值） |
+| AI 模型与成本计量 | `ai.calls{entry,task,provider}`、`ai.input_tokens{entry,task,provider}`、`ai.cached_input_tokens{entry,task,provider}`、`ai.output_tokens{entry,task,provider}`、`ai.cost_microusd{entry,task,provider}`（单价由 `AI_MODEL_PRICING` 给出）；TypeSafe 垃圾识别另记 `ai.typesafe_calls{entry,task}` 与 `ai.typesafe_input_tokens{entry,task}` |
+| 工具失败与外部计费 | `tool.failures{tool}`（执行异常，或返回了 `error`）、`tool.calls{tool}`、`tool.billed_calls{entry,category,tool}`（SerpApi、Jina、Judge0、E2B、生图、语音等外部资源调用） |
+| 一轮的结局 | `turn.finished{status=...}`（`TurnStatus` 的取值）；`ConversationTurn`、`scheduler`、`idle_followup` 与 `summary` 的完成日志均附带本轮 `UsageAccumulator` 的 token、微美元成本与计费工具计数汇总 |
 
-标签只用有限集合：provider 名、注册过的工具名（模型编造的工具名记为 `unknown`）、拒绝原因、阶段。**不要把用户 id 放进标签。**
+标签只用有限集合：入口名、任务名、provider 名、工具计费分类、注册过的工具名（模型编造的工具名记为 `unknown`）、拒绝原因、阶段。**不要把用户 id 或动态模型名放进指标标签。**
 
 ## 基准
 

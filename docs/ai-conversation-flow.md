@@ -47,10 +47,10 @@ uv run python scripts/gen_ai_flow_doc.py
 | 了解用户 | `_load_context`、`user_state_prompt`、`format_user_state_prompt` | [ai/user_state.py](../src/fogmoe_telegram_bot/features/ai/user_state.py)、[core/prompt_utils.py](../src/fogmoe_telegram_bot/core/prompt_utils.py) |
 | 看图（历史里只存描述，原图通过 `runtime_replacements` 只给这一次请求） | `_prepare_inputs` | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py) |
 | 记下用户的话 | `_record_input` → `insert_records`、`get_history` | [conversation/turn_services.py](../src/fogmoe_telegram_bot/features/conversation/turn_services.py) |
-| 思考与动手 | `_run_model` → `run_model`（`ModelRequest` / `ModelResponse`）；工具上下文 `build_tool_context`，回复整理 `finish_reply` | 见第 3 节；[ai/tools/context.py](../src/fogmoe_telegram_bot/features/ai/tools/context.py)、[ai/outbound.py](../src/fogmoe_telegram_bot/features/ai/outbound.py) |
-| 记下做了什么 | `_record_output`、`tool_logs_to_record_entries`、`reply_record_entries` | [ai/tool_history.py](../src/fogmoe_telegram_bot/features/ai/tool_history.py) |
+| 思考与动手 | `_run_model` → `prepare_model_turn` → `run_model`（`ModelRequest` / `ModelResponse`）；工具上下文 `build_tool_context`，回复整理 `finish_reply` | 见第 3 节；[ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)、[ai/tools/context.py](../src/fogmoe_telegram_bot/features/ai/tools/context.py)、[ai/outbound.py](../src/fogmoe_telegram_bot/features/ai/outbound.py) |
+| 记下做了什么 | `execute_post_input_turn` → `_record_output`、`turn_record_entries`、`reply_record_entries` | [ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)、[ai/tool_history.py](../src/fogmoe_telegram_bot/features/ai/tool_history.py) |
 | 发出回复 | `_deliver`、`_deliver_messages` | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py) |
-| 收尾 | `_finalize`、`archive_completed_clear`、`flush_events` | [conversation/turn_services.py](../src/fogmoe_telegram_bot/features/conversation/turn_services.py) |
+| 收尾 | `_finalize`、`USER_ENTRY_POLICY`、`archive_completed_clear`、`flush_events` | [ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)、[conversation/turn_services.py](../src/fogmoe_telegram_bot/features/conversation/turn_services.py) |
 | 每次写入历史后：打包发送被淘汰的归档、容量提示、溢出时生成摘要 | `_persist_records` | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py) |
 
 ## 3. 思考与动手
@@ -72,7 +72,7 @@ uv run python scripts/gen_ai_flow_doc.py
 
 ## 4. 工具箱
 
-主聊天用 `OPENAI_TOOLS` 与 `AI_TOOL_HANDLERS`（[ai/tools/schemas.py](../src/fogmoe_telegram_bot/features/ai/tools/schemas.py)、
+所有工具在 `TOOL_SPECS`（[ai/tools/specs.py](../src/fogmoe_telegram_bot/features/ai/tools/specs.py)）单一声明，每次运行由 `resolve_agent_tools` 按入口、聊天类型、provider 的 `skip_tools` 与配置完备性筛出本次可见的 schema 与处理函数。兼容层导出的主聊天集合是 `OPENAI_TOOLS` 与 `AI_TOOL_HANDLERS`（[ai/tools/schemas.py](../src/fogmoe_telegram_bot/features/ai/tools/schemas.py)、
 [ai/tools/registry.py](../src/fogmoe_telegram_bot/features/ai/tools/registry.py)）；空闲回顾用 `IDLE_RECAP_TOOLS`，
 摘要助手用 `SUMMARY_TOOLS`。参数模型在 `AI_TOOL_ARG_MODELS`，工具读取请求上下文用 `get_tool_request_context`。
 加工具的步骤见 [ai/tools/README.md](../src/fogmoe_telegram_bot/features/ai/tools/README.md)，描述怎么写见
@@ -124,8 +124,8 @@ uv run python scripts/gen_ai_flow_doc.py
 | `user` | bot 自己发出的消息、命令回复、按钮事件（`origin` 是 `command_handler` 或 `bot_automation`） | `HistoryTrackingExtBot`、`flush_pending_events` |
 | `user` | 历史状态事件 `origin="history_state"`：`new_session`、`near_limit`、`compressed`（之后回填 `<summary>`） | `_build_history_state_event` |
 | `user` | 余额状态事件 `origin="coin_service"`：`suspended`、`resumed` | `_build_coin_service_state_event` |
-| `assistant` | 回复，以及伴随工具调用的可见文字（都已脱敏） | `_record_output`、`tool_logs_to_record_entries` |
-| `assistant` + `tool` | 带 `tool_calls` 的 assistant 消息与对应的 `tool` 结果，`tool_call_id` 一一配对（结果已脱敏） | `tool_logs_to_record_entries` |
+| `assistant` | 回复，以及伴随工具调用的可见文字（都已脱敏） | `_record_output`、`turn_record_entries` |
+| `assistant` + `tool` | 带 `tool_calls` 的 assistant 消息与对应的 `tool` 结果，`tool_call_id` 一一配对（结果已脱敏） | `turn_record_entries` |
 
 一次请求的 messages（示意，字段与格式以代码为准；system 消息只在请求里，不写入历史）：
 
@@ -173,8 +173,8 @@ uv run python scripts/gen_ai_flow_doc.py
 | 空闲回顾：`_run_recap_agent` 写回顾（`idle_recap` 事件），主模型再写跟进消息 | 回顾：`IDLE_RECAP_TOOLS`；跟进：主聊天全套 | [ai/idle_followup.py](../src/fogmoe_telegram_bot/features/ai/idle_followup.py) |
 | 摘要助手 `_run_summary_agent` | `search_prior_context` | [ai/summary.py](../src/fogmoe_telegram_bot/features/ai/summary.py) |
 
-定时消息和空闲跟进的主模型与一轮对话共用同样的步骤：用户状态提示词 `build_user_state_prompt`、工具上下文
-`build_tool_context`（没有聊天字段，带撤销信号）、回复整理 `finish_reply`；历史经 `write_history` 写入
+定时消息和空闲跟进的主模型与一轮对话共用同一套收尾流水线（`execute_post_input_turn` 与 `prepare_model_turn`，策略分别是 `SCHEDULE_ENTRY_POLICY` 和 `IDLE_FOLLOWUP_ENTRY_POLICY`，见 [ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)）：用户状态提示词 `build_user_state_prompt`、工具上下文
+`build_tool_context`（没有聊天字段，带撤销信号；`resolve_agent_tools` 自动隐藏群聊工具与代执行命令）、回复整理 `finish_reply`；历史经 `write_history` 写入
 （[ai/history_writer.py](../src/fogmoe_telegram_bot/features/ai/history_writer.py)），回复经 `send_private_reply` 发出。
 claim、租约与崩溃恢复见 [job-recovery.md](job-recovery.md)。
 

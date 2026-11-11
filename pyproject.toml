@@ -85,6 +85,7 @@ files = [
     "src/fogmoe_telegram_bot/features/ai/user_state.py",
     "src/fogmoe_telegram_bot/features/ai/outbound.py",
     "src/fogmoe_telegram_bot/features/ai/history_writer.py",
+    "src/fogmoe_telegram_bot/features/ai/turn_pipeline.py",
     "src/fogmoe_telegram_bot/features/ai/tools/context.py",
     "src/fogmoe_telegram_bot/features/ai/tools/rate_limit.py",
     "src/fogmoe_telegram_bot/features/ai/tools/models.py",
