@@ -7,13 +7,22 @@
   Telegram 事件；媒体工具只留状态、错误与一句说明，内部结果记在日志的 `internal_result` 里供投递阶段发送。
 """
 
+from __future__ import annotations
+
 import logging
 from typing import Any, NamedTuple
 
 from fogmoe_telegram_bot.core.deadline import Deadline, DeadlineExceeded
 
 from .tool_loop_deadline import close_interrupted_round, deadline_guard, tool_result_log
-from .types import TOOL_CONTEXT_MESSAGES_KEY, AIResponse, ToolLog, VisibleContentHandler
+from .tool_loop_messages import tool_result_json
+from .types import (
+    TOOL_CONTEXT_MESSAGES_KEY,
+    LoopResult,
+    LoopStatus,
+    ToolLog,
+    VisibleContentSink,
+)
 
 _MEDIA_DELIVERY_UNKNOWN_MESSAGES = {
     "generate_image": (
@@ -31,10 +40,10 @@ _MEDIA_DELIVERY_UNKNOWN_MESSAGES = {
 
 def public_tool_result(
     tool_name: str,
-    tool_result: dict[str, Any],
+    tool_result: Any,
     *,
     media_sent: bool = False,
-) -> dict[str, Any]:
+) -> Any:
     if isinstance(tool_result, dict) and TOOL_CONTEXT_MESSAGES_KEY in tool_result:
         tool_result = dict(tool_result)
         tool_result.pop(TOOL_CONTEXT_MESSAGES_KEY, None)
@@ -92,9 +101,9 @@ def context_messages_from_tool_result(tool_result: Any) -> list[dict[str, str]]:
 
 async def send_media_result_immediately(
     *,
-    visible_content_handler: VisibleContentHandler | None,
+    visible_content_handler: VisibleContentSink | None,
     tool_name: str,
-    tool_result: dict[str, Any],
+    tool_result: Any,
     provider_name: str,
     deadline: Deadline | None = None,
 ) -> list[Any]:
@@ -135,21 +144,32 @@ def close_round_after_media_deadline(
     function_args: dict[str, Any],
     tool_call_id: Any,
     internal_tool_result: dict[str, Any],
+    filtered_messages: list[dict[str, Any]] | None = None,
 ) -> None:
     """`call_index` 的工具已经执行完，是投递它生成的媒体时到期。
 
     先记下这次的结果（是否送达未知，投递阶段也不会再发），再给后面没来得及运行的调用补「未执行」。
     下一轮因此知道媒体已经生成，历史也仍然配对。
     """
+    public_result = {
+        **public_tool_result(function_name, internal_tool_result),
+        "message": _MEDIA_DELIVERY_UNKNOWN_MESSAGES[function_name],
+    }
+    if filtered_messages is not None:
+        filtered_messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": function_name,
+                "content": tool_result_json(public_result),
+            }
+        )
     tool_logs.append(
         tool_result_log(
             function_name,
             function_args,
             tool_call_id,
-            {
-                **public_tool_result(function_name, internal_tool_result),
-                "message": _MEDIA_DELIVERY_UNKNOWN_MESSAGES[function_name],
-            },
+            public_result,
             internal_tool_result,
             sent_media_messages=[],
             media_delivery_unknown=True,
@@ -166,6 +186,7 @@ def close_round_after_media_deadline(
         reason,
         round_context_messages,
         running=False,
+        filtered_messages=filtered_messages,
     )
 
 
@@ -174,7 +195,7 @@ class VisibleContentResult(NamedTuple):
     completed: bool
 
 
-def _last_visible_content(handler: VisibleContentHandler) -> str:
+def _last_visible_content(handler: VisibleContentSink) -> str:
     visible_events = getattr(handler, "visible_events", None)
     if callable(visible_events):
         try:
@@ -200,7 +221,7 @@ def _last_visible_content(handler: VisibleContentHandler) -> str:
 
 
 async def emit_visible_content(
-    handler: VisibleContentHandler,
+    handler: VisibleContentSink,
     content: str,
     *,
     provider_name: str,
@@ -239,10 +260,18 @@ async def return_final_text_response(
     *,
     content_text: str,
     tool_logs: list[ToolLog],
-    visible_content_handler: VisibleContentHandler | None,
+    visible_content_handler: VisibleContentSink | None,
     provider_name: str,
     deadline: Deadline | None = None,
-) -> AIResponse:
+    status: LoopStatus = LoopStatus.COMPLETED,
+    filtered_messages: list[dict[str, Any]] | None = None,
+    turn_start: int = 0,
+) -> LoopResult:
+    def snapshot_messages() -> list[dict[str, Any]]:
+        if filtered_messages is None:
+            return []
+        return list(filtered_messages[turn_start:])
+
     if content_text.strip():
         if visible_content_handler:
             visible_result = await emit_visible_content(
@@ -252,15 +281,46 @@ async def return_final_text_response(
                 deadline=deadline,
             )
             if visible_result.content:
-                tool_logs.append({
-                    "type": "assistant_visible",
-                    "content": visible_result.content,
-                })
-                return "", tool_logs
+                tool_logs.append(
+                    {
+                        "type": "assistant_visible",
+                        "content": visible_result.content,
+                    }
+                )
+                if filtered_messages is not None:
+                    filtered_messages.append(
+                        {"role": "assistant", "content": visible_result.content}
+                    )
+                return LoopResult(
+                    text="",
+                    tool_logs=tool_logs,
+                    status=status,
+                    turn_messages=snapshot_messages(),
+                )
             if not visible_result.completed:
-                return "", tool_logs
-            return content_text, tool_logs
-        return content_text, tool_logs
+                return LoopResult(
+                    text="",
+                    tool_logs=tool_logs,
+                    status=status,
+                    turn_messages=snapshot_messages(),
+                )
+            return LoopResult(
+                text=content_text,
+                tool_logs=tool_logs,
+                status=status,
+                turn_messages=snapshot_messages(),
+            )
+        return LoopResult(
+            text=content_text,
+            tool_logs=tool_logs,
+            status=status,
+            turn_messages=snapshot_messages(),
+        )
     if tool_logs:
         logging.warning("%s 工具调用后最终回复为空。", provider_name)
-    return content_text, tool_logs
+    return LoopResult(
+        text=content_text,
+        tool_logs=tool_logs,
+        status=status,
+        turn_messages=snapshot_messages(),
+    )

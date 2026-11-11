@@ -38,9 +38,10 @@ from fogmoe_telegram_bot.features.ai.sticker_sender import normalize_sticker_dir
 from fogmoe_telegram_bot.features.ai.telegram_visible_sender import TelegramVisibleContentHandler
 from fogmoe_telegram_bot.features.ai.tool_history import (
     reply_record_entries,
-    tool_logs_to_record_entries,
+    turn_record_entries,
 )
 from fogmoe_telegram_bot.features.ai.tools.context import build_tool_context
+from fogmoe_telegram_bot.features.ai.types import LoopResult
 from fogmoe_telegram_bot.features.ai.usage import UsageAccumulator, ai_usage_scope
 from fogmoe_telegram_bot.features.ai.user_state import build_user_state_prompt
 
@@ -704,16 +705,22 @@ async def _process_schedule_task_locked(
     )
 
     with suppress_telegram_history():
-        assistant_message, tool_logs = await ai_chat.get_ai_response(
-            list(chat_history),
-            user_id,
-            tool_context=tool_context,
-            visible_content_handler=visible_content_handler,
+        loop_result = LoopResult.coerce(
+            await ai_chat.get_ai_response(
+                list(chat_history),
+                user_id,
+                tool_context=tool_context,
+                visible_content_handler=visible_content_handler,
+            ),
+            classify_text=ai_chat.runtime_error_cause,
         )
+    assistant_message = loop_result.text
+    tool_logs = loop_result.tool_logs
     sent_messages: list = list(visible_content_handler.sent_messages)
     reply = await finish_reply(
         assistant_message,
         normalize_stickers=lambda text: normalize_sticker_directives(text, logger=logger),
+        status=loop_result.status,
     )
 
     # 工具结果与回复文本此时只存在于内存里，没有安全的中间状态可以恢复：
@@ -722,7 +729,7 @@ async def _process_schedule_task_locked(
 
     await write_history(
         user_id,
-        tool_logs_to_record_entries(tool_logs),
+        turn_record_entries(loop_result.turn_messages, tool_logs),
         bot=context.bot,
         logger=logger,
     )

@@ -670,6 +670,54 @@ class TestMedia:
         assert world.calls("reply_text")[0][2] == turn.MEDIA_FAILED_TEXT
         assert "insert_records" not in world.names()
 
+    def test_vision_result_failure_omits_description_in_history_and_keeps_multimodal_image(
+        self, monkeypatch
+    ):
+        from fogmoe_telegram_bot.features.ai.tasks import vision
+
+        async def fail_ai_task(*args, **kwargs):
+            raise ConnectionError("vision provider unreachable")
+
+        monkeypatch.setattr(vision, "run_ai_task", fail_ai_task)
+        vision_res = asyncio.run(vision.analyze_image("aGVsbG8="))
+        assert vision_res.status is vision.VisionStatus.FAILED
+        assert not vision_res.ok
+        assert vision_res.description is None
+
+        empty_res = asyncio.run(vision.analyze_image(""))
+        assert empty_res.status is vision.VisionStatus.EMPTY
+        assert not empty_res.ok
+
+        world = World()
+        captured = {}
+
+        async def insert_records(conversation_id, entries, **options):
+            captured.setdefault("entries", list(entries))
+            return (False, None, [])
+
+        async def get_history(conversation_id):
+            return [{"role": "user", "content": captured["entries"][0][1]}]
+
+        services = make_services(
+            world,
+            analyze_image=vision.analyze_image,
+            insert_records=insert_records,
+            get_history=get_history,
+        )
+        result = run_turn(make_request(photo_message(3, caption="看看这张图")), services)
+
+        assert result.status is TurnStatus.COMPLETED
+        recorded_xml = captured["entries"][0][1]
+        assert '<media type="photo">' in recorded_xml
+        assert "<description>" not in recorded_xml
+        assert "Failed to connect" not in recorded_xml
+        assert "看看这张图" in recorded_xml
+        (model_request,) = world.model_requests
+        (runtime_message,) = model_request.messages
+        assert runtime_message["content"][1]["image_url"]["url"].startswith(
+            "data:image/jpeg;base64,"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 历史写入的收尾：容量提示、溢出、归档、摘要

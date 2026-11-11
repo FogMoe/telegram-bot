@@ -5,12 +5,15 @@ provider 拒绝，规则见 docs/runtime.md 的「整轮截止时间」。一轮
 `log_round_context`）也放在这里，正常结束和中途到期写的是同一种条目。
 """
 
+from __future__ import annotations
+
 import contextlib
 from typing import Any
 
 from fogmoe_telegram_bot.core.deadline import Deadline
 
-from .types import MEDIA_DELIVERY_KEY, MEDIA_DELIVERY_UNKNOWN, ToolLog
+from .tool_loop_messages import tool_result_json
+from .types import MEDIA_DELIVERY_KEY, MediaDeliveryState, ToolLog
 
 _INTERRUPTED_TOOL_RESULT = {
     "error": "interrupted",
@@ -40,30 +43,46 @@ def close_interrupted_round(
     round_context_messages: list[dict[str, str]],
     *,
     running: bool = True,
+    filtered_messages: list[dict[str, Any]] | None = None,
 ) -> None:
     """截止时间在这一轮工具中途到期：给每个还没有结果的工具调用补一条结果。
 
     正在运行的那个（`running`）标记为「结果未知」，后面没来得及运行的标记为「未执行」，
     这样历史里 assistant 的 tool_calls 与 tool 结果仍然一一配对。`running=False` 表示
     `interrupted_index` 那个调用还没开始（前一个工具已经有结果，是在投递它的媒体时到期的）。
-    这一轮已经完成的工具带回来的 Telegram 事件（例如代执行命令的回复）照常记进日志。
+    这一轮已经完成的工具带回来的 Telegram 事件（例如代执行命令的回复）照常记进消息序列与日志。
     """
+    del skip_set  # 所有声明的 tool_calls 均必须回填配对的 tool 消息
     for index, tool_call in enumerate(tool_calls):
         if index < interrupted_index:
             continue
         function_payload = tool_call.get("function") or {}
         function_name = str(function_payload.get("name") or "").strip()
+        tool_call_id = tool_call.get("id")
         if index == interrupted_index and running:
             result = {**_INTERRUPTED_TOOL_RESULT, "reason": reason}
         else:
             result = dict(_NOT_EXECUTED_TOOL_RESULT)
-        tool_logs.append({
-            "type": "tool_result",
-            "tool_name": function_name,
-            "arguments": {},
-            "result": result,
-            "tool_call_id": tool_call.get("id"),
-        })
+        if filtered_messages is not None:
+            filtered_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "name": function_name,
+                    "content": tool_result_json(result),
+                }
+            )
+        tool_logs.append(
+            {
+                "type": "tool_result",
+                "tool_name": function_name,
+                "arguments": {},
+                "result": result,
+                "tool_call_id": tool_call_id,
+            }
+        )
+    if filtered_messages is not None:
+        filtered_messages.extend(round_context_messages)
     log_round_context(tool_logs, round_context_messages)
 
 
@@ -72,11 +91,13 @@ def log_round_context(
     round_context_messages: list[dict[str, str]],
 ) -> None:
     for context_message in round_context_messages:
-        tool_logs.append({
-            "type": "telegram_event",
-            "role": "user",
-            "content": context_message["content"],
-        })
+        tool_logs.append(
+            {
+                "type": "telegram_event",
+                "role": "user",
+                "content": context_message["content"],
+            }
+        )
 
 
 def tool_result_log(
@@ -98,9 +119,12 @@ def tool_result_log(
     }
     if function_name in {"generate_image", "generate_voice"}:
         tool_log_entry["internal_result"] = internal_tool_result
-        if sent_media_messages:
+        if media_delivery_unknown:
+            tool_log_entry[MEDIA_DELIVERY_KEY] = MediaDeliveryState.UNKNOWN.value
+        elif sent_media_messages:
+            tool_log_entry[MEDIA_DELIVERY_KEY] = MediaDeliveryState.SENT.value
             tool_log_entry["media_sent"] = True
             tool_log_entry["sent_message_count"] = len(sent_media_messages)
-        if media_delivery_unknown:
-            tool_log_entry[MEDIA_DELIVERY_KEY] = MEDIA_DELIVERY_UNKNOWN
+        elif isinstance(internal_tool_result, dict) and internal_tool_result.get("status") == "generated":
+            tool_log_entry[MEDIA_DELIVERY_KEY] = MediaDeliveryState.PENDING.value
     return tool_log_entry

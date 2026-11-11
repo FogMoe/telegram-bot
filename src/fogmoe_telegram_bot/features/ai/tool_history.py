@@ -1,5 +1,14 @@
+"""工具循环产物的历史落库转换。
+
+生产调用链直接把工具循环内已经配对好的消息序列（`LoopResult.turn_messages`）经
+`turn_messages_to_record_entries` 脱敏成数据库记录，不再在循环结束后靠反向扫描去重或拼接时间戳 ID。
+`tool_logs_to_record_entries` 保留给仅构造 `tool_logs` 替身的单测与兼容辅助。
+"""
+
+from __future__ import annotations
+
 import json
-import time
+from collections.abc import Sequence
 from typing import Any
 
 from fogmoe_telegram_bot.core.redaction import redact_text
@@ -17,7 +26,7 @@ def _telegram_command_name(arguments: object) -> str | None:
     return command_token.split("@", maxsplit=1)[0].strip().lower() or None
 
 
-def tool_logs_completed_clear(tool_logs: list[dict[str, Any]]) -> bool:
+def tool_logs_completed_clear(tool_logs: Sequence[dict[str, Any]]) -> bool:
     """返回本轮是否成功通过 Telegram 工具执行了 /clear。"""
     for tool_log in tool_logs:
         if not isinstance(tool_log, dict):
@@ -32,6 +41,74 @@ def tool_logs_completed_clear(tool_logs: list[dict[str, Any]]) -> bool:
         if isinstance(result, dict) and result.get("success") is True:
             return True
     return False
+
+
+def _redacted_assistant_message(message: dict[str, Any]) -> dict[str, Any]:
+    """脱敏要写入历史的 assistant 消息，只改文本与工具参数，保留 provider 专有字段。"""
+    redacted = dict(message)
+    if isinstance(redacted.get("content"), str):
+        redacted["content"] = redact_text(redacted["content"])
+    tool_calls = redacted.get("tool_calls")
+    if isinstance(tool_calls, list):
+        redacted_calls: list[Any] = []
+        for tool_call in tool_calls:
+            function = tool_call.get("function") if isinstance(tool_call, dict) else None
+            if isinstance(function, dict) and isinstance(function.get("arguments"), str):
+                tool_call = {
+                    **tool_call,
+                    "function": {
+                        **function,
+                        "arguments": redact_text(function["arguments"]),
+                    },
+                }
+            redacted_calls.append(tool_call)
+        redacted["tool_calls"] = redacted_calls
+    return redacted
+
+
+def turn_messages_to_record_entries(
+    turn_messages: Sequence[dict[str, Any]],
+) -> list[tuple[str, object]]:
+    """直接从工具循环构建的消息序列脱敏生成数据库历史条目（纯函数，不修改输入）。"""
+    record_entries: list[tuple[str, object]] = []
+    for message in turn_messages:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role == "assistant":
+            if message.get("tool_calls"):
+                record_entries.append(("assistant", _redacted_assistant_message(message)))
+            else:
+                content = str(message.get("content") or "").strip()
+                if content:
+                    record_entries.append(("assistant", redact_text(content)))
+        elif role == "tool":
+            record_entries.append(
+                (
+                    "tool",
+                    {
+                        "role": "tool",
+                        "tool_call_id": str(message.get("tool_call_id") or ""),
+                        "name": message.get("name"),
+                        "content": redact_text(str(message.get("content") or "")),
+                    },
+                )
+            )
+        elif role == "user":
+            content = str(message.get("content") or "").strip()
+            if content:
+                record_entries.append(("user", content))
+    return record_entries
+
+
+def turn_record_entries(
+    turn_messages: Sequence[dict[str, Any]] | None,
+    tool_logs: Sequence[dict[str, Any]],
+) -> list[tuple[str, object]]:
+    """优先使用循环内配对好的 `turn_messages`；仅在测试替身未提供 `turn_messages` 时回退 `tool_logs`。"""
+    if turn_messages is not None:
+        return turn_messages_to_record_entries(turn_messages)
+    return tool_logs_to_record_entries(list(tool_logs))
 
 
 def _tool_call_ids_from_message(message: dict[str, Any]) -> list[str]:
@@ -71,29 +148,6 @@ def _fallback_assistant_tool_call_message(
     }
 
 
-def _redacted_assistant_message(message: dict[str, Any]) -> dict[str, Any]:
-    """脱敏要写入历史的 assistant 消息，只改文本与工具参数，保留 provider 专有字段。"""
-    redacted = dict(message)
-    if isinstance(redacted.get("content"), str):
-        redacted["content"] = redact_text(redacted["content"])
-    tool_calls = redacted.get("tool_calls")
-    if isinstance(tool_calls, list):
-        redacted_calls = []
-        for tool_call in tool_calls:
-            function = tool_call.get("function") if isinstance(tool_call, dict) else None
-            if isinstance(function, dict) and isinstance(function.get("arguments"), str):
-                tool_call = {
-                    **tool_call,
-                    "function": {
-                        **function,
-                        "arguments": redact_text(function["arguments"]),
-                    },
-                }
-            redacted_calls.append(tool_call)
-        redacted["tool_calls"] = redacted_calls
-    return redacted
-
-
 def _pop_pending_id(pending_tool_call_ids: list[str], tool_call_id: str) -> None:
     if pending_tool_call_ids and pending_tool_call_ids[0] == tool_call_id:
         pending_tool_call_ids.pop(0)
@@ -115,7 +169,7 @@ def _assistant_message_content(tool_log: dict[str, Any]) -> str:
 
 
 def _visible_content_repeated_by_tool_call(
-    tool_logs: list[dict[str, Any]],
+    tool_logs: Sequence[dict[str, Any]],
     visible_index: int,
     visible_content: str,
 ) -> bool:
@@ -159,14 +213,13 @@ def tool_logs_to_record_entries(
                 record_entries.append(("user", content))
             continue
 
-        tool_call_id = tool_log.get("tool_call_id")
-        if not tool_call_id:
-            if entry_type == "tool_result" and pending_tool_call_ids:
-                tool_call_id = pending_tool_call_ids.pop(0)
-            else:
-                tool_call_id = f"auto_{int(time.time() * 1000)}"
-            tool_log["tool_call_id"] = tool_call_id
-        tool_call_id = str(tool_call_id)
+        raw_id = tool_log.get("tool_call_id")
+        if raw_id:
+            tool_call_id = str(raw_id)
+        elif entry_type == "tool_result" and pending_tool_call_ids:
+            tool_call_id = pending_tool_call_ids.pop(0)
+        else:
+            tool_call_id = f"call_auto_{index + 1}"
 
         if entry_type == "assistant_tool_call":
             assistant_message = tool_log.get("assistant_message")

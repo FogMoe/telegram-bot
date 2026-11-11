@@ -1,9 +1,11 @@
 """AI 回复的整理与出站发送，用户消息、定时任务和空闲跟进三个入口共用。
 
-- `finish_reply`：去掉不回复标记、识别固定的错误提示、校验贴纸指令；
+- `finish_reply`：去掉不回复标记、根据结构化 `LoopStatus`（无状态时兼容固定错误文案）判定运行时错误、校验贴纸指令；
 - `send_private_reply`：定时任务与空闲跟进把回复发到私聊；
 - `send_generated_media`：发送本轮工具产出的媒体，三处共用同一个抑制历史记录的作用域。
 """
+
+from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
@@ -21,7 +23,7 @@ from .generated_image_sender import send_generated_images_from_tool_logs
 from .reply_filter import normalize_ai_reply_text
 from .router import runtime_error_cause
 from .sticker_sender import send_ai_reply_with_stickers
-from .types import ToolLog
+from .types import LoopStatus, ToolLog
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,9 +38,13 @@ async def finish_reply(
     text: str,
     *,
     normalize_stickers: Callable[[str], Awaitable[str]],
+    status: LoopStatus | None = None,
 ) -> AIReply:
     reply_text = normalize_ai_reply_text(text)
-    runtime_error = runtime_error_cause(reply_text)
+    if status is not None:
+        runtime_error = status.runtime_error_cause()
+    else:
+        runtime_error = runtime_error_cause(reply_text)
     if reply_text.strip():
         reply_text = await normalize_stickers(reply_text)
     return AIReply(text=reply_text, runtime_error=runtime_error)

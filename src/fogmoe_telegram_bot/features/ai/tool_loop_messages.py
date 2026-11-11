@@ -50,6 +50,7 @@ def _drop_none_items(value: dict[str, Any]) -> dict[str, Any]:
 
 def _tool_call_to_plain(tool_call: Any) -> dict[str, Any]:
     """Normalize a tool call object into a plain JSON-serializable dict."""
+    plain_call: dict[str, Any] | None = None
     if isinstance(tool_call, dict):
         plain_call = json_safe(dict(tool_call))
         function_payload = plain_call.get("function")
@@ -62,7 +63,6 @@ def _tool_call_to_plain(tool_call: Any) -> dict[str, Any]:
                 plain_function["arguments"] = "{}"
             plain_call["function"] = plain_function
         return _drop_none_items(plain_call)
-    plain_call: dict[str, Any] | None = None
 
     for attr in ("model_dump", "dict"):
         if hasattr(tool_call, attr):

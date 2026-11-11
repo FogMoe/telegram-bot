@@ -36,8 +36,10 @@ from fogmoe_telegram_bot.features.ai import (
     summary,
     user_state,
 )
+from fogmoe_telegram_bot.features.ai.tasks.vision import VisionResult
 from fogmoe_telegram_bot.features.ai.telegram_visible_sender import TelegramVisibleContentHandler
 from fogmoe_telegram_bot.features.ai.tool_history import reply_record_entries
+from fogmoe_telegram_bot.features.ai.types import LoopResult
 
 from . import billing, history_hooks
 from .turn_types import HistoryInsert, ModelRequest, ModelResponse, UserStateRecord
@@ -62,7 +64,7 @@ class TurnServices:
     archive_completed_clear: Callable[..., Awaitable[None]]
 
     # 媒体
-    analyze_image: Callable[[str], Awaitable[str]]
+    analyze_image: Callable[[str], Awaitable[VisionResult | str | None]]
 
     # 模型
     run_model: Callable[[ModelRequest], Awaitable[ModelResponse]]
@@ -177,12 +179,12 @@ async def _archive_completed_clear(
     summary.schedule_summary_generation(conversation_id)
 
 
-async def _analyze_image(base64_str: str) -> str:
+async def _analyze_image(base64_str: str) -> VisionResult:
     return await ai_chat.analyze_image(base64_str)
 
 
 async def _run_model(request: ModelRequest) -> ModelResponse:
-    text, tool_logs = await ai_chat.get_ai_response(
+    raw = await ai_chat.get_ai_response(
         request.messages,
         request.user_id,
         tool_context=request.tool_context,
@@ -190,7 +192,13 @@ async def _run_model(request: ModelRequest) -> ModelResponse:
         visible_content_handler=request.visible_content_handler,
         deadline=request.deadline,
     )
-    return ModelResponse(text=text, tool_logs=tool_logs)
+    loop_result = LoopResult.coerce(raw, classify_text=ai_chat.runtime_error_cause)
+    return ModelResponse(
+        text=loop_result.text,
+        tool_logs=loop_result.tool_logs,
+        status=loop_result.status,
+        turn_messages=loop_result.turn_messages,
+    )
 
 
 def _make_visible_handler(**kwargs: Any) -> TelegramVisibleContentHandler:

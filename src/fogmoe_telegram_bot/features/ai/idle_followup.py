@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import inspect
 import json
 import logging
 import re
@@ -43,7 +44,7 @@ from fogmoe_telegram_bot.features.ai.sticker_sender import (
 from fogmoe_telegram_bot.features.ai.task_runner import Candidate, run_with_fallback
 from fogmoe_telegram_bot.features.ai.tool_history import (
     reply_record_entries,
-    tool_logs_to_record_entries,
+    turn_record_entries,
 )
 from fogmoe_telegram_bot.features.ai.tool_runner import run_tool_loop
 from fogmoe_telegram_bot.features.ai.tools import (
@@ -54,7 +55,7 @@ from fogmoe_telegram_bot.features.ai.tools import (
 )
 from fogmoe_telegram_bot.features.ai.tools.memory_tools import read_diary_page_tool
 from fogmoe_telegram_bot.features.ai.tools.schemas import IDLE_RECAP_READ_DIARY_TOOL
-from fogmoe_telegram_bot.features.ai.types import has_side_effects
+from fogmoe_telegram_bot.features.ai.types import LoopResult, has_side_effects
 from fogmoe_telegram_bot.features.ai.usage import UsageAccumulator, ai_usage_scope
 from fogmoe_telegram_bot.features.ai.user_state import build_user_state_prompt
 
@@ -722,9 +723,11 @@ async def _persist_completed_turn(
     assistant_message: str,
     tool_logs: list[dict],
     context: ContextTypes.DEFAULT_TYPE,
+    *,
+    turn_messages: list[dict[str, Any]] | None = None,
 ) -> None:
     records: list[tuple[str, object]] = [("user", recap_event)]
-    records.extend(tool_logs_to_record_entries(tool_logs))
+    records.extend(turn_record_entries(turn_messages, tool_logs))
     records.extend(reply_record_entries(assistant_message, None))
     await write_history(claim.user_id, records, bot=context.bot, logger=logger)
 
@@ -992,18 +995,23 @@ async def _run_claim_locked(
     ai_messages.append({"role": "user", "content": recap_event})
     # 主模型带完整工具集：从这里开始可能产生副作用，崩溃后不再重跑整轮。
     await _enter_stage(run, job_claims.STAGE_GENERATING)
-    assistant_message, tool_logs = await ai_chat.get_ai_response(
-        ai_messages,
-        claim.user_id,
-        tool_context=build_tool_context(
-            user_id=claim.user_id,
-            user_state_prompt=user_state_prompt,
-            abort_event=run.abort_event,
+    loop_result = LoopResult.coerce(
+        await ai_chat.get_ai_response(
+            ai_messages,
+            claim.user_id,
+            tool_context=build_tool_context(
+                user_id=claim.user_id,
+                user_state_prompt=user_state_prompt,
+                abort_event=run.abort_event,
+            ),
         ),
+        classify_text=ai_chat.runtime_error_cause,
     )
+    tool_logs = loop_result.tool_logs
     reply = await finish_reply(
-        assistant_message,
+        loop_result.text,
         normalize_stickers=lambda text: normalize_sticker_directives(text, logger=logger),
+        status=loop_result.status,
     )
     assistant_message = reply.text
     if reply.runtime_error:
@@ -1018,6 +1026,11 @@ async def _run_claim_locked(
         )
         assistant_message = ""
 
+    persist_kwargs = (
+        {"turn_messages": loop_result.turn_messages}
+        if "turn_messages" in inspect.signature(_persist_completed_turn).parameters
+        else {}
+    )
     if not await _claim_is_current(claim):
         if tool_logs:
             # 用户已经回来了，跟进不再发送；已经执行过的工具仍要写进历史。
@@ -1027,6 +1040,7 @@ async def _run_claim_locked(
                 "",
                 tool_logs,
                 context,
+                **persist_kwargs,
             )
         return
 
@@ -1038,6 +1052,7 @@ async def _run_claim_locked(
         assistant_message,
         tool_logs,
         context,
+        **persist_kwargs,
     )
     delivery_error = await _send_followup_outputs(
         claim.user_id,

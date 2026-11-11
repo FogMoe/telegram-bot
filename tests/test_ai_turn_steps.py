@@ -1,6 +1,7 @@
 """用户消息、定时任务、空闲跟进三个入口共用的步骤：工具上下文、用户状态、回复整理、写历史、私聊回复。"""
 
 import asyncio
+import logging
 import threading
 from types import SimpleNamespace
 
@@ -132,6 +133,41 @@ def test_finish_reply_recognises_fixed_error_notices():
     )
 
     assert reply.runtime_error == "all_ai_services_failed"
+
+
+def test_finish_reply_uses_structured_loop_status_over_text_matching():
+    from fogmoe_telegram_bot.features.ai.telegram_visible_sender import (
+        TelegramVisibleContentHandler,
+    )
+    from fogmoe_telegram_bot.features.ai.types import LoopStatus, VisibleContentHandler
+
+    # 正常完成的轮次即使恰好输出了与错误通知相同的句子，也不被误判为运行时错误
+    normal = asyncio.run(
+        outbound.finish_reply(
+            router.AI_SERVICE_ERROR_MESSAGE,
+            normalize_stickers=_record_stickers([]),
+            status=LoopStatus.COMPLETED,
+        )
+    )
+    assert normal.runtime_error is None
+
+    failed = asyncio.run(
+        outbound.finish_reply(
+            router.TURN_DEADLINE_ERROR_MESSAGE,
+            normalize_stickers=_record_stickers([]),
+            status=LoopStatus.DEADLINE_EXCEEDED,
+        )
+    )
+    assert failed.runtime_error == "turn_deadline_exceeded"
+
+    handler = TelegramVisibleContentHandler(
+        bot=SimpleNamespace(),
+        chat_id=1,
+        first_text_send=lambda *a, **kw: asyncio.sleep(0),
+        fallback_send=lambda *a, **kw: asyncio.sleep(0),
+        logger=logging.getLogger("test"),
+    )
+    assert isinstance(handler, VisibleContentHandler)
 
 
 def test_an_empty_reply_skips_sticker_normalization():

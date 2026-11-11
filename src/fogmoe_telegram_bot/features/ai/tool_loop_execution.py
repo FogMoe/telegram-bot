@@ -184,7 +184,8 @@ def _log_generate_voice_result(provider_name: str, tool_result: dict[str, Any]) 
         return
 
     if tool_result.get("status") == "generated":
-        audios = tool_result.get("audios") if isinstance(tool_result.get("audios"), list) else []
+        raw_audios = tool_result.get("audios")
+        audios = raw_audios if isinstance(raw_audios, list) else []
         logging.info(
             "%s generate_voice generated %s audio clip(s): count=%s, warnings=%s",
             provider_name,
