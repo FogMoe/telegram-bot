@@ -25,7 +25,6 @@ from fogmoe_telegram_bot.features.ai.tools import (
     OPENAI_TOOLS,
     TOOL_SPEC_BY_NAME,
     TOOL_SPECS,
-    build_tool_context,
     get_media_tool_spec,
     resolve_agent_tools,
 )
@@ -37,7 +36,6 @@ from fogmoe_telegram_bot.features.ai.tools.rate_limit import (
 )
 from fogmoe_telegram_bot.features.ai.usage import (
     DEFAULT_BILLED_TOOL_CATEGORIES,
-    ai_usage_scope,
 )
 
 
@@ -97,37 +95,22 @@ def test_resolve_agent_tools_hides_unconfigured_external_tools():
         AI_ADVISOR_PROVIDER=None,
         AI_ADVISOR_FALLBACK_PROVIDER=None,
     )
-    private_ctx = build_tool_context(
-        user_id=1,
-        user_state_prompt="s",
-        chat_id=1,
-        chat_type="private",
-        message_id=10,
-    )
+    visible_names = _tool_names(resolve_agent_tools("main", settings=minimal))
 
-    visible_names = set(
-        _tool_names(
-            resolve_agent_tools(
-                "main",
-                entry="user",
-                tool_context=private_ctx,
-                settings=minimal,
-            )
-        )
-    )
-
-    for unconfigured in (
+    unconfigured = {
         "google_search",
         "advisor",
         "execute_python_code",
         "linux_sandbox",
         "generate_image",
         "generate_voice",
-        "fetch_group_context",
-    ):
-        assert unconfigured not in visible_names
+    }
+    # 只去掉没配置凭据的工具，其余工具保持声明顺序；不按入口或聊天类型裁剪。
+    assert visible_names == [
+        name for name in _tool_names(OPENAI_TOOLS) if name not in unconfigured
+    ]
     assert "execute_telegram_command" in visible_names
-    assert "user_diary" in visible_names
+    assert "fetch_group_context" in visible_names
 
     configured = config.AppSettings.from_values(
         SERPAPI_API_KEY="serp-key",
@@ -139,24 +122,7 @@ def test_resolve_agent_tools_hides_unconfigured_external_tools():
         AI_ADVISOR_PROVIDER="openai",
         OPENAI_ADVISOR_MODEL="gpt-advisor",
     )
-    group_ctx = build_tool_context(
-        user_id=1,
-        user_state_prompt="s",
-        chat_id=-10099,
-        chat_type="supergroup",
-        message_id=11,
-    )
-    full_names = set(
-        _tool_names(
-            resolve_agent_tools(
-                "main",
-                entry="user",
-                tool_context=group_ctx,
-                settings=configured,
-            )
-        )
-    )
-    assert full_names == set(_tool_names(OPENAI_TOOLS))
+    assert resolve_agent_tools("main", settings=configured) == OPENAI_TOOLS
 
 
 def test_generate_voice_visible_when_model_and_reference_fall_back_to_defaults():
@@ -166,65 +132,27 @@ def test_generate_voice_visible_when_model_and_reference_fall_back_to_defaults()
         FISH_AUDIO_MODEL="",
         FISH_AUDIO_REFERENCE_ID="  ",
     )
-    private_ctx = build_tool_context(
-        user_id=1,
-        user_state_prompt="s",
-        chat_id=1,
-        chat_type="private",
-        message_id=10,
-    )
-
     visible_names = set(
-        _tool_names(
-            resolve_agent_tools(
-                "main",
-                entry="user",
-                tool_context=private_ctx,
-                settings=blank_voice_settings,
-            )
-        )
+        _tool_names(resolve_agent_tools("main", settings=blank_voice_settings))
     )
 
     assert "generate_voice" in visible_names
 
 
-def test_resolve_agent_tools_filters_by_entry_chat_type_and_provider_skip_tools():
+def test_resolve_agent_tools_drops_provider_skip_tools():
     settings = config.AppSettings.from_values()
-    bg_ctx = build_tool_context(user_id=1, user_state_prompt="s")
-
-    with ai_usage_scope(entry="schedule", task="chat"):
-        schedule_names = set(
-            _tool_names(
-                resolve_agent_tools("main", tool_context=bg_ctx, settings=settings)
-            )
-        )
-    assert "execute_telegram_command" not in schedule_names
-    assert "fetch_group_context" not in schedule_names
-
     provider_with_skip = replace(
         ai_providers.require("zai"),
         skip_tools=("fetch_url",),
     )
-    private_ctx = build_tool_context(
-        user_id=1,
-        user_state_prompt="s",
-        chat_id=1,
-        chat_type="private",
-        message_id=5,
+
+    names = _tool_names(resolve_agent_tools("main", settings=settings))
+    skipped_names = _tool_names(
+        resolve_agent_tools("main", provider=provider_with_skip, settings=settings)
     )
-    skipped_names = set(
-        _tool_names(
-            resolve_agent_tools(
-                "main",
-                entry="user",
-                provider=provider_with_skip,
-                tool_context=private_ctx,
-                settings=settings,
-            )
-        )
-    )
-    assert "fetch_url" not in skipped_names
-    assert "execute_telegram_command" in skipped_names
+
+    assert "fetch_url" in names
+    assert skipped_names == [name for name in names if name != "fetch_url"]
 
 
 def test_shared_rate_limiters_enforce_window_rollback_concurrency_and_session_caps():

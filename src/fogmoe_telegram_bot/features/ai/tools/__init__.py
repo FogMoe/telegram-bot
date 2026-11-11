@@ -26,7 +26,6 @@ from .specs import (
     agent_tool_schemas,
     get_media_tool_spec,
     get_tool_spec,
-    is_tool_visible,
     iter_media_tool_specs,
     resolve_agent_tools,
 )
@@ -49,7 +48,6 @@ __all__ = [
     "get_tool_spec",
     "get_media_tool_spec",
     "iter_media_tool_specs",
-    "is_tool_visible",
     "resolve_agent_tools",
     "build_tool_context",
     "set_tool_request_context",

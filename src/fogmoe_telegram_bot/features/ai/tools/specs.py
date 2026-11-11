@@ -1,7 +1,10 @@
-"""所有 AI 工具的单点声明表（`TOOL_SPECS`）与运行时可见性裁剪。
+"""所有 AI 工具的单点声明表（`TOOL_SPECS`）。
 
 新增一个工具只需要在 `TOOL_SPECS` 里加一项：参数模型、schema、处理函数、所属 agent、副作用分级、
-外部计费类别、可用性条件（API key / 入口 / 聊天类型）以及媒体即时投递协议都由这里派生，不再跨多文件重复登记。
+外部计费类别、是否已配置凭据以及媒体即时投递协议都由这里派生，不再跨多文件重复登记。
+
+暴露给模型的工具列表只由配置决定，不按入口或聊天类型裁剪：历史在私聊、群聊和后台轮之间共享，工具调用
+会留在历史里，列表按轮变化会让模型看到自己调用过的工具消失。不适用的场景由 handler 返回错误。
 """
 
 from __future__ import annotations
@@ -23,8 +26,6 @@ from ..generated_image_sender import (
     send_generated_images_from_tool_logs,
     send_generated_images_from_tool_result,
 )
-from ..types import ABORT_EVENT_KEY
-from ..usage import explicit_usage_entry
 from . import advisor_tools, code_tools, http_tools
 from .advisor_tools import advisor_tool
 from .code_tools import execute_python_code_tool
@@ -291,8 +292,6 @@ class ToolSpec:
     agents: tuple[str, ...]
     side_effect: SideEffectKind = SideEffectKind.READ_ONLY
     billing_category: str | None = None
-    entries: frozenset[str] | None = None
-    chat_types: frozenset[str] | None = None
     is_configured: Callable[[Any], bool] = _always_configured
     media: MediaToolSpec | None = None
 
@@ -329,7 +328,6 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         handler=execute_telegram_command_tool,
         agents=("main",),
         side_effect=SideEffectKind.COMMAND_DELEGATION,
-        entries=frozenset({"user"}),
     ),
     ToolSpec(
         name="read_doc",
@@ -385,7 +383,6 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         arg_model=FetchGroupContextArgs,
         handler=fetch_group_context_tool,
         agents=("main",),
-        chat_types=frozenset({"group", "supergroup"}),
     ),
     ToolSpec(
         name="fetch_url",
@@ -587,113 +584,23 @@ def agent_tool_handlers(agent: str) -> dict[str, Callable[..., Any]]:
 MAIN_TOOL_HANDLERS: dict[str, Callable[..., Any]] = agent_tool_handlers("main")
 
 
-def _infer_entry(
-    entry: str | None,
-    tool_context: Mapping[str, object] | None,
-) -> str | None:
-    if entry is not None and entry.strip():
-        return entry.strip().lower()
-    if tool_context is not None:
-        raw_entry = tool_context.get("entry")
-        if isinstance(raw_entry, str) and raw_entry.strip():
-            return raw_entry.strip().lower()
-    explicit = explicit_usage_entry()
-    if explicit is not None:
-        return explicit
-    if tool_context is not None:
-        if ABORT_EVENT_KEY in tool_context:
-            return "background"
-        if "message_id" in tool_context and tool_context.get("message_id") is None:
-            return "background"
-        if tool_context.get("chat_id") is not None:
-            return "user"
-    return None
-
-
-def _infer_chat_type(tool_context: Mapping[str, object] | None) -> str | None:
-    if tool_context is None:
-        return None
-    raw_chat_type = tool_context.get("chat_type")
-    if isinstance(raw_chat_type, str) and raw_chat_type.strip():
-        return raw_chat_type.strip().lower()
-    if tool_context.get("is_group") is True:
-        return "group"
-    return None
-
-
-def _provider_skip_set(
-    provider: ai_providers.ProviderSpec | str | None,
-) -> frozenset[str]:
-    if provider is None:
-        return frozenset()
-    if isinstance(provider, ai_providers.ProviderSpec):
-        return frozenset(provider.skip_tools)
-    spec = ai_providers.lookup(provider)
-    return frozenset(spec.skip_tools) if spec is not None else frozenset()
-
-
-def is_tool_visible(
-    spec: ToolSpec,
-    *,
-    agent: str,
-    entry: str | None = None,
-    provider: ai_providers.ProviderSpec | str | None = None,
-    tool_context: Mapping[str, object] | None = None,
-    settings: Any = None,
-) -> bool:
-    """判断单个工具在给定 `(agent, entry, provider, tool_context, settings)` 下是否应暴露给模型。"""
-    if agent not in spec.agents:
-        return False
-
-    if spec.name in _provider_skip_set(provider):
-        return False
-
-    effective_entry = _infer_entry(entry, tool_context)
-    if spec.entries is not None:
-        if effective_entry is not None and effective_entry not in spec.entries:
-            return False
-        if (
-            tool_context is not None
-            and "message_id" in tool_context
-            and tool_context.get("message_id") is None
-        ):
-            return False
-
-    if spec.chat_types is not None:
-        chat_type = _infer_chat_type(tool_context)
-        if chat_type not in spec.chat_types:
-            return False
-
-    if (
-        agent == "main"
-        and settings is None
-        and MAIN_TOOL_HANDLERS.get(spec.name) is not spec.handler
-    ):
-        return True
-
-    return spec.is_configured(settings)
-
-
 def resolve_agent_tools(
     agent: str,
     *,
-    entry: str | None = None,
-    provider: ai_providers.ProviderSpec | str | None = None,
-    tool_context: Mapping[str, object] | None = None,
+    provider: ai_providers.ProviderSpec | None = None,
     settings: Any = None,
 ) -> list[dict[str, Any]]:
-    """按当前运行上下文返回应暴露给模型的工具 schema 列表（节省无效描述 token、防止调用未配置工具）。"""
+    """返回 `agent` 暴露给模型的工具 schema：去掉没配置凭据的工具和 provider 声明不支持的工具。
+
+    配置在进程运行期间不变，所以同一个 provider 拿到的列表每一轮都相同。
+    """
+    skipped = frozenset(provider.skip_tools) if provider is not None else frozenset()
     return [
         spec.schema()
         for spec in TOOL_SPECS
-        if is_tool_visible(
-            spec,
-            agent=agent,
-            entry=entry,
-            provider=provider,
-            tool_context=tool_context,
-            settings=settings,
-        )
+        if agent in spec.agents
+        and spec.name not in skipped
+        and spec.is_configured(settings)
     ]
 
 
@@ -710,7 +617,6 @@ __all__ = [
     "agent_tool_schemas",
     "get_media_tool_spec",
     "get_tool_spec",
-    "is_tool_visible",
     "iter_media_tool_specs",
     "resolve_agent_tools",
 ]

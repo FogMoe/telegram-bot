@@ -140,11 +140,7 @@ async def _run_chat_candidate(
             messages,
             text_fallback_messages,
         )
-        tool_definitions = resolve_agent_tools(
-            "main",
-            provider=candidate.spec,
-            tool_context=tool_context,
-        )
+        tool_definitions = resolve_agent_tools("main", provider=candidate.spec)
         with tool_request_scope(request_context):
             try:
                 raw_result = await run_tool_loop(
