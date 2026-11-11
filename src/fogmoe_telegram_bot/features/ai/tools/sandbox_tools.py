@@ -210,6 +210,7 @@ def _get_or_create_sandbox(context: dict[str, object]):
     try:
         from e2b import Sandbox
     except ImportError:
+        _release_user_sandbox(context)
         logging.exception("E2B SDK is not installed")
         raise RuntimeError("E2B SDK is not installed. Install the e2b package.") from None
 

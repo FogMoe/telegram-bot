@@ -244,6 +244,25 @@ class TestStaleWorker:
                     "tool_call_id": "call_1",
                 }
             ]
+            env.ai.turn_messages = [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "read_doc", "arguments": '{"topic": "memory"}'},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "name": "read_doc",
+                    "content": '{"content": "memory details"}',
+                },
+            ]
         snapshots = {}
 
         async def scenario():

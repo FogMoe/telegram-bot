@@ -96,6 +96,8 @@ class Bench:
             "AI_CHAT_ORDER": "openai",
             "OPENAI_CHAT_MODEL": "bench-model",
             "OPENAI_API_KEY": "bench-key",
+            # 压测脚本让模型调用 google_search：没配置凭据的工具不会暴露给模型。
+            "SERPAPI_API_KEY": "bench-key",
         }
         if self.has_admission:
             if args.max_concurrent is not None:

@@ -11,6 +11,8 @@ from typing import Any
 
 from mysql_support import execute, fetch
 
+from fogmoe_telegram_bot.features.ai.types import LoopResult
+
 
 class SimulatedCrash(BaseException):
     """模拟进程在这一刻消失。
@@ -54,6 +56,7 @@ class FakeAI:
         self.calls = 0
         self.reply = reply
         self.tool_logs: list[dict] = []
+        self.turn_messages: list[dict] = []
         self.hook: Any = None
         self.tool_contexts: list[Any] = []
 
@@ -64,12 +67,16 @@ class FakeAI:
         tool_context: Any = None,
         text_fallback_messages: Any = None,
         visible_content_handler: Any = None,
-    ) -> tuple[str, list[dict]]:
+    ) -> LoopResult:
         self.calls += 1
         self.tool_contexts.append(tool_context)
         if self.hook is not None:
             await self.hook(tool_context)
-        return self.reply, [dict(log) for log in self.tool_logs]
+        return LoopResult(
+            self.reply,
+            [dict(log) for log in self.tool_logs],
+            turn_messages=[dict(message) for message in self.turn_messages],
+        )
 
 
 # ---------------------------------------------------------------------------
