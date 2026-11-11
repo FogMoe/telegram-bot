@@ -37,6 +37,24 @@ _VOICE_RATE_LIMITER = SlidingWindowRateLimiter(clock=time.monotonic)
 _VOICE_RATE_LIMITS = _VOICE_RATE_LIMITER.buckets
 
 
+def resolve_fish_audio_settings(settings: Any = None) -> tuple[str, str, str]:
+    """返回实际生效的 `(api_key, model, reference_id)`：模型与参考音色留空时回落到默认值。
+
+    工具处理函数与 `ToolSpec` 的可见性判断共用这一份解析，避免两边对「是否已配置」各算各的。
+    """
+    source = config if settings is None else settings
+    api_key = str(getattr(source, "FISH_AUDIO_API_KEY", None) or "").strip()
+    model = (
+        str(getattr(source, "FISH_AUDIO_MODEL", None) or "").strip()
+        or DEFAULT_FISH_AUDIO_MODEL
+    )
+    reference_id = (
+        str(getattr(source, "FISH_AUDIO_REFERENCE_ID", None) or "").strip()
+        or DEFAULT_FISH_AUDIO_REFERENCE_ID
+    )
+    return api_key, model, reference_id
+
+
 class VoiceGenerationSizeError(ValueError):
     pass
 
@@ -323,15 +341,7 @@ def generate_voice_tool(
             ),
         }
 
-    api_key = (getattr(config, "FISH_AUDIO_API_KEY", None) or "").strip()
-    model = (
-        getattr(config, "FISH_AUDIO_MODEL", DEFAULT_FISH_AUDIO_MODEL)
-        or DEFAULT_FISH_AUDIO_MODEL
-    ).strip()
-    reference_id = (
-        getattr(config, "FISH_AUDIO_REFERENCE_ID", DEFAULT_FISH_AUDIO_REFERENCE_ID)
-        or DEFAULT_FISH_AUDIO_REFERENCE_ID
-    ).strip()
+    api_key, model, reference_id = resolve_fish_audio_settings()
 
     if not api_key:
         return {"error": "Fish Audio API key is not configured"}
@@ -391,4 +401,4 @@ def pop_generated_audio_file(audio_id: str) -> str | None:
         return _GENERATED_AUDIO_FILES.pop(audio_id, None)
 
 
-__all__ = ["generate_voice_tool", "pop_generated_audio_file"]
+__all__ = ["generate_voice_tool", "pop_generated_audio_file", "resolve_fish_audio_settings"]

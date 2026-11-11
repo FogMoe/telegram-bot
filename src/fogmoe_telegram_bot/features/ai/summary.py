@@ -16,7 +16,7 @@ from .task_runner import Candidate, run_with_fallback
 from .tool_runner import run_tool_loop
 from .tools import agent_tool_handlers, agent_tool_schemas
 from .tools.context import tool_request_scope
-from .usage import ai_usage_scope
+from .usage import UsageAccumulator, ai_usage_scope
 
 SUMMARY_MAX_TOKENS = 2500
 SUMMARY_CONTEXT_HARD_LIMIT_RATIO = 1.5
@@ -99,18 +99,36 @@ async def refresh_summary_after_overflow(user_id: int) -> None:
 
 
 async def _process_summary_for_user(user_id: int) -> None:
-    with ai_usage_scope(entry="background", task="summary", clear_accumulator=True):
+    # 后台摘要不属于任何对话轮次：用自己的累加器，收尾时把本次的模型调用与开销写进日志。
+    usage = UsageAccumulator()
+    outcome = "cancelled"
+    with ai_usage_scope(
+        entry="background",
+        task="summary",
+        accumulator=usage,
+        clear_accumulator=True,
+    ):
         try:
             async with _summary_slot():
                 summary_text = await _generate_and_store_summary(user_id)
                 if summary_text is None:
+                    outcome = "no_summary"
                     return
                 await mysql_connection.async_update_latest_history_state_summary(
                     user_id,
                     summary_text,
                 )
+                outcome = "stored"
         except Exception as exc:  # pragma: no cover - defensive logging
+            outcome = "error"
             logging.exception("Unexpected error while processing summary for user %s: %s", user_id, exc)
+        finally:
+            logging.info(
+                "background summary finished: user_id=%s outcome=%s %s",
+                user_id,
+                outcome,
+                usage.snapshot().summary(),
+            )
 
 
 async def _fetch_pending_snapshot(user_id: int) -> tuple[int, str] | None:

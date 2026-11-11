@@ -253,7 +253,12 @@ def parse_model_pricing(raw: str | None) -> Mapping[str, ModelPriceRate]:
         except (TypeError, ValueError):
             logger.warning("Ignoring invalid AI_MODEL_PRICING entry for %s", raw_key)
             continue
-        if input_rate < 0 or output_rate < 0 or (cached_rate is not None and cached_rate < 0):
+        candidate_rates = (input_rate, output_rate) + (
+            () if cached_rate is None else (cached_rate,)
+        )
+        # NaN、Infinity 会让后续 round() 抛错；NaN 与 0 比较恒为 False，必须显式用 isfinite 拒绝。
+        if any(not math.isfinite(rate) or rate < 0 for rate in candidate_rates):
+            logger.warning("Ignoring invalid AI_MODEL_PRICING entry for %s", raw_key)
             continue
         rates[key] = ModelPriceRate(
             input_per_1m=input_rate,

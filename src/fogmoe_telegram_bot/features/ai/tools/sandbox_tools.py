@@ -22,6 +22,7 @@ DEFAULT_MAX_CONCURRENT_SANDBOXES = 4
 _SANDBOX_CONTEXT_KEY = "_linux_sandbox"
 _SANDBOX_CALL_COUNT_KEY = "_linux_sandbox_call_count"
 _SANDBOX_USER_ID_KEY = "_linux_sandbox_user_id"
+_SANDBOX_RESERVATION_TOKEN_KEY = "_linux_sandbox_reservation_token"
 _SANDBOX_GATE = UserSessionGate(clock=time.monotonic)
 _ACTIVE_SANDBOX_USER_IDS = _SANDBOX_GATE.active_users
 _USER_SANDBOX_CREATE_COOLDOWNS = _SANDBOX_GATE.cooldowns
@@ -185,13 +186,27 @@ def _reserve_user_sandbox(context: dict[str, object]) -> None:
         result["retry_after_seconds"] = retry_after_seconds
         raise _SandboxBlockedError(result)
     context[_SANDBOX_USER_ID_KEY] = user_id
+    context[_SANDBOX_RESERVATION_TOKEN_KEY] = reservation.token
 
 
 def _release_user_sandbox(context: dict[str, object]) -> None:
+    context.pop(_SANDBOX_RESERVATION_TOKEN_KEY, None)
     user_id = context.pop(_SANDBOX_USER_ID_KEY, None)
     if not user_id:
         return
     _SANDBOX_GATE.release_active(str(user_id))
+
+
+def _rollback_user_sandbox(context: dict[str, object]) -> None:
+    """沙箱没建起来：释放活跃锁，并退回本次占用的冷却与滑动窗口配额。"""
+    token = context.pop(_SANDBOX_RESERVATION_TOKEN_KEY, None)
+    user_id = context.pop(_SANDBOX_USER_ID_KEY, None)
+    if not user_id:
+        return
+    _SANDBOX_GATE.rollback_creation(
+        str(user_id),
+        token if isinstance(token, float) else None,
+    )
 
 
 def _result_from_command(
@@ -231,7 +246,7 @@ def _get_or_create_sandbox(context: dict[str, object]):
     try:
         from e2b import Sandbox
     except ImportError:
-        _release_user_sandbox(context)
+        _rollback_user_sandbox(context)
         logging.exception("E2B SDK is not installed")
         raise RuntimeError("E2B SDK is not installed. Install the e2b package.") from None
 
@@ -243,7 +258,7 @@ def _get_or_create_sandbox(context: dict[str, object]):
         context[_SANDBOX_CONTEXT_KEY] = sandbox
         return sandbox
     except Exception:
-        _release_user_sandbox(context)
+        _rollback_user_sandbox(context)
         raise
 
 

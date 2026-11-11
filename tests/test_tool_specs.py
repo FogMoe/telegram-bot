@@ -159,6 +159,35 @@ def test_resolve_agent_tools_hides_unconfigured_external_tools():
     assert full_names == set(_tool_names(OPENAI_TOOLS))
 
 
+def test_generate_voice_visible_when_model_and_reference_fall_back_to_defaults():
+    # generate_voice_tool 对留空的模型与参考音色使用默认值，可见性判断必须与之一致
+    blank_voice_settings = config.AppSettings.from_values(
+        FISH_AUDIO_API_KEY="fish-key",
+        FISH_AUDIO_MODEL="",
+        FISH_AUDIO_REFERENCE_ID="  ",
+    )
+    private_ctx = build_tool_context(
+        user_id=1,
+        user_state_prompt="s",
+        chat_id=1,
+        chat_type="private",
+        message_id=10,
+    )
+
+    visible_names = set(
+        _tool_names(
+            resolve_agent_tools(
+                "main",
+                entry="user",
+                tool_context=private_ctx,
+                settings=blank_voice_settings,
+            )
+        )
+    )
+
+    assert "generate_voice" in visible_names
+
+
 def test_resolve_agent_tools_filters_by_entry_chat_type_and_provider_skip_tools():
     settings = config.AppSettings.from_values()
     bg_ctx = build_tool_context(user_id=1, user_state_prompt="s")

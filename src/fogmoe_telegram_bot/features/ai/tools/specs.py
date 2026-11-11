@@ -70,7 +70,7 @@ from .sticker_tools import list_available_stickers_tool
 from .summary_tools import search_prior_context_tool
 from .telegram_command_tools import execute_telegram_command_tool
 from .user_tools import kindness_gift_tool, update_impression_tool
-from .voice_tools import generate_voice_tool
+from .voice_tools import generate_voice_tool, resolve_fish_audio_settings
 
 
 class SideEffectKind(StrEnum):
@@ -275,10 +275,8 @@ def _image_gen_configured(settings: Any = None) -> bool:
 
 
 def _voice_gen_configured(settings: Any = None) -> bool:
-    source = _settings_source(settings)
-    api_key = str(getattr(source, "FISH_AUDIO_API_KEY", None) or "").strip()
-    model = str(getattr(source, "FISH_AUDIO_MODEL", None) or "").strip()
-    reference_id = str(getattr(source, "FISH_AUDIO_REFERENCE_ID", None) or "").strip()
+    # 与 generate_voice_tool 共用同一份解析：模型与参考音色留空时用默认值，只有 API key 是必需的。
+    api_key, model, reference_id = resolve_fish_audio_settings(settings)
     return bool(api_key and model and reference_id)
 
 

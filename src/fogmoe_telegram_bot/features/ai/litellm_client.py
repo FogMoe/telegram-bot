@@ -121,12 +121,20 @@ async def create_chat_completion(
         metrics.histogram("provider.call_seconds", provider=litellm_provider).observe(
             time.perf_counter() - started
         )
-        record_completion_usage(
-            litellm_provider,
-            model,
-            litellm_model=litellm_model,
-            response=response,
-        )
+        try:
+            record_completion_usage(
+                litellm_provider,
+                model,
+                litellm_model=litellm_model,
+                response=response,
+            )
+        except Exception:
+            # 计量只是观测：它出错不能丢掉已经成功的回复，更不能触发 provider 回退。
+            logging.exception(
+                "Failed to record AI usage provider=%s model=%s",
+                litellm_provider,
+                litellm_model,
+            )
         return response
     finally:
         metrics.counter("provider.calls", provider=litellm_provider).inc()

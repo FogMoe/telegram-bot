@@ -295,6 +295,51 @@ def test_linux_sandbox_tool_allows_user_creation_after_rate_limit_expires(monkey
         clear_tool_request_context()
 
 
+def test_failed_sandbox_creation_returns_cooldown_and_window_quota(monkeypatch):
+    _install_fake_e2b(monkeypatch)
+    monkeypatch.setattr(sandbox_tools.config, "E2B_API_KEY", "e2b_test")
+    monkeypatch.setattr(sandbox_tools.config, "AI_SANDBOX_COOLDOWN_SECONDS", 30)
+    monkeypatch.setattr(sandbox_tools.config, "AI_SANDBOX_RATE_LIMIT_WINDOW_SECONDS", 300)
+    monkeypatch.setattr(sandbox_tools.config, "AI_SANDBOX_RATE_LIMIT_MAX_CALLS", 1)
+    monkeypatch.setattr(sandbox_tools.time, "monotonic", lambda: 10_000.0)
+
+    real_create = _FakeSandbox.create.__func__
+    create_attempts = []
+
+    def flaky_create(cls, **kwargs):
+        create_attempts.append(kwargs)
+        if len(create_attempts) == 1:
+            raise RuntimeError("e2b unavailable")
+        return real_create(cls, **kwargs)
+
+    monkeypatch.setattr(_FakeSandbox, "create", classmethod(flaky_create))
+    first_context = {"user_id": 123}
+    second_context = {"user_id": 123}
+    try:
+        set_tool_request_context(first_context)
+        failed = sandbox_tools.linux_sandbox_tool("echo first")
+        assert failed["status"] == "error"
+        assert "e2b unavailable" in failed["stderr"]
+        # 没建出沙箱：活跃锁、冷却与滑动窗口配额都退回，上下文里不留占座信息
+        assert sandbox_tools._ACTIVE_SANDBOX_USER_IDS == {}
+        assert sandbox_tools._USER_SANDBOX_CREATE_COOLDOWNS == {}
+        assert sandbox_tools._SANDBOX_GATE._window.buckets == {}
+        assert sandbox_tools._SANDBOX_USER_ID_KEY not in first_context
+        assert sandbox_tools._SANDBOX_RESERVATION_TOKEN_KEY not in first_context
+
+        # 同一时刻再试一次：不会被 user_rate_limit 挡住
+        set_tool_request_context(second_context)
+        second = sandbox_tools.linux_sandbox_tool("echo second")
+        assert second["status"] == "ok"
+        assert len(create_attempts) == 2
+        assert len(_FakeSandbox.created) == 1
+    finally:
+        sandbox_tools.cleanup_linux_sandbox()
+        sandbox_tools._ACTIVE_SANDBOX_USER_IDS.clear()
+        sandbox_tools._USER_SANDBOX_CREATE_COOLDOWNS.clear()
+        clear_tool_request_context()
+
+
 def test_cleanup_linux_sandbox_keeps_user_lock_when_kill_fails(monkeypatch):
     _install_fake_e2b(monkeypatch)
     _FakeSandbox.fail_kill = True

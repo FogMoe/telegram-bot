@@ -232,8 +232,9 @@ def test_litellm_and_tools_record_bounded_metrics_and_turn_accumulator(monkeypat
             assert label_names <= {"provider", "task", "entry", "status"}
 
 
-def test_background_summary_isolates_usage_context_from_parent_turn(monkeypatch):
+def test_background_summary_isolates_usage_context_from_parent_turn(monkeypatch, caplog):
     metrics.REGISTRY.reset()
+    caplog.set_level(logging.INFO)
     parent_accumulator = UsageAccumulator()
 
     async def fake_generate_and_store_summary(user_id: int) -> str:
@@ -282,6 +283,56 @@ def test_background_summary_isolates_usage_context_from_parent_turn(monkeypatch)
     # 后台摘要自身按 entry="background", task="summary" 记入全局指标
     ms = metrics.snapshot()
     assert ms.counter("ai.calls", provider="gemini", task="summary", entry="background") == 1
+
+    # 后台摘要用自己的累加器，完成日志带上本次的调用数、token 与成本
+    finished = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("background summary finished")
+    ]
+    assert len(finished) == 1
+    assert "user_id=42 outcome=stored" in finished[0]
+    assert "ai_calls=1 in_tokens=500" in finished[0]
+    assert "out_tokens=120 cost_usd=0.000400" in finished[0]
+
+
+def test_parse_model_pricing_rejects_non_finite_rates():
+    rates = parse_model_pricing(
+        json.dumps(
+            {
+                "openai/gpt-4o": {"input": "NaN", "output": 1},
+                "openai/gpt-4o-mini": {"input": 1, "output": "Infinity"},
+                "openai/o3": {"input": 1, "output": 2, "cached_input": "-Infinity"},
+                "openai/gpt-5": {"input": 1.25, "output": 10, "cached_input": 0.125},
+            }
+        )
+    )
+    assert set(rates) == {"openai/gpt-5"}
+
+
+def test_create_chat_completion_keeps_response_when_metering_fails(monkeypatch, caplog):
+    response = _fake_response()
+
+    async def fake_acompletion(**kwargs):
+        return response
+
+    def broken_metering(*args, **kwargs):
+        raise ValueError("cannot convert float NaN to integer")
+
+    monkeypatch.setattr(litellm_client.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(litellm_client, "record_completion_usage", broken_metering)
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "sk-test")
+
+    result = asyncio.run(
+        litellm_client.create_chat_completion(
+            "openai",
+            "gpt-4o",
+            [{"role": "user", "content": "hello"}],
+        )
+    )
+
+    assert result is response
+    assert any("Failed to record AI usage" in record.getMessage() for record in caplog.records)
 
 
 def test_run_turn_logs_charged_coins_with_usage_summary(caplog):
