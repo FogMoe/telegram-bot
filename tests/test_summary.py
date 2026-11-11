@@ -7,7 +7,7 @@ from fogmoe_telegram_bot.core import background
 from fogmoe_telegram_bot.features.ai import summary
 from fogmoe_telegram_bot.features.ai.tools.context import get_tool_request_context
 from fogmoe_telegram_bot.features.ai.tools.schemas import OPENAI_TOOLS
-from fogmoe_telegram_bot.features.ai.types import PartialAIResponseError
+from fogmoe_telegram_bot.features.ai.types import LoopResult, PartialAIResponseError
 
 
 def test_generate_summary_counts_with_response_model(monkeypatch):
@@ -98,7 +98,7 @@ def test_run_summary_agent_exposes_only_summary_search_tool(monkeypatch, setting
             kwargs=kwargs,
             active_context=get_tool_request_context(),
         )
-        return "generated summary", []
+        return LoopResult("generated summary")
 
     monkeypatch.setattr(summary, "run_tool_loop", fake_run_tool_loop)
 
@@ -144,7 +144,7 @@ def test_run_summary_agent_reruns_its_read_only_tools_on_the_fallback_model(
         models.append(model)
         if model == "primary":
             raise PartialAIResponseError("failed after search", [{"type": "tool_result"}])
-        return "generated summary", []
+        return LoopResult("generated summary")
 
     monkeypatch.setattr(summary, "run_tool_loop", fake_run_tool_loop)
 

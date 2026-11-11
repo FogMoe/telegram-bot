@@ -48,7 +48,7 @@ uv run python scripts/gen_ai_flow_doc.py
 | 看图（历史里只存描述，原图通过 `runtime_replacements` 只给这一次请求） | `_prepare_inputs` | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py) |
 | 记下用户的话 | `_record_input` → `insert_records`、`get_history` | [conversation/turn_services.py](../src/fogmoe_telegram_bot/features/conversation/turn_services.py) |
 | 思考与动手 | `_run_model` → `prepare_model_turn` → `run_model`（`ModelRequest` / `ModelResponse`）；工具上下文 `build_tool_context`，回复整理 `finish_reply` | 见第 3 节；[ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)、[ai/tools/context.py](../src/fogmoe_telegram_bot/features/ai/tools/context.py)、[ai/outbound.py](../src/fogmoe_telegram_bot/features/ai/outbound.py) |
-| 记下做了什么 | `execute_post_input_turn` → `_record_output`、`turn_record_entries`、`reply_record_entries` | [ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)、[ai/tool_history.py](../src/fogmoe_telegram_bot/features/ai/tool_history.py) |
+| 记下做了什么 | `execute_post_input_turn` → `_record_output`、`turn_messages_to_record_entries`、`reply_record_entries` | [ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)、[ai/tool_history.py](../src/fogmoe_telegram_bot/features/ai/tool_history.py) |
 | 发出回复 | `_deliver`、`_deliver_messages` | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py) |
 | 收尾 | `_finalize`、`USER_ENTRY_POLICY`、`archive_completed_clear`、`flush_events` | [ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)、[conversation/turn_services.py](../src/fogmoe_telegram_bot/features/conversation/turn_services.py) |
 | 每次写入历史后：打包发送被淘汰的归档、容量提示、溢出时生成摘要 | `_persist_records` | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py) |
@@ -124,8 +124,8 @@ uv run python scripts/gen_ai_flow_doc.py
 | `user` | bot 自己发出的消息、命令回复、按钮事件（`origin` 是 `command_handler` 或 `bot_automation`） | `HistoryTrackingExtBot`、`flush_pending_events` |
 | `user` | 历史状态事件 `origin="history_state"`：`new_session`、`near_limit`、`compressed`（之后回填 `<summary>`） | `_build_history_state_event` |
 | `user` | 余额状态事件 `origin="coin_service"`：`suspended`、`resumed` | `_build_coin_service_state_event` |
-| `assistant` | 回复，以及伴随工具调用的可见文字（都已脱敏） | `_record_output`、`turn_record_entries` |
-| `assistant` + `tool` | 带 `tool_calls` 的 assistant 消息与对应的 `tool` 结果，`tool_call_id` 一一配对（结果已脱敏） | `turn_record_entries` |
+| `assistant` | 回复，以及伴随工具调用的可见文字（都已脱敏） | `_record_output`、`turn_messages_to_record_entries` |
+| `assistant` + `tool` | 带 `tool_calls` 的 assistant 消息与对应的 `tool` 结果，`tool_call_id` 一一配对（结果已脱敏） | `turn_messages_to_record_entries` |
 
 一次请求的 messages（示意，字段与格式以代码为准；system 消息只在请求里，不写入历史）：
 

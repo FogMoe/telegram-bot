@@ -19,7 +19,6 @@ from fogmoe_telegram_bot.core.telegram_history import (
 from fogmoe_telegram_bot.core.telegram_utils import partial_send
 
 from .reply_filter import normalize_ai_reply_text
-from .router import runtime_error_cause
 from .sticker_sender import send_ai_reply_with_stickers
 from .tools.specs import iter_media_tool_specs
 from .types import LoopStatus, ToolLog
@@ -37,16 +36,12 @@ async def finish_reply(
     text: str,
     *,
     normalize_stickers: Callable[[str], Awaitable[str]],
-    status: LoopStatus | None = None,
+    status: LoopStatus,
 ) -> AIReply:
     reply_text = normalize_ai_reply_text(text)
-    if status is not None:
-        runtime_error = status.runtime_error_cause()
-    else:
-        runtime_error = runtime_error_cause(reply_text)
     if reply_text.strip():
         reply_text = await normalize_stickers(reply_text)
-    return AIReply(text=reply_text, runtime_error=runtime_error)
+    return AIReply(text=reply_text, runtime_error=status.runtime_error_cause())
 
 
 async def send_private_reply(

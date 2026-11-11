@@ -7,7 +7,6 @@ from fogmoe_telegram_bot.core.deadline import Deadline
 from fogmoe_telegram_bot.features.ai import tool_runner
 from fogmoe_telegram_bot.features.ai.tool_history import (
     tool_logs_completed_clear,
-    tool_logs_to_record_entries,
     turn_messages_to_record_entries,
 )
 from fogmoe_telegram_bot.features.ai.types import (
@@ -17,39 +16,28 @@ from fogmoe_telegram_bot.features.ai.types import (
 )
 
 
-def test_tool_logs_to_record_entries_deduplicates_visible_tool_call_content():
-    entries = tool_logs_to_record_entries(
+def test_visible_content_sent_with_a_tool_call_is_recorded_once():
+    entries = turn_messages_to_record_entries(
         [
             {
-                "type": "assistant_visible",
+                "role": "assistant",
                 "content": "我先查一下。",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "google_search",
+                            "arguments": '{"query": "example"}',
+                        },
+                    }
+                ],
             },
             {
-                "type": "assistant_tool_call",
-                "tool_name": "google_search",
-                "arguments": {"query": "example"},
+                "role": "tool",
                 "tool_call_id": "call_1",
-                "assistant_message": {
-                    "role": "assistant",
-                    "content": "我先查一下。",
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {
-                                "name": "google_search",
-                                "arguments": '{"query": "example"}',
-                            },
-                        }
-                    ],
-                },
-            },
-            {
-                "type": "tool_result",
-                "tool_name": "google_search",
-                "arguments": {"query": "example"},
-                "result": {"ok": True},
-                "tool_call_id": "call_1",
+                "name": "google_search",
+                "content": '{"ok": true}',
             },
         ]
     )
@@ -84,45 +72,39 @@ def test_tool_logs_to_record_entries_deduplicates_visible_tool_call_content():
     ]
 
 
-def test_tool_logs_to_record_entries_keeps_standalone_visible_content():
-    entries = tool_logs_to_record_entries(
-        [
-            {
-                "type": "assistant_visible",
-                "content": "这是已经发出的最终回复。",
-            }
-        ]
+def test_standalone_visible_content_is_recorded():
+    entries = turn_messages_to_record_entries(
+        [{"role": "assistant", "content": "这是已经发出的最终回复。"}]
     )
 
     assert entries == [("assistant", "这是已经发出的最终回复。")]
 
 
-def test_tool_logs_to_record_entries_keeps_telegram_events_after_tool_result():
-    entries = tool_logs_to_record_entries(
+def test_telegram_events_are_recorded_after_the_tool_result():
+    entries = turn_messages_to_record_entries(
         [
             {
-                "type": "assistant_tool_call",
-                "tool_name": "execute_telegram_command",
-                "arguments": {"command": "/me"},
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "execute_telegram_command",
+                            "arguments": '{"command": "/me"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
                 "tool_call_id": "call_1",
+                "name": "execute_telegram_command",
+                "content": '{"success": true}',
             },
-            {
-                "type": "tool_result",
-                "tool_name": "execute_telegram_command",
-                "arguments": {"command": "/me"},
-                "result": {"success": True},
-                "tool_call_id": "call_1",
-            },
-            {
-                "type": "telegram_event",
-                "role": "user",
-                "content": "command-event",
-            },
-            {
-                "type": "telegram_event",
-                "role": "user",
-                "content": "reply-event",
-            },
+            {"role": "user", "content": "command-event"},
+            {"role": "user", "content": "reply-event"},
         ]
     )
 
@@ -147,7 +129,7 @@ def test_tool_logs_completed_clear_requires_successful_clear_result():
     ) is False
 
 
-def test_turn_messages_and_tool_logs_produce_identical_history_entries(monkeypatch):
+def test_turn_messages_record_visible_text_tool_pairs_and_telegram_events(monkeypatch):
     responses = [
         SimpleNamespace(
             choices=[
@@ -207,14 +189,11 @@ def test_turn_messages_and_tool_logs_produce_identical_history_entries(monkeypat
     )
 
     assert result.status is LoopStatus.COMPLETED
-    assert result.turn_messages is not None
-    from_messages = turn_messages_to_record_entries(result.turn_messages)
-    from_logs = tool_logs_to_record_entries(result.tool_logs)
-    assert from_messages == from_logs
-    assert [role for role, _ in from_messages] == ["assistant", "tool", "user", "assistant"]
+    entries = turn_messages_to_record_entries(result.turn_messages)
+    assert [role for role, _ in entries] == ["assistant", "tool", "user", "assistant"]
 
 
-def test_interrupted_round_turn_messages_stay_paired_with_tool_logs(monkeypatch):
+def test_interrupted_round_turn_messages_stay_paired(monkeypatch):
     response = SimpleNamespace(
         choices=[
             SimpleNamespace(
@@ -262,7 +241,9 @@ def test_interrupted_round_turn_messages_stay_paired_with_tool_logs(monkeypatch)
         )
 
     err = exc_info.value
-    assert err.turn_messages is not None
-    assert turn_messages_to_record_entries(err.turn_messages) == tool_logs_to_record_entries(
-        err.tool_logs
-    )
+    entries = turn_messages_to_record_entries(err.turn_messages)
+    assert [role for role, _ in entries] == ["assistant", "tool", "tool"]
+    assert [entry["tool_call_id"] for role, entry in entries if role == "tool"] == [
+        "call_a",
+        "call_b",
+    ]

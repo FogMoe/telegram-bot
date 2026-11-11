@@ -12,16 +12,12 @@ from fogmoe_telegram_bot.core.redaction import describe_exception, log_exception
 
 logger = logging.getLogger(__name__)
 
-# 测试可直接 monkeypatch `SERPAPI_API_KEY`；为 None 时每次调用实时读取 `config.SERPAPI_API_KEY`。
-SERPAPI_API_KEY: str | None = None
 FETCH_URL_MAX_CHARS = 12000
 _JINA_READER_HEADERS = {"X-Return-Format": "html"}
 _SESSION_LOCAL = threading.local()
 
 
 def _serpapi_api_key(settings: Any = None) -> str:
-    if SERPAPI_API_KEY is not None:
-        return SERPAPI_API_KEY.strip()
     source = config if settings is None else settings
     return str(getattr(source, "SERPAPI_API_KEY", None) or "").strip()
 

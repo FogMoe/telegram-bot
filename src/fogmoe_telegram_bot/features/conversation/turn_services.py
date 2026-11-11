@@ -38,7 +38,6 @@ from fogmoe_telegram_bot.features.ai import (
 )
 from fogmoe_telegram_bot.features.ai.telegram_visible_sender import TelegramVisibleContentHandler
 from fogmoe_telegram_bot.features.ai.tool_history import reply_record_entries
-from fogmoe_telegram_bot.features.ai.types import LoopResult
 
 from . import billing, history_hooks
 from .turn_types import HistoryInsert, ModelRequest, ModelResponse, UserStateRecord
@@ -183,7 +182,7 @@ async def _analyze_image(base64_str: str) -> str | None:
 
 
 async def _run_model(request: ModelRequest) -> ModelResponse:
-    raw = await ai_chat.get_ai_response(
+    result = await ai_chat.get_ai_response(
         request.messages,
         request.user_id,
         tool_context=request.tool_context,
@@ -191,12 +190,11 @@ async def _run_model(request: ModelRequest) -> ModelResponse:
         visible_content_handler=request.visible_content_handler,
         deadline=request.deadline,
     )
-    loop_result = LoopResult.coerce(raw, classify_text=ai_chat.runtime_error_cause)
     return ModelResponse(
-        text=loop_result.text,
-        tool_logs=loop_result.tool_logs,
-        status=loop_result.status,
-        turn_messages=loop_result.turn_messages,
+        text=result.text,
+        tool_logs=result.tool_logs,
+        status=result.status,
+        turn_messages=result.turn_messages,
     )
 
 

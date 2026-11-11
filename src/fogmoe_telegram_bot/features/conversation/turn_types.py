@@ -125,8 +125,8 @@ class ModelRequest:
 class ModelResponse:
     text: str
     tool_logs: list[ToolLog]
-    status: LoopStatus | None = None
-    turn_messages: list[dict[str, Any]] | None = None
+    status: LoopStatus = LoopStatus.COMPLETED
+    turn_messages: list[dict[str, Any]] = field(default_factory=list)
 
 
 class TurnStatus(StrEnum):

@@ -7,6 +7,7 @@ import pytest
 
 from fogmoe_telegram_bot.features.ai import idle_followup
 from fogmoe_telegram_bot.features.ai.tools import get_tool_request_context
+from fogmoe_telegram_bot.features.ai.types import LoopResult
 
 
 def test_claim_due_followups_skips_registered_users_without_coins(monkeypatch):
@@ -239,7 +240,7 @@ def test_run_recap_agent_exposes_only_read_only_memory_tools(monkeypatch, settin
             kwargs=kwargs,
             active_context=get_tool_request_context(),
         )
-        return "structured result", []
+        return LoopResult("structured result")
 
     monkeypatch.setattr(idle_followup, "run_tool_loop", fake_run_tool_loop)
 
@@ -308,7 +309,7 @@ def test_process_claim_stops_when_user_returns_during_recap(monkeypatch):
 
     async def fake_ai_response(*args, **kwargs):
         ai_called.append((args, kwargs))
-        return "不该发送", []
+        return LoopResult("不该发送")
 
     async def fake_persist(*args, **kwargs):
         persisted.append((args, kwargs))
@@ -360,6 +361,25 @@ def test_process_claim_keeps_main_ai_tools_enabled(monkeypatch):
             "tool_call_id": "call_1",
         }
     ]
+    turn_messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_doc", "arguments": '{"topic": "memory"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "read_doc",
+            "content": '{"content": "memory details"}',
+        },
+    ]
 
     async def always_current(_claim):
         return True
@@ -389,7 +409,7 @@ def test_process_claim_keeps_main_ai_tools_enabled(monkeypatch):
 
     async def fake_ai_response(*args, **kwargs):
         captured["tool_context"] = kwargs["tool_context"]
-        return "你好", tool_logs
+        return LoopResult("你好", tool_logs, turn_messages=turn_messages)
 
     async def fake_normalize(text, *, logger):
         return text
@@ -440,7 +460,7 @@ def test_process_claim_keeps_main_ai_tools_enabled(monkeypatch):
 
     assert "disable_tools" not in captured["tool_context"]
     assert "<memory_suggestion>" in captured["persist_args"][1]
-    assert captured["persist_args"][3] == tool_logs
+    assert captured["persist_args"][3] == turn_messages
     assert captured["send_args"][2] == tool_logs
     # 主模型执行之前进入 generating，投递之前进入 delivering，投递之后才终结 claim。
     assert captured["stages"] == ["generating", "delivering"]

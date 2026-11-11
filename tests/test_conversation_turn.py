@@ -10,6 +10,7 @@ import pytest
 from fogmoe_telegram_bot.core import metrics, telegram_history
 from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline
 from fogmoe_telegram_bot.features.ai import router, user_state
+from fogmoe_telegram_bot.features.ai.types import LoopStatus
 from fogmoe_telegram_bot.features.conversation import billing, turn
 from fogmoe_telegram_bot.features.conversation.turn_services import TurnServices
 from fogmoe_telegram_bot.features.conversation.turn_types import (
@@ -489,7 +490,11 @@ class TestCompletedTurn:
 
     def test_an_error_notice_is_delivered_but_never_written_as_an_assistant_record(self):
         world = World()
-        world.model_response = ModelResponse(text=router.AI_SERVICE_ERROR_MESSAGE, tool_logs=[])
+        world.model_response = ModelResponse(
+            text=router.AI_SERVICE_ERROR_MESSAGE,
+            tool_logs=[],
+            status=LoopStatus.ALL_PROVIDERS_FAILED,
+        )
 
         result = run_turn(make_request(text_message()), make_services(world))
 
@@ -504,6 +509,10 @@ class TestCompletedTurn:
             tool_logs=[
                 {"type": "telegram_event", "content": "<event/>"},
                 {"type": "assistant_visible", "content": "稍等"},
+            ],
+            turn_messages=[
+                {"role": "user", "content": "<event/>"},
+                {"role": "assistant", "content": "稍等"},
             ],
         )
 
@@ -570,7 +579,11 @@ class TestCompletedTurn:
         assert [event[1:] for event in logged] == [(900, 100)]
 
         world = World()
-        world.model_response = ModelResponse(text=router.AI_SERVICE_ERROR_MESSAGE, tool_logs=[])
+        world.model_response = ModelResponse(
+            text=router.AI_SERVICE_ERROR_MESSAGE,
+            tool_logs=[],
+            status=LoopStatus.ALL_PROVIDERS_FAILED,
+        )
         run_turn(make_request(text_message(), chat_type="group"), make_services(world))
         assert world.calls("group_log") == []
 

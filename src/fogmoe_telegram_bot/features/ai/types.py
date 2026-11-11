@@ -8,7 +8,6 @@ from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
 ToolLog = dict[str, Any]
-AIResponse = tuple[str, list[ToolLog]]
 
 
 @runtime_checkable
@@ -58,21 +57,6 @@ class LoopStatus(StrEnum):
         return None
 
 
-_CAUSE_TO_STATUS: Mapping[str, LoopStatus] = {
-    "partial_ai_response_failed": LoopStatus.PARTIAL_FAILURE,
-    "all_ai_services_failed": LoopStatus.ALL_PROVIDERS_FAILED,
-    "context_budget_exceeded": LoopStatus.CONTEXT_BUDGET_EXCEEDED,
-    "turn_deadline_exceeded": LoopStatus.DEADLINE_EXCEEDED,
-    "turn_interrupted_by_shutdown": LoopStatus.SHUTDOWN,
-}
-
-
-def loop_status_from_cause(cause: str | None) -> LoopStatus:
-    if not cause:
-        return LoopStatus.COMPLETED
-    return _CAUSE_TO_STATUS.get(cause, LoopStatus.COMPLETED)
-
-
 class MediaDeliveryState(StrEnum):
     """媒体生成工具产物的即时投递状态。"""
 
@@ -86,14 +70,14 @@ class MediaDeliveryState(StrEnum):
 class LoopResult:
     """工具循环与主聊天路由的类型化结果。
 
-    同时兼容旧式的二元组解包 `text, tool_logs = result` 与下标访问，方便渐进迁移和单测断言；
-    生产调用链直接读取 `status`、`runtime_error` 与 `turn_messages`，不再靠比对回复文案判错。
+    支持二元组解包 `text, tool_logs = result`。`status` 是这次调用怎样结束的，`turn_messages` 是
+    本轮在循环里追加的消息序列（已配对），历史直接从它写入。
     """
 
     text: str
     tool_logs: list[ToolLog] = field(default_factory=list)
     status: LoopStatus = LoopStatus.COMPLETED
-    turn_messages: list[dict[str, Any]] | None = None
+    turn_messages: list[dict[str, Any]] = field(default_factory=list)
     error: Exception | None = None
 
     @property
@@ -121,24 +105,6 @@ class LoopResult:
         if isinstance(other, tuple) and len(other) == 2:
             return (self.text, self.tool_logs) == other
         return NotImplemented
-
-    @classmethod
-    def coerce(
-        cls,
-        value: LoopResult | tuple[str, list[ToolLog]],
-        *,
-        classify_text: Callable[[str], str | None] | None = None,
-    ) -> LoopResult:
-        if isinstance(value, LoopResult):
-            return value
-        text, tool_logs = value
-        cause = classify_text(text) if classify_text is not None else None
-        return cls(
-            text=text,
-            tool_logs=list(tool_logs),
-            status=loop_status_from_cause(cause),
-            turn_messages=None,
-        )
 
 
 # 工具 handler 可用此内部字段把系统生成的上下文消息交回工具循环。
@@ -226,7 +192,7 @@ class PartialAIResponseError(Exception):
     ) -> None:
         super().__init__(message)
         self.tool_logs = list(tool_logs)
-        self.turn_messages = list(turn_messages) if turn_messages is not None else None
+        self.turn_messages = list(turn_messages or [])
 
 
 class TurnDeadlineError(PartialAIResponseError):

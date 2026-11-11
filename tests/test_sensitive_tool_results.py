@@ -7,24 +7,24 @@ import logging
 import requests
 
 from fogmoe_telegram_bot.features.ai import tool_runner
-from fogmoe_telegram_bot.features.ai.tool_history import tool_logs_to_record_entries
+from fogmoe_telegram_bot.features.ai.tool_history import turn_messages_to_record_entries
 
 CODE = "123e4567-e89b-12d3-a456-426614174000"
 SECRET = "SECRETVALUE123"
 
 
 def test_tool_result_is_redacted_before_it_is_persisted():
-    entries = tool_logs_to_record_entries(
+    result = {
+        "error": f"failed for https://x.test/?api_key={SECRET}&q=1",
+        "headers": {"Authorization": f"Bearer {SECRET}"},
+    }
+    entries = turn_messages_to_record_entries(
         [
             {
-                "type": "tool_result",
-                "tool_name": "fetch_url",
+                "role": "tool",
                 "tool_call_id": "call_1",
-                "arguments": {"url": "https://x.test"},
-                "result": {
-                    "error": f"failed for https://x.test/?api_key={SECRET}&q=1",
-                    "headers": {"Authorization": f"Bearer {SECRET}"},
-                },
+                "name": "fetch_url",
+                "content": json.dumps(result),
             }
         ]
     )
@@ -45,27 +45,19 @@ def test_sensitive_telegram_command_arguments_are_redacted_in_persisted_tool_cal
                 "id": "call_1",
                 "type": "function",
                 "function": {"name": "execute_telegram_command", "arguments": arguments_json},
-            }
+            },
+            {
+                "id": "call_2",
+                "type": "function",
+                "function": {
+                    "name": "execute_telegram_command",
+                    "arguments": json.dumps({"command": f"/webpassword {CODE}"}),
+                },
+            },
         ],
         "provider_specific_fields": {"signature": "keep-me"},
     }
-    entries = tool_logs_to_record_entries(
-        [
-            {
-                "type": "assistant_tool_call",
-                "tool_name": "execute_telegram_command",
-                "tool_call_id": "call_1",
-                "arguments": {"command": f"/charge {CODE}"},
-                "assistant_message": assistant_message,
-            },
-            {
-                "type": "assistant_tool_call",
-                "tool_name": "execute_telegram_command",
-                "tool_call_id": "call_2",
-                "arguments": {"command": f"/webpassword@FogBot {CODE}"},
-            },
-        ]
-    )
+    entries = turn_messages_to_record_entries([assistant_message])
 
     persisted = json.dumps(entries, ensure_ascii=False)
     assert CODE not in persisted
@@ -79,10 +71,10 @@ def test_sensitive_telegram_command_arguments_are_redacted_in_persisted_tool_cal
 
 
 def test_visible_assistant_content_is_redacted_before_it_is_persisted():
-    entries = tool_logs_to_record_entries(
+    entries = turn_messages_to_record_entries(
         [
             {
-                "type": "assistant_visible",
+                "role": "assistant",
                 "content": f"打开 https://x.test/?token={SECRET} 看看",
             }
         ]
@@ -213,7 +205,7 @@ def test_code_tool_connection_error_is_safe(monkeypatch, caplog):
     from fogmoe_telegram_bot.features.ai.tools import code_tools
 
     error = requests.ConnectionError(f"cannot reach https://judge.test/?auth_token={SECRET}")
-    monkeypatch.setattr(code_tools, "JUDGE0_API_URL", "https://judge.test")
+    monkeypatch.setattr(code_tools.config, "JUDGE0_API_URL", "https://judge.test")
     monkeypatch.setattr(code_tools, "_get_session", lambda: _FailingSession(error))
 
     with caplog.at_level(logging.DEBUG):
@@ -273,7 +265,7 @@ def test_upstream_error_body_is_redacted_in_tool_details(monkeypatch):
         def raise_for_status(self):
             raise error
 
-    monkeypatch.setattr(code_tools, "JUDGE0_API_URL", "https://judge.test")
+    monkeypatch.setattr(code_tools.config, "JUDGE0_API_URL", "https://judge.test")
     monkeypatch.setattr(code_tools, "_get_session", lambda: _Session())
 
     result = code_tools.execute_python_code_tool("print(1)")

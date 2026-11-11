@@ -6,8 +6,7 @@
 
 import pytest
 
-from fogmoe_telegram_bot.core import ai_pricing, chat_records
-from fogmoe_telegram_bot.core.chat_records import ZeroBalancePolicy, _resolve_zero_balance_policy
+from fogmoe_telegram_bot.core import ai_pricing
 from fogmoe_telegram_bot.features.conversation import billing
 
 
@@ -68,40 +67,3 @@ def test_render_pricing_placeholders_substitutes_known_keys_and_leaves_unknowns(
     assert rendered == (
         "chat=1-5, media=5, limit=4096, tl_free=500, tl_max=3/3000, other={{UNKNOWN_KEY}}"
     )
-
-
-def test_zero_balance_policy_resolves_explicit_and_legacy_flags():
-    assert (
-        _resolve_zero_balance_policy(None, allow_zero_balance=False, suspend_if_zero=False)
-        is ZeroBalancePolicy.ENFORCE
-    )
-    assert (
-        _resolve_zero_balance_policy(None, allow_zero_balance=True, suspend_if_zero=False)
-        is ZeroBalancePolicy.ALLOW
-    )
-    assert (
-        _resolve_zero_balance_policy(None, allow_zero_balance=False, suspend_if_zero=True)
-        is ZeroBalancePolicy.SUSPEND_BOUNDARY
-    )
-    assert (
-        _resolve_zero_balance_policy(
-            ZeroBalancePolicy.ALLOW,
-            allow_zero_balance=False,
-            suspend_if_zero=False,
-        )
-        is ZeroBalancePolicy.ALLOW
-    )
-
-    with pytest.raises(ValueError):
-        _resolve_zero_balance_policy(None, allow_zero_balance=True, suspend_if_zero=True)
-
-    with pytest.raises(ValueError):
-        _resolve_zero_balance_policy(
-            ZeroBalancePolicy.ENFORCE,
-            allow_zero_balance=True,
-            suspend_if_zero=False,
-        )
-
-
-def test_zero_balance_policy_is_exported_from_chat_records():
-    assert chat_records.ZeroBalancePolicy is ZeroBalancePolicy

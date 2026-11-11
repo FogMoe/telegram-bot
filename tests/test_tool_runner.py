@@ -1019,3 +1019,48 @@ def test_run_tool_loop_sends_generated_voice_immediately(monkeypatch):
     assert voice_results[0]["sent_message_count"] == 1
     assert voice_results[0]["result"]["message"] == "Generated audio has been sent to Telegram."
     assert "forward" not in str(voice_results[0]["result"]).lower()
+
+
+def test_tool_loop_logs_its_token_totals(monkeypatch, caplog):
+    from types import SimpleNamespace
+
+    def with_usage(response):
+        response.usage = SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=20,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=60),
+        )
+        return response
+
+    responses = [
+        with_usage(
+            _Response(
+                _Message(
+                    "",
+                    [{"id": "c1", "type": "function", "function": {"name": "read_doc", "arguments": "{}"}}],
+                )
+            )
+        ),
+        with_usage(_Response(_Message("done", None))),
+    ]
+
+    async def fake_create_chat_completion(*args, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
+    monkeypatch.setitem(tool_runner.AI_TOOL_HANDLERS, "read_doc", lambda **kwargs: {"ok": True})
+
+    with caplog.at_level("INFO"):
+        asyncio.run(tool_runner.run_tool_loop(
+            "test_provider",
+            "test_model",
+            [{"role": "user", "content": "hi"}],
+            {"user_id": 7},
+            provider_name="Test",
+        ))
+
+    (line,) = [r.getMessage() for r in caplog.records if "tool loop finished" in r.getMessage()]
+    assert line == (
+        "Test tool loop finished: model=test_model user_id=7 ai_calls=2 in_tokens=200 "
+        "cached_tokens=120 out_tokens=40 tool_calls=1"
+    )

@@ -754,7 +754,6 @@ async def _process_schedule_task_locked(
                 visible_content_handler=visible_content_handler,
             ),
             normalize_stickers=lambda text: normalize_sticker_directives(text, logger=logger),
-            classify_error_text=ai_chat.runtime_error_cause,
             logger=logger,
             user_id=user_id,
         ),

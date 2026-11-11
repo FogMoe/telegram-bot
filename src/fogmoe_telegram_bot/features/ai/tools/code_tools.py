@@ -10,22 +10,15 @@ from fogmoe_telegram_bot.core.redaction import describe_exception, log_exception
 
 logger = logging.getLogger(__name__)
 
-# 测试可直接 monkeypatch；为 None 时每次调用实时读取 `config.JUDGE0_*`。
-JUDGE0_API_URL: str | None = None
-JUDGE0_API_KEY: str | None = None
 _SESSION_LOCAL = threading.local()
 
 
 def _judge0_api_url(settings: Any = None) -> str:
-    if JUDGE0_API_URL is not None:
-        return JUDGE0_API_URL.strip()
     source = config if settings is None else settings
     return str(getattr(source, "JUDGE0_API_URL", None) or "").strip()
 
 
 def _judge0_api_key(settings: Any = None) -> str:
-    if JUDGE0_API_KEY is not None:
-        return JUDGE0_API_KEY.strip()
     source = config if settings is None else settings
     return str(getattr(source, "JUDGE0_API_KEY", None) or "").strip()
 

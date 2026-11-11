@@ -16,7 +16,7 @@ from fogmoe_telegram_bot.features.ai import (
 )
 from fogmoe_telegram_bot.features.ai.tool_history import reply_record_entries
 from fogmoe_telegram_bot.features.ai.tools.context import build_tool_context
-from fogmoe_telegram_bot.features.ai.types import ABORT_EVENT_KEY
+from fogmoe_telegram_bot.features.ai.types import ABORT_EVENT_KEY, LoopStatus
 
 SECRET = "sk-test-0123456789abcdef"
 
@@ -121,25 +121,23 @@ def _record_stickers(seen):
 def test_finish_reply_strips_the_no_response_marker_and_normalizes_stickers():
     seen = []
 
-    reply = asyncio.run(outbound.finish_reply("你好 [sticker][no_response]", normalize_stickers=_record_stickers(seen)))
+    reply = asyncio.run(
+        outbound.finish_reply(
+            "你好 [sticker][no_response]",
+            normalize_stickers=_record_stickers(seen),
+            status=LoopStatus.COMPLETED,
+        )
+    )
 
     assert reply == outbound.AIReply(text="你好 🙂", runtime_error=None)
     assert seen == ["你好 [sticker]"]
 
 
-def test_finish_reply_recognises_fixed_error_notices():
-    reply = asyncio.run(
-        outbound.finish_reply(router.AI_SERVICE_ERROR_MESSAGE, normalize_stickers=_record_stickers([]))
-    )
-
-    assert reply.runtime_error == "all_ai_services_failed"
-
-
-def test_finish_reply_uses_structured_loop_status_over_text_matching():
+def test_finish_reply_takes_the_runtime_error_from_the_loop_status():
     from fogmoe_telegram_bot.features.ai.telegram_visible_sender import (
         TelegramVisibleContentHandler,
     )
-    from fogmoe_telegram_bot.features.ai.types import LoopStatus, VisibleContentHandler
+    from fogmoe_telegram_bot.features.ai.types import VisibleContentHandler
 
     # 正常完成的轮次即使恰好输出了与错误通知相同的句子，也不被误判为运行时错误
     normal = asyncio.run(
@@ -173,7 +171,13 @@ def test_finish_reply_uses_structured_loop_status_over_text_matching():
 def test_an_empty_reply_skips_sticker_normalization():
     seen = []
 
-    reply = asyncio.run(outbound.finish_reply("[no_response]", normalize_stickers=_record_stickers(seen)))
+    reply = asyncio.run(
+        outbound.finish_reply(
+            "[no_response]",
+            normalize_stickers=_record_stickers(seen),
+            status=LoopStatus.COMPLETED,
+        )
+    )
 
     assert reply == outbound.AIReply(text="", runtime_error=None)
     assert seen == []

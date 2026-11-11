@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import pytest
 
 from fogmoe_telegram_bot.core import telegram_history
-from fogmoe_telegram_bot.core.chat_records import ZeroBalancePolicy
 from fogmoe_telegram_bot.features.ai import idle_followup, scheduler
 from fogmoe_telegram_bot.features.ai.router import (
     AI_SERVICE_ERROR_MESSAGE,
@@ -39,19 +38,16 @@ async def _identity_stickers(text: str) -> str:
 def test_entry_policies_declare_expected_boundaries() -> None:
     assert set(ENTRY_POLICIES) == {"user", "schedule", "idle_followup"}
 
-    assert USER_ENTRY_POLICY.finalize_zero_balance_policy is ZeroBalancePolicy.SUSPEND_BOUNDARY
     assert USER_ENTRY_POLICY.suspend_if_zero is True
     assert USER_ENTRY_POLICY.supports_completed_clear is True
     assert USER_ENTRY_POLICY.runtime_error_policy is RuntimeErrorPolicy.DELIVER_NOTICE
     assert USER_ENTRY_POLICY.send_typing_before_model is True
     assert USER_ENTRY_POLICY.stream_visible_content is True
 
-    assert SCHEDULE_ENTRY_POLICY.finalize_zero_balance_policy is None
     assert SCHEDULE_ENTRY_POLICY.suspend_if_zero is False
     assert SCHEDULE_ENTRY_POLICY.supports_completed_clear is False
     assert SCHEDULE_ENTRY_POLICY.runtime_error_policy is RuntimeErrorPolicy.DELIVER_NOTICE
 
-    assert IDLE_FOLLOWUP_ENTRY_POLICY.finalize_zero_balance_policy is None
     assert IDLE_FOLLOWUP_ENTRY_POLICY.suspend_if_zero is False
     assert IDLE_FOLLOWUP_ENTRY_POLICY.supports_completed_clear is False
     assert IDLE_FOLLOWUP_ENTRY_POLICY.runtime_error_policy is RuntimeErrorPolicy.RETRY_OR_SUPPRESS
@@ -120,6 +116,14 @@ def test_prepare_model_turn_applies_entry_runtime_error_policies() -> None:
             text=PARTIAL_AI_RESPONSE_ERROR_MESSAGE,
             tool_logs=[tool_log],
             status=LoopStatus.PARTIAL_FAILURE,
+            turn_messages=[
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "name": "user_diary",
+                    "content": '{"content": "note"}',
+                }
+            ],
         )
 
     suppressed_idle_turn = asyncio.run(
@@ -346,6 +350,14 @@ def test_idle_followup_stale_claim_after_tools_persists_only_tool_history(monkey
             "tool_call_id": "call_imp",
         }
     ]
+    turn_messages = [
+        {
+            "role": "tool",
+            "tool_call_id": "call_imp",
+            "name": "update_impression",
+            "content": '{"ok": true}',
+        }
+    ]
 
     monkeypatch.setattr(
         idle_followup,
@@ -393,7 +405,10 @@ def test_idle_followup_stale_claim_after_tools_persists_only_tool_history(monkey
     monkeypatch.setattr(
         idle_followup.ai_chat,
         "get_ai_response",
-        lambda *_a, **_kw: asyncio.sleep(0, result=LoopResult(text="不该发出", tool_logs=tool_logs)),
+        lambda *_a, **_kw: asyncio.sleep(
+            0,
+            result=LoopResult(text="不该发出", tool_logs=tool_logs, turn_messages=turn_messages),
+        ),
     )
     monkeypatch.setattr(
         idle_followup,
@@ -423,6 +438,6 @@ def test_idle_followup_stale_claim_after_tools_persists_only_tool_history(monkey
     assert stages == ["generating"]  # 未进入 delivering
     assert len(persisted) == 1
     assert persisted[0][0][2] == ""  # assistant_message 被置空
-    assert persisted[0][0][3] == tool_logs
+    assert persisted[0][0][3] == turn_messages
     assert sent == []
     assert fired == []

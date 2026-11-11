@@ -17,17 +17,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
 
-from fogmoe_telegram_bot.core.chat_records import ZeroBalancePolicy
 from fogmoe_telegram_bot.core.telegram_history import suppress_telegram_history
 from fogmoe_telegram_bot.features.ai.outbound import finish_reply
-from fogmoe_telegram_bot.features.ai.router import runtime_error_cause
 from fogmoe_telegram_bot.features.ai.tool_history import (
     reply_record_entries,
     tool_logs_completed_clear,
-    turn_record_entries,
+    turn_messages_to_record_entries,
 )
 from fogmoe_telegram_bot.features.ai.types import (
-    LoopResult,
     LoopStatus,
     ToolLog,
     VisibleContentSink,
@@ -63,20 +60,17 @@ class EntryPolicy:
 
     name: str
     runtime_error_policy: RuntimeErrorPolicy
-    finalize_zero_balance_policy: ZeroBalancePolicy | None
+    # 收尾时余额已归零就在历史里补一条 `suspended` 事件（只有会扣费的用户轮次需要）。
+    suspend_if_zero: bool
     supports_completed_clear: bool
     send_typing_before_model: bool
     stream_visible_content: bool
-
-    @property
-    def suspend_if_zero(self) -> bool:
-        return self.finalize_zero_balance_policy is ZeroBalancePolicy.SUSPEND_BOUNDARY
 
 
 USER_ENTRY_POLICY = EntryPolicy(
     name="user",
     runtime_error_policy=RuntimeErrorPolicy.DELIVER_NOTICE,
-    finalize_zero_balance_policy=ZeroBalancePolicy.SUSPEND_BOUNDARY,
+    suspend_if_zero=True,
     supports_completed_clear=True,
     send_typing_before_model=True,
     stream_visible_content=True,
@@ -85,7 +79,7 @@ USER_ENTRY_POLICY = EntryPolicy(
 SCHEDULE_ENTRY_POLICY = EntryPolicy(
     name="schedule",
     runtime_error_policy=RuntimeErrorPolicy.DELIVER_NOTICE,
-    finalize_zero_balance_policy=None,
+    suspend_if_zero=False,
     supports_completed_clear=False,
     send_typing_before_model=True,
     stream_visible_content=True,
@@ -94,7 +88,7 @@ SCHEDULE_ENTRY_POLICY = EntryPolicy(
 IDLE_FOLLOWUP_ENTRY_POLICY = EntryPolicy(
     name="idle_followup",
     runtime_error_policy=RuntimeErrorPolicy.RETRY_OR_SUPPRESS,
-    finalize_zero_balance_policy=None,
+    suspend_if_zero=False,
     supports_completed_clear=False,
     send_typing_before_model=False,
     stream_visible_content=False,
@@ -118,13 +112,12 @@ class ModelStepOutput(Protocol):
     def tool_logs(self) -> list[ToolLog]: ...
 
     @property
-    def status(self) -> LoopStatus | None: ...
+    def status(self) -> LoopStatus: ...
 
     @property
-    def turn_messages(self) -> list[dict[str, Any]] | None: ...
+    def turn_messages(self) -> list[dict[str, Any]]: ...
 
 
-RawModelStepOutput = LoopResult | ModelStepOutput | tuple[str, list[ToolLog]]
 StickerNormalizer = Callable[[str], Awaitable[str]]
 
 
@@ -134,7 +127,7 @@ class PreparedModelTurn:
 
     text: str
     tool_logs: list[ToolLog]
-    turn_messages: list[dict[str, Any]] | None
+    turn_messages: list[dict[str, Any]]
     runtime_error: str | None
     tool_record_entries: list[tuple[str, object]]
     reply_entries: list[tuple[str, object]]
@@ -159,34 +152,15 @@ class PostInputTurnOutcome[DeliveryResultT]:
     delivery_result: DeliveryResultT | None = None
 
 
-def _coerce_model_output(
-    raw: RawModelStepOutput,
-    *,
-    classify_text: Callable[[str], str | None],
-) -> tuple[str, list[ToolLog], LoopStatus | None, list[dict[str, Any]] | None]:
-    if isinstance(raw, LoopResult):
-        return raw.text, raw.tool_logs, raw.status, raw.turn_messages
-    if isinstance(raw, tuple):
-        coerced = LoopResult.coerce(raw, classify_text=classify_text)
-        return coerced.text, coerced.tool_logs, coerced.status, coerced.turn_messages
-    return (
-        str(raw.text),
-        raw.tool_logs,
-        raw.status,
-        raw.turn_messages,
-    )
-
-
 async def prepare_model_turn(
     *,
     policy: EntryPolicy,
-    invoke_model: Callable[[VisibleContentSink | None], Awaitable[RawModelStepOutput]],
+    invoke_model: Callable[[VisibleContentSink | None], Awaitable[ModelStepOutput]],
     normalize_stickers: StickerNormalizer,
     logger: logging.Logger,
     user_id: int | None = None,
     send_typing: Callable[[], Awaitable[Any]] | None = None,
     make_visible_handler: Callable[[], VisibleContentSink] | None = None,
-    classify_error_text: Callable[[str], str | None] = runtime_error_cause,
     typing_debug_message: str = "Failed to send typing action before AI request",
 ) -> PreparedModelTurn:
     """执行主模型、规范化回复，并按 `EntryPolicy` 处理运行时错误与历史条目。"""
@@ -203,17 +177,15 @@ async def prepare_model_turn(
     )
 
     with suppress_telegram_history():
-        raw_output = await invoke_model(visible_handler)
+        output = await invoke_model(visible_handler)
 
-    raw_text, tool_logs, status, turn_messages = _coerce_model_output(
-        raw_output,
-        classify_text=classify_error_text,
-    )
+    tool_logs = output.tool_logs
+    turn_messages = output.turn_messages
     visible_sent = tuple(getattr(visible_handler, "sent_messages", ()))
     reply = await finish_reply(
-        raw_text,
+        output.text,
         normalize_stickers=normalize_stickers,
-        status=status,
+        status=output.status,
     )
 
     effective_text = reply.text
@@ -239,7 +211,7 @@ async def prepare_model_turn(
         tool_logs=tool_logs,
         turn_messages=turn_messages,
         runtime_error=reply.runtime_error,
-        tool_record_entries=turn_record_entries(turn_messages, tool_logs),
+        tool_record_entries=turn_messages_to_record_entries(turn_messages),
         reply_entries=reply_record_entries(effective_text, reply.runtime_error),
         completed_clear=policy.supports_completed_clear and tool_logs_completed_clear(tool_logs),
         visible_sent_messages=visible_sent,
@@ -307,7 +279,6 @@ __all__ = [
     "PostInputStage",
     "PostInputTurnOutcome",
     "PreparedModelTurn",
-    "RawModelStepOutput",
     "RuntimeErrorPolicy",
     "SCHEDULE_ENTRY_POLICY",
     "StageWrapper",

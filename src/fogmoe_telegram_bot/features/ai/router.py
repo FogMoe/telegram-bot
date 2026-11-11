@@ -78,21 +78,6 @@ TURN_SHUTDOWN_ERROR_MESSAGE = (
 )
 
 
-def runtime_error_cause(message: str) -> str | None:
-    """兼容辅助：仅当测试替身未提供 `LoopStatus` 时按固定错误通知文案映射原因。"""
-    if message == PARTIAL_AI_RESPONSE_ERROR_MESSAGE:
-        return "partial_ai_response_failed"
-    if message == AI_SERVICE_ERROR_MESSAGE:
-        return "all_ai_services_failed"
-    if message == CONTEXT_BUDGET_ERROR_MESSAGE:
-        return "context_budget_exceeded"
-    if message == TURN_DEADLINE_ERROR_MESSAGE:
-        return "turn_deadline_exceeded"
-    if message == TURN_SHUTDOWN_ERROR_MESSAGE:
-        return "turn_interrupted_by_shutdown"
-    return None
-
-
 def _messages_for_service(
     service_name: str,
     messages: list[dict[str, Any]],
@@ -143,7 +128,7 @@ async def _run_chat_candidate(
         tool_definitions = resolve_agent_tools("main", provider=candidate.spec)
         with tool_request_scope(request_context):
             try:
-                raw_result = await run_tool_loop(
+                return await run_tool_loop(
                     candidate.provider,
                     candidate.model,
                     list(service_messages),
@@ -154,7 +139,6 @@ async def _run_chat_candidate(
                     visible_content_handler=visible_content_handler,
                     deadline=deadline,
                 )
-                return LoopResult.coerce(raw_result, classify_text=runtime_error_cause)
             finally:
                 await _cleanup_sandbox(provider_name)
     except TurnDeadlineError as exc:
@@ -280,7 +264,7 @@ async def _try_ai_services(
             ),
             None,
         )
-    return LoopResult.coerce(response, classify_text=runtime_error_cause), None
+    return response, None
 
 
 async def get_ai_response(
@@ -291,7 +275,7 @@ async def get_ai_response(
     visible_content_handler: VisibleContentSink | None = None,
     deadline: Deadline | None = None,
 ) -> LoopResult:
-    """统一 AI 响应异步接口，返回类型化 `LoopResult`（同时兼容 `(text, tool_logs)` 解包）。"""
+    """统一 AI 响应异步接口，返回类型化 `LoopResult`。"""
     response, last_error = await _try_ai_services(
         messages,
         user_id,
@@ -301,7 +285,7 @@ async def get_ai_response(
         deadline,
     )
     if response is not None:
-        return LoopResult.coerce(response, classify_text=runtime_error_cause)
+        return response
 
     if messages_have_images(messages):
         logging.warning("多模态 AI 调用全部失败，降级为纯文本图片描述重试: %s", last_error)
@@ -318,7 +302,7 @@ async def get_ai_response(
             deadline,
         )
         if response is not None:
-            return LoopResult.coerce(response, classify_text=runtime_error_cause)
+            return response
 
     logging.error("所有AI服务均调用失败: %s", last_error)
     return LoopResult(

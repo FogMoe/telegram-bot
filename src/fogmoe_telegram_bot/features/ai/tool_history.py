@@ -1,19 +1,15 @@
 """工具循环产物的历史落库转换。
 
-生产调用链直接把工具循环内已经配对好的消息序列（`LoopResult.turn_messages`）经
-`turn_messages_to_record_entries` 脱敏成数据库记录，不再在循环结束后靠反向扫描去重或拼接时间戳 ID。
-`tool_logs_to_record_entries` 保留给仅构造 `tool_logs` 替身的单测与兼容辅助。
+工具循环内已经配对好的消息序列（`LoopResult.turn_messages`）经 `turn_messages_to_record_entries`
+脱敏成数据库记录：模型在循环里实际看到什么，历史里就存什么。
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from typing import Any
 
 from fogmoe_telegram_bot.core.redaction import redact_text
-
-from .tool_loop_messages import tool_result_json
 
 
 def _telegram_command_name(arguments: object) -> str | None:
@@ -98,169 +94,6 @@ def turn_messages_to_record_entries(
             content = str(message.get("content") or "").strip()
             if content:
                 record_entries.append(("user", content))
-    return record_entries
-
-
-def turn_record_entries(
-    turn_messages: Sequence[dict[str, Any]] | None,
-    tool_logs: Sequence[dict[str, Any]],
-) -> list[tuple[str, object]]:
-    """优先使用循环内配对好的 `turn_messages`；仅在测试替身未提供 `turn_messages` 时回退 `tool_logs`。"""
-    if turn_messages is not None:
-        return turn_messages_to_record_entries(turn_messages)
-    return tool_logs_to_record_entries(list(tool_logs))
-
-
-def _tool_call_ids_from_message(message: dict[str, Any]) -> list[str]:
-    call_ids: list[str] = []
-    for tool_call in message.get("tool_calls") or []:
-        if not isinstance(tool_call, dict):
-            continue
-        tool_call_id = tool_call.get("id")
-        if tool_call_id:
-            call_ids.append(str(tool_call_id))
-    return call_ids
-
-
-def _fallback_assistant_tool_call_message(
-    tool_log: dict[str, Any],
-    tool_call_id: str,
-) -> dict[str, Any]:
-    arguments = tool_log.get("arguments") or {}
-    try:
-        arguments_json = redact_text(json.dumps(arguments, ensure_ascii=False))
-    except TypeError:
-        arguments_json = json.dumps({}, ensure_ascii=False)
-
-    return {
-        "role": "assistant",
-        "content": "",
-        "tool_calls": [
-            {
-                "id": tool_call_id,
-                "type": "function",
-                "function": {
-                    "name": tool_log.get("tool_name"),
-                    "arguments": arguments_json,
-                },
-            }
-        ],
-    }
-
-
-def _pop_pending_id(pending_tool_call_ids: list[str], tool_call_id: str) -> None:
-    if pending_tool_call_ids and pending_tool_call_ids[0] == tool_call_id:
-        pending_tool_call_ids.pop(0)
-        return
-    try:
-        pending_tool_call_ids.remove(tool_call_id)
-    except ValueError:
-        return
-
-
-def _assistant_message_content(tool_log: dict[str, Any]) -> str:
-    assistant_message = tool_log.get("assistant_message")
-    if not isinstance(assistant_message, dict):
-        return ""
-    content = assistant_message.get("content")
-    if content is None:
-        return ""
-    return str(content).strip()
-
-
-def _visible_content_repeated_by_tool_call(
-    tool_logs: Sequence[dict[str, Any]],
-    visible_index: int,
-    visible_content: str,
-) -> bool:
-    visible_content = visible_content.strip()
-    if not visible_content:
-        return False
-
-    for later_log in tool_logs[visible_index + 1:]:
-        if not isinstance(later_log, dict):
-            continue
-        entry_type = later_log.get("type", "tool_result")
-        if entry_type == "assistant_tool_call":
-            return _assistant_message_content(later_log) == visible_content
-        if entry_type in {"assistant_visible", "tool_result"}:
-            return False
-
-    return False
-
-
-def tool_logs_to_record_entries(
-    tool_logs: list[dict[str, Any]],
-) -> list[tuple[str, object]]:
-    record_entries: list[tuple[str, object]] = []
-    pending_tool_call_ids: list[str] = []
-
-    for index, tool_log in enumerate(tool_logs):
-        entry_type = tool_log.get("type", "tool_result")
-        if entry_type == "assistant_visible":
-            visible_content = str(tool_log.get("content") or "").strip()
-            if visible_content and not _visible_content_repeated_by_tool_call(
-                tool_logs,
-                index,
-                visible_content,
-            ):
-                record_entries.append(("assistant", redact_text(visible_content)))
-            continue
-
-        if entry_type == "telegram_event":
-            content = str(tool_log.get("content") or "").strip()
-            if content:
-                record_entries.append(("user", content))
-            continue
-
-        raw_id = tool_log.get("tool_call_id")
-        if raw_id:
-            tool_call_id = str(raw_id)
-        elif entry_type == "tool_result" and pending_tool_call_ids:
-            tool_call_id = pending_tool_call_ids.pop(0)
-        else:
-            tool_call_id = f"call_auto_{index + 1}"
-
-        if entry_type == "assistant_tool_call":
-            assistant_message = tool_log.get("assistant_message")
-            if isinstance(assistant_message, dict):
-                call_ids = _tool_call_ids_from_message(assistant_message)
-                if call_ids:
-                    pending_tool_call_ids.extend(call_ids)
-                else:
-                    pending_tool_call_ids.append(tool_call_id)
-                record_entries.append(
-                    ("assistant", _redacted_assistant_message(assistant_message))
-                )
-                continue
-
-            if tool_call_id in pending_tool_call_ids:
-                continue
-
-            pending_tool_call_ids.append(tool_call_id)
-            record_entries.append(
-                (
-                    "assistant",
-                    _fallback_assistant_tool_call_message(tool_log, tool_call_id),
-                )
-            )
-            continue
-
-        _pop_pending_id(pending_tool_call_ids, tool_call_id)
-        tool_result_str = tool_result_json(tool_log.get("result"))
-
-        record_entries.append(
-            (
-                "tool",
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "name": tool_log.get("tool_name"),
-                    "content": redact_text(tool_result_str),
-                },
-            )
-        )
-
     return record_entries
 
 

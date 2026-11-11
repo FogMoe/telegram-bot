@@ -10,6 +10,7 @@ from fogmoe_telegram_bot.features.ai.context_budget import ContextBudgetExceeded
 from fogmoe_telegram_bot.features.ai.errors import SafetyBlockError
 from fogmoe_telegram_bot.features.ai.tools.context import get_tool_request_context
 from fogmoe_telegram_bot.features.ai.types import (
+    LoopResult,
     PartialAIResponseError,
     TurnDeadlineError,
     delivered_to_user,
@@ -209,7 +210,7 @@ def test_text_only_chat_provider_uses_vision_text_fallback_messages(monkeypatch)
         visible_content_handler=None,
     ):
         calls.append(messages)
-        return "ok", []
+        return LoopResult("ok")
 
     use_chat_services(
         monkeypatch,
@@ -260,7 +261,7 @@ def test_vision_capable_chat_provider_keeps_multimodal_messages(monkeypatch):
         visible_content_handler=None,
     ):
         calls.append(messages)
-        return "ok", []
+        return LoopResult("ok")
 
     use_chat_services(monkeypatch, {"openai": fake_service})
     monkeypatch.setattr(router, "chat_service_supports_vision", lambda service_name: True)
@@ -296,7 +297,7 @@ def test_open_provider_circuit_skips_to_next_service(monkeypatch):
         visible_content_handler=None,
     ):
         calls.append("siliconflow")
-        return "ok", []
+        return LoopResult("ok")
 
     use_chat_services(
         monkeypatch,
@@ -322,7 +323,7 @@ def test_a_failed_provider_counts_against_its_circuit_and_falls_back(monkeypatch
         raise RuntimeError("openai down")
 
     def next_service(messages, user_id, tool_context=None, visible_content_handler=None):
-        return "ok", []
+        return LoopResult("ok")
 
     use_chat_services(monkeypatch, {"openai": failing_service, "gemini": next_service})
 
@@ -380,7 +381,7 @@ def test_context_budget_error_stops_provider_fallback(monkeypatch):
         visible_content_handler=None,
     ):
         calls.append("gemini")
-        return "unexpected", []
+        return LoopResult("unexpected")
 
     use_chat_services(
         monkeypatch,
@@ -396,7 +397,7 @@ def test_context_budget_error_stops_provider_fallback(monkeypatch):
     assert "Token" not in response[0]
     assert "150,001" not in response[0]
     assert response[1] == []
-    assert router.runtime_error_cause(response[0]) == "context_budget_exceeded"
+    assert response.runtime_error == "context_budget_exceeded"
     assert router.CHAT_CIRCUIT.failure_count("openai") == 0
 
 
@@ -418,7 +419,7 @@ def test_context_budget_error_after_tool_result_preserves_tool_logs(monkeypatch)
 
     response = asyncio.run(router.get_ai_response([], user_id=123))
 
-    assert router.runtime_error_cause(response[0]) == "context_budget_exceeded"
+    assert response.runtime_error == "context_budget_exceeded"
     assert response[1] == tool_logs
 
 
@@ -431,7 +432,7 @@ def test_safety_block_falls_through_to_next_service_for_gemini(monkeypatch):
 
     def next_service(messages, user_id, tool_context=None, visible_content_handler=None):
         calls.append("openai")
-        return "ok", []
+        return LoopResult("ok")
 
     use_chat_services(monkeypatch, {"gemini": blocked_service, "openai": next_service})
 
@@ -467,7 +468,7 @@ def test_chat_order_comes_from_the_active_settings(monkeypatch):
         seen.append(provider)
         if provider == "azure":
             raise RuntimeError("azure down")
-        return "ok", []
+        return LoopResult("ok")
 
     monkeypatch.setattr(router, "run_tool_loop", failing_then_ok)
 
@@ -479,21 +480,6 @@ def test_chat_order_comes_from_the_active_settings(monkeypatch):
         assert asyncio.run(router.get_ai_response([], user_id=123)) == ("ok", [])
 
     assert seen == ["azure", "openai"]
-
-
-def test_runtime_error_cause_only_classifies_fixed_runtime_messages():
-    assert (
-        router.runtime_error_cause(router.PARTIAL_AI_RESPONSE_ERROR_MESSAGE)
-        == "partial_ai_response_failed"
-    )
-    assert (
-        router.runtime_error_cause(router.AI_SERVICE_ERROR_MESSAGE)
-        == "all_ai_services_failed"
-    )
-    assert router.runtime_error_cause("这是 AI 的普通回复") is None
-
-
-# -- 每次尝试：模型、展示名与隐藏的工具都来自 provider 声明 ------------------------------------------
 
 
 def test_each_provider_runs_the_tool_loop_with_its_declared_chat_model(settings_override, chat_loop):
@@ -519,7 +505,7 @@ def test_the_request_context_is_a_per_attempt_copy_with_the_user(settings_overri
 
     async def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
         seen["inside"] = dict(get_tool_request_context())
-        return "ok", []
+        return LoopResult("ok")
 
     monkeypatch.setattr(router, "run_tool_loop", fake_run_tool_loop)
 
@@ -665,7 +651,7 @@ def test_gemini_safety_text_falls_through_without_tripping_the_circuit(settings_
     def behave(provider, model):
         if provider == "gemini":
             raise RuntimeError(SAFETY_TEXT)
-        return "from openai", []
+        return LoopResult("from openai")
 
     chat_loop.behaviour.handler = behave
 
@@ -679,7 +665,7 @@ def test_other_providers_do_not_translate_safety_text(settings_override, chat_lo
     def behave(provider, model):
         if provider == "openai":
             raise RuntimeError(SAFETY_TEXT)
-        return "from gemini", []
+        return LoopResult("from gemini")
 
     chat_loop.behaviour.handler = behave
 

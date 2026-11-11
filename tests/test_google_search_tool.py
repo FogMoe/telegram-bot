@@ -63,7 +63,7 @@ def test_google_search_tool_returns_model_focused_results(monkeypatch):
     }
     fake_session = _FakeSession(payload)
 
-    monkeypatch.setattr(http_tools, "SERPAPI_API_KEY", "test-key")
+    monkeypatch.setattr(http_tools.config, "SERPAPI_API_KEY", "test-key")
     monkeypatch.setattr(http_tools, "_get_session", lambda: fake_session)
 
     result = http_tools.google_search_tool("example query")
@@ -95,7 +95,7 @@ def test_google_search_tool_returns_model_focused_results(monkeypatch):
 def test_google_search_tool_uses_detailed_engine(monkeypatch):
     fake_session = _FakeSession({"organic_results": []})
 
-    monkeypatch.setattr(http_tools, "SERPAPI_API_KEY", "test-key")
+    monkeypatch.setattr(http_tools.config, "SERPAPI_API_KEY", "test-key")
     monkeypatch.setattr(http_tools, "_get_session", lambda: fake_session)
 
     assert http_tools.google_search_tool("example query", detailed=True) == {
@@ -131,7 +131,7 @@ def test_google_search_tool_can_return_full_json(monkeypatch):
     }
     fake_session = _FakeSession(payload)
 
-    monkeypatch.setattr(http_tools, "SERPAPI_API_KEY", "test-key")
+    monkeypatch.setattr(http_tools.config, "SERPAPI_API_KEY", "test-key")
     monkeypatch.setattr(http_tools, "_get_session", lambda: fake_session)
 
     result = http_tools.google_search_tool("example query", show_full_json=True)
@@ -178,7 +178,7 @@ class _RateLimitedSession:
 
 
 def test_google_search_tool_error_does_not_expose_api_key(monkeypatch, caplog):
-    monkeypatch.setattr(http_tools, "SERPAPI_API_KEY", SERPAPI_KEY)
+    monkeypatch.setattr(http_tools.config, "SERPAPI_API_KEY", SERPAPI_KEY)
     monkeypatch.setattr(http_tools, "_get_session", lambda: _RateLimitedSession())
 
     with caplog.at_level(logging.DEBUG):
