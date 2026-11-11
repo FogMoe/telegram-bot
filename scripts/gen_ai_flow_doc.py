@@ -233,24 +233,21 @@ def _agents() -> list[tuple[str, list[dict[str, Any]], Mapping[str, Callable[...
 
 
 def tool_catalog() -> list[CatalogTool]:
-    """所有 agent 的工具，按首次出现的顺序去重。"""
-    order: list[str] = []
-    functions: dict[str, Mapping[str, Any]] = {}
-    handlers: dict[str, Callable[..., Any]] = {}
-    agents: dict[str, list[str]] = {}
-    for agent, tools, agent_handlers in _agents():
-        for tool in tools:
-            function = tool["function"]
-            name = function["name"]
-            if name not in functions:
-                order.append(name)
-                functions[name] = function
-                handlers[name] = agent_handlers[name]
-            elif function != functions[name] or agent_handlers[name] is not handlers[name]:
-                # 目录每个工具只占一行；agent 之间的版本不同时，需要先决定目录怎么呈现。
-                raise ValueError(f"tool {name!r} differs between agents; the catalog shows one row")
-            agents.setdefault(name, []).append(agent)
-    return [CatalogTool(name, functions[name], handlers[name], tuple(agents[name])) for name in order]
+    """所有 agent 的工具，直接从 `TOOL_SPECS` 单点声明生成并校验各 agent 导出一致。"""
+    from fogmoe_telegram_bot.features.ai.tools.specs import TOOL_SPECS
+
+    agent_exports = dict((agent, (tools, agent_handlers)) for agent, tools, agent_handlers in _agents())
+    catalog: list[CatalogTool] = []
+    for spec in TOOL_SPECS:
+        schema = spec.schema()
+        function = schema["function"]
+        for agent in spec.agents:
+            tools, agent_handlers = agent_exports[agent]
+            exported = next((item for item in tools if item["function"]["name"] == spec.name), None)
+            if exported is None or exported["function"] != function or agent_handlers.get(spec.name) is not spec.handler:
+                raise ValueError(f"tool {spec.name!r} export for agent {agent!r} drifted from TOOL_SPECS")
+        catalog.append(CatalogTool(spec.name, function, spec.handler, spec.agents))
+    return catalog
 
 
 def render_tools() -> str:

@@ -1,5 +1,4 @@
 import logging
-import math
 import threading
 import time
 import uuid
@@ -13,6 +12,7 @@ from fogmoe_telegram_bot.core.redaction import describe_exception, log_exception
 
 from .context import get_tool_request_context
 from .filename_utils import prompt_to_filename
+from .rate_limit import SlidingWindowRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +33,8 @@ VOICE_RATE_LIMIT_MAX_GENERATIONS = 3
 _SESSION_LOCAL = threading.local()
 _GENERATED_AUDIO_FILES: dict[str, str] = {}
 _GENERATED_AUDIO_LOCK = threading.Lock()
-_VOICE_RATE_LIMITS: dict[int, list[float]] = {}
-_VOICE_RATE_LIMIT_LOCK = threading.Lock()
+_VOICE_RATE_LIMITER = SlidingWindowRateLimiter(clock=time.monotonic)
+_VOICE_RATE_LIMITS = _VOICE_RATE_LIMITER.buckets
 
 
 class VoiceGenerationSizeError(ValueError):
@@ -50,56 +50,28 @@ def _get_request_user_id() -> int | None:
         return None
 
 
-def _prune_voice_rate_limits(now: float) -> None:
-    cutoff = now - VOICE_RATE_LIMIT_WINDOW_SECONDS
-    for user_id, timestamps in list(_VOICE_RATE_LIMITS.items()):
-        active_timestamps = [timestamp for timestamp in timestamps if timestamp > cutoff]
-        if active_timestamps:
-            _VOICE_RATE_LIMITS[user_id] = active_timestamps
-        else:
-            _VOICE_RATE_LIMITS.pop(user_id, None)
-
-
 def _reserve_voice_generation(user_id: int) -> tuple[bool, float | None, int | None]:
-    now = time.time()
-    cutoff = now - VOICE_RATE_LIMIT_WINDOW_SECONDS
-
-    with _VOICE_RATE_LIMIT_LOCK:
-        _prune_voice_rate_limits(now)
-        timestamps = [
-            timestamp
-            for timestamp in _VOICE_RATE_LIMITS.get(user_id, [])
-            if timestamp > cutoff
-        ]
-
-        if len(timestamps) >= VOICE_RATE_LIMIT_MAX_GENERATIONS:
-            retry_after = math.ceil(
-                max(1, VOICE_RATE_LIMIT_WINDOW_SECONDS - (now - timestamps[0]))
-            )
-            _VOICE_RATE_LIMITS[user_id] = timestamps
-            return False, None, retry_after
-
-        timestamps.append(now)
-        _VOICE_RATE_LIMITS[user_id] = timestamps
-        return True, now, None
+    window_seconds = getattr(
+        config,
+        "AI_VOICE_RATE_LIMIT_WINDOW_SECONDS",
+        VOICE_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    max_calls = getattr(
+        config,
+        "AI_VOICE_RATE_LIMIT_MAX_CALLS",
+        VOICE_RATE_LIMIT_MAX_GENERATIONS,
+    )
+    reservation = _VOICE_RATE_LIMITER.reserve(
+        user_id,
+        window_seconds=window_seconds,
+        max_calls=max_calls,
+        now=time.monotonic(),
+    )
+    return reservation.allowed, reservation.token, reservation.retry_after_seconds
 
 
 def _release_voice_generation(user_id: int, reservation_timestamp: float | None) -> None:
-    if reservation_timestamp is None:
-        return
-
-    with _VOICE_RATE_LIMIT_LOCK:
-        timestamps = _VOICE_RATE_LIMITS.get(user_id)
-        if not timestamps:
-            return
-        for index, timestamp in enumerate(timestamps):
-            if timestamp == reservation_timestamp:
-                del timestamps[index]
-                break
-        if timestamps:
-            _VOICE_RATE_LIMITS[user_id] = timestamps
-        else:
-            _VOICE_RATE_LIMITS.pop(user_id, None)
+    _VOICE_RATE_LIMITER.release(user_id, reservation_timestamp)
 
 
 def _is_expired_generated_audio(path: Path, cutoff: float) -> bool:
@@ -377,11 +349,21 @@ def generate_voice_tool(
 
     allowed, reservation_timestamp, retry_after = _reserve_voice_generation(user_id)
     if not allowed:
+        max_calls = getattr(
+            config,
+            "AI_VOICE_RATE_LIMIT_MAX_CALLS",
+            VOICE_RATE_LIMIT_MAX_GENERATIONS,
+        )
+        window_seconds = getattr(
+            config,
+            "AI_VOICE_RATE_LIMIT_WINDOW_SECONDS",
+            VOICE_RATE_LIMIT_WINDOW_SECONDS,
+        )
         return {
             "error": "Voice generation rate limit exceeded",
             "details": (
-                f"Each user can generate up to {VOICE_RATE_LIMIT_MAX_GENERATIONS} "
-                "audio clips every 5 minutes."
+                f"Each user can generate up to {max_calls} "
+                f"audio clips every {window_seconds} seconds."
             ),
             "retry_after_seconds": retry_after,
         }

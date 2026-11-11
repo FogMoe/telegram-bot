@@ -18,11 +18,10 @@ from fogmoe_telegram_bot.core.telegram_history import (
 )
 from fogmoe_telegram_bot.core.telegram_utils import partial_send
 
-from .generated_audio_sender import send_generated_audio_from_tool_logs
-from .generated_image_sender import send_generated_images_from_tool_logs
 from .reply_filter import normalize_ai_reply_text
 from .router import runtime_error_cause
 from .sticker_sender import send_ai_reply_with_stickers
+from .tools.specs import iter_media_tool_specs
 from .types import LoopStatus, ToolLog
 
 
@@ -106,20 +105,13 @@ async def send_generated_media(
 
     sent_messages: list[Any] = []
     with suppress_telegram_history():
-        sent_messages.extend(
-            await send_generated_audio_from_tool_logs(
-                bot=bot,
-                chat_id=chat_id,
-                tool_logs=tool_logs,
-                logger=logger,
+        for _tool_name, media_spec in iter_media_tool_specs():
+            sent_messages.extend(
+                await media_spec.send_from_logs(
+                    bot=bot,
+                    chat_id=chat_id,
+                    tool_logs=tool_logs,
+                    logger=logger,
+                )
             )
-        )
-        sent_messages.extend(
-            await send_generated_images_from_tool_logs(
-                bot=bot,
-                chat_id=chat_id,
-                tool_logs=tool_logs,
-                logger=logger,
-            )
-        )
     return sent_messages

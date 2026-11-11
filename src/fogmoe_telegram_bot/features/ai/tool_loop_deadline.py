@@ -13,6 +13,7 @@ from typing import Any
 from fogmoe_telegram_bot.core.deadline import Deadline
 
 from .tool_loop_messages import tool_result_json
+from .tools.specs import get_media_tool_spec
 from .types import MEDIA_DELIVERY_KEY, MediaDeliveryState, ToolLog
 
 _INTERRUPTED_TOOL_RESULT = {
@@ -117,7 +118,7 @@ def tool_result_log(
         "result": tool_result,
         "tool_call_id": tool_call_id,
     }
-    if function_name in {"generate_image", "generate_voice"}:
+    if get_media_tool_spec(function_name) is not None:
         tool_log_entry["internal_result"] = internal_tool_result
         if media_delivery_unknown:
             tool_log_entry[MEDIA_DELIVERY_KEY] = MediaDeliveryState.UNKNOWN.value

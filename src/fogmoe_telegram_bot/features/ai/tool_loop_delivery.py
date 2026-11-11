@@ -16,6 +16,7 @@ from fogmoe_telegram_bot.core.deadline import Deadline, DeadlineExceeded
 
 from .tool_loop_deadline import close_interrupted_round, deadline_guard, tool_result_log
 from .tool_loop_messages import tool_result_json
+from .tools.specs import get_media_tool_spec
 from .types import (
     TOOL_CONTEXT_MESSAGES_KEY,
     LoopResult,
@@ -23,19 +24,6 @@ from .types import (
     ToolLog,
     VisibleContentSink,
 )
-
-_MEDIA_DELIVERY_UNKNOWN_MESSAGES = {
-    "generate_image": (
-        "The image was generated, but the turn was stopped while it was being sent to "
-        "Telegram; it may or may not have arrived. Do not generate it again unless the "
-        "user asks."
-    ),
-    "generate_voice": (
-        "The audio was generated, but the turn was stopped while it was being sent to "
-        "Telegram; it may or may not have arrived. Do not generate it again unless the "
-        "user asks."
-    ),
-}
 
 
 def public_tool_result(
@@ -48,41 +36,11 @@ def public_tool_result(
         tool_result = dict(tool_result)
         tool_result.pop(TOOL_CONTEXT_MESSAGES_KEY, None)
 
-    if tool_name not in {"generate_image", "generate_voice"} or not isinstance(tool_result, dict):
+    media_spec = get_media_tool_spec(tool_name)
+    if media_spec is None or not isinstance(tool_result, dict):
         return tool_result
 
-    if tool_result.get("error"):
-        public_result = {"error": tool_result.get("error")}
-        for key in ("status_code", "details", "response_preview", "warnings", "retry_after_seconds"):
-            if key in tool_result:
-                public_result[key] = tool_result[key]
-        return public_result
-
-    if tool_name == "generate_image" and tool_result.get("status") == "generated":
-        return {
-            "status": "generated",
-            "message": (
-                "Generated image has been sent to Telegram."
-                if media_sent
-                else (
-                    "Generated image is ready and will be sent to Telegram. "
-                    "If you need to inspect the image yourself later, ask the user "
-                    "to forward the sent image back to you."
-                )
-            ),
-        }
-
-    if tool_name == "generate_voice" and tool_result.get("status") == "generated":
-        return {
-            "status": "generated",
-            "message": (
-                "Generated audio has been sent to Telegram."
-                if media_sent
-                else "Generated audio is ready and will be sent to Telegram."
-            ),
-        }
-
-    return {"status": tool_result.get("status") or "unknown"}
+    return media_spec.public_result(tool_result, media_sent)
 
 
 def context_messages_from_tool_result(tool_result: Any) -> list[dict[str, str]]:
@@ -109,7 +67,7 @@ async def send_media_result_immediately(
 ) -> list[Any]:
     if visible_content_handler is None:
         return []
-    if tool_name not in {"generate_image", "generate_voice"}:
+    if get_media_tool_spec(tool_name) is None:
         return []
     if not isinstance(tool_result, dict) or tool_result.get("status") != "generated":
         return []
@@ -151,9 +109,19 @@ def close_round_after_media_deadline(
     先记下这次的结果（是否送达未知，投递阶段也不会再发），再给后面没来得及运行的调用补「未执行」。
     下一轮因此知道媒体已经生成，历史也仍然配对。
     """
+    media_spec = get_media_tool_spec(function_name)
+    unknown_message = (
+        media_spec.delivery_unknown_message
+        if media_spec is not None
+        else (
+            "The generated media was created, but the turn was stopped while it was being "
+            "sent to Telegram; it may or may not have arrived. Do not generate it again "
+            "unless the user asks."
+        )
+    )
     public_result = {
         **public_tool_result(function_name, internal_tool_result),
-        "message": _MEDIA_DELIVERY_UNKNOWN_MESSAGES[function_name],
+        "message": unknown_message,
     }
     if filtered_messages is not None:
         filtered_messages.append(

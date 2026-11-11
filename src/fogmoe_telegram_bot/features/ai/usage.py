@@ -46,6 +46,10 @@ _current_entry: contextvars.ContextVar[str] = contextvars.ContextVar(
     "ai_usage_entry",
     default=DEFAULT_ENTRY,
 )
+_explicit_entry: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "ai_usage_explicit_entry",
+    default=None,
+)
 _current_task: contextvars.ContextVar[str] = contextvars.ContextVar(
     "ai_usage_task",
     default=UNKNOWN_TASK,
@@ -177,6 +181,11 @@ def current_usage_entry() -> str:
     return _current_entry.get()
 
 
+def explicit_usage_entry() -> str | None:
+    """当前 `ai_usage_scope` 显式声明的 `entry`；未进入任何作用域时返回 None。"""
+    return _explicit_entry.get()
+
+
 def current_usage_task() -> str:
     return _current_task.get()
 
@@ -196,7 +205,9 @@ def ai_usage_scope(
     """设置当前异步调用链上的 `entry`、`task` 标签与可选的 `UsageAccumulator`。"""
     tokens: list[tuple[contextvars.ContextVar[Any], contextvars.Token[Any]]] = []
     if entry is not None:
-        tokens.append((_current_entry, _current_entry.set(_normalize_entry(entry))))
+        normalized_entry = _normalize_entry(entry)
+        tokens.append((_current_entry, _current_entry.set(normalized_entry)))
+        tokens.append((_explicit_entry, _explicit_entry.set(normalized_entry)))
     if task is not None:
         tokens.append((_current_task, _current_task.set(_normalize_task(task))))
     if clear_accumulator:
@@ -439,6 +450,7 @@ __all__ = [
     "current_usage_entry",
     "current_usage_task",
     "estimate_call_cost_usd",
+    "explicit_usage_entry",
     "extract_token_counts",
     "parse_model_pricing",
     "record_completion_usage",

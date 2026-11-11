@@ -10,7 +10,10 @@
 - 安全拦截：声明了 `translates_safety_blocks` 的 provider 把「被安全策略拦截」的错误转成 `SafetyBlockError`。
   还有备用模型就换模型；模型用完时，声明了 `safety_blocks_fall_through` 的换下一个 provider（不计熔断），
   其余上抛；
-- 其他失败换下一个模型或 provider。传了 `circuit` 的任务在一个 provider 的模型都失败时记一次熔断失败；
+- 其他失败换下一个模型或 provider。传了 `circuit` 的任务在一个 provider 的模型都失败时记一次熔断失败。
+  只有高并发交互式 `chat` 传 `CHAT_CIRCUIT`（防雪崩、避免每轮都先撞挂掉的首选服务等待超时）；
+  `summary` / `recap` / `translate` / `vision` / `classifier` / `advisor` 只配「1 主 + 1 备」且多为
+  后台或单次辅助任务，刻意不接入共享熔断，避免交互式聊天短时尖峰把后台重试直接熔断饿死；
 - 传了 `deadline` 的任务（主聊天）：看每个 provider（包括要跳过的）、试每个模型之前都检查，到期就抛
   `TurnDeadlineError`（`phase="fallback"`），不再尝试，也不记熔断失败。
 

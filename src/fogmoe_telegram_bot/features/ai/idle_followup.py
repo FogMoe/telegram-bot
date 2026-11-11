@@ -48,13 +48,14 @@ from fogmoe_telegram_bot.features.ai.tool_history import (
 )
 from fogmoe_telegram_bot.features.ai.tool_runner import run_tool_loop
 from fogmoe_telegram_bot.features.ai.tools import (
-    AI_TOOL_HANDLERS,
-    OPENAI_TOOLS,
+    OPENAI_TOOLS as OPENAI_TOOLS,
+)
+from fogmoe_telegram_bot.features.ai.tools import (
+    agent_tool_handlers,
+    agent_tool_schemas,
     build_tool_context,
     tool_request_scope,
 )
-from fogmoe_telegram_bot.features.ai.tools.memory_tools import read_diary_page_tool
-from fogmoe_telegram_bot.features.ai.tools.schemas import IDLE_RECAP_READ_DIARY_TOOL
 from fogmoe_telegram_bot.features.ai.types import LoopResult, has_side_effects
 from fogmoe_telegram_bot.features.ai.usage import UsageAccumulator, ai_usage_scope
 from fogmoe_telegram_bot.features.ai.user_state import build_user_state_prompt
@@ -80,21 +81,9 @@ IDLE_FOLLOWUP_MAX_RETRIES = 3
 IDLE_RECAP_MAX_DIALOGUE_MESSAGES = 20
 IDLE_RECAP_RETRY_LIMIT = 2
 IDLE_RECAP_TIMEOUT_SECONDS = 120
-IDLE_RECAP_TOOL_NAMES = frozenset(
-    {"fetch_permanent_summaries", "search_permanent_records", "read_diary_page"}
-)
-# read_diary_page is deliberately absent from OPENAI_TOOLS. Supplying its schema
-# and handler only to this loop keeps the facade exclusive to the recap agent.
-IDLE_RECAP_TOOLS = [
-    tool
-    for tool in [*OPENAI_TOOLS, IDLE_RECAP_READ_DIARY_TOOL]
-    if (tool.get("function") or {}).get("name") in IDLE_RECAP_TOOL_NAMES
-]
-IDLE_RECAP_TOOL_HANDLERS = {
-    "fetch_permanent_summaries": AI_TOOL_HANDLERS["fetch_permanent_summaries"],
-    "search_permanent_records": AI_TOOL_HANDLERS["search_permanent_records"],
-    "read_diary_page": read_diary_page_tool,
-}
+IDLE_RECAP_TOOLS = agent_tool_schemas("recap")
+IDLE_RECAP_TOOL_HANDLERS = agent_tool_handlers("recap")
+IDLE_RECAP_TOOL_NAMES = frozenset(IDLE_RECAP_TOOL_HANDLERS)
 
 INTERRUPTED_ERROR = (
     "Interrupted during {stage}; the outcome is unknown, so the follow-up was not retried "

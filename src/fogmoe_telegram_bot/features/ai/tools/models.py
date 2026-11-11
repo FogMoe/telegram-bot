@@ -326,28 +326,8 @@ class UserDiaryArgs(ToolArguments):
     )
 
 
-AI_TOOL_ARG_MODELS: dict[str, type[ToolArguments]] = {
-    "get_help_text": GetHelpTextArgs,
-    "execute_telegram_command": ExecuteTelegramCommandArgs,
-    "read_doc": ReadDocArgs,
-    "list_available_stickers": ListAvailableStickersArgs,
-    "google_search": GoogleSearchArgs,
-    "advisor": AdvisorArgs,
-    "fetch_group_context": FetchGroupContextArgs,
-    "fetch_url": FetchUrlArgs,
-    "execute_python_code": ExecutePythonCodeArgs,
-    "linux_sandbox": LinuxSandboxArgs,
-    "generate_image": GenerateImageArgs,
-    "generate_voice": GenerateVoiceArgs,
-    "kindness_gift": KindnessGiftArgs,
-    "update_impression": UpdateImpressionArgs,
-    "fetch_permanent_summaries": FetchPermanentSummariesArgs,
-    "search_permanent_records": SearchPermanentRecordsArgs,
-    "search_prior_context": SummarySearchPriorContextArgs,
-    "read_diary_page": ReadDiaryPageArgs,
-    "schedule_ai_message": ScheduleAIMessageArgs,
-    "user_diary": UserDiaryArgs,
-}
+# 由 `tools/specs.py` 在包加载时按 `TOOL_SPECS` 单点填充，避免新增工具时重复登记。
+AI_TOOL_ARG_MODELS: dict[str, type[ToolArguments]] = {}
 
 
 def _clean_json_schema(value: Any, *, preserve_title_key: bool = False) -> Any:

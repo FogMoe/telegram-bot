@@ -18,7 +18,7 @@ from .errors import find_context_budget_error, is_timeout_error
 from .message_content import messages_have_images, strip_image_content
 from .task_runner import AllProvidersFailedError, Candidate, ProviderCircuit, run_with_fallback
 from .tool_runner import run_tool_loop
-from .tools import cleanup_linux_sandbox_async, tool_request_scope
+from .tools import cleanup_linux_sandbox_async, resolve_agent_tools, tool_request_scope
 from .types import (
     LoopResult,
     LoopStatus,
@@ -140,6 +140,11 @@ async def _run_chat_candidate(
             messages,
             text_fallback_messages,
         )
+        tool_definitions = resolve_agent_tools(
+            "main",
+            provider=candidate.spec,
+            tool_context=tool_context,
+        )
         with tool_request_scope(request_context):
             try:
                 raw_result = await run_tool_loop(
@@ -149,6 +154,7 @@ async def _run_chat_candidate(
                     tool_context,
                     provider_name=provider_name,
                     skip_tools=candidate.spec.skip_tools,
+                    tool_definitions=tool_definitions,
                     visible_content_handler=visible_content_handler,
                     deadline=deadline,
                 )
