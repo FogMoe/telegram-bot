@@ -41,6 +41,7 @@ from fogmoe_telegram_bot.features.ai.tool_history import (
     tool_logs_to_record_entries,
 )
 from fogmoe_telegram_bot.features.ai.tools.context import build_tool_context
+from fogmoe_telegram_bot.features.ai.usage import UsageAccumulator, ai_usage_scope
 from fogmoe_telegram_bot.features.ai.user_state import build_user_state_prompt
 
 logger = logging.getLogger(__name__)
@@ -600,13 +601,17 @@ async def _run_schedule_claim(
     run: _ScheduleRun,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
+    usage = UsageAccumulator()
     async with get_conversation_lock(run.claim.user_id):
-        await _process_schedule_task_locked(run, context)
+        with ai_usage_scope(entry="schedule", accumulator=usage, clear_accumulator=True):
+            await _process_schedule_task_locked(run, context, usage=usage)
 
 
 async def _process_schedule_task_locked(
     run: _ScheduleRun,
     context: ContextTypes.DEFAULT_TYPE,
+    *,
+    usage: UsageAccumulator | None = None,
 ) -> None:
     claim = run.claim
     user_id = claim.user_id
@@ -757,6 +762,13 @@ async def _process_schedule_task_locked(
             tool_log_types,
         )
     await _complete_claim(run)
+    if usage is not None:
+        logger.info(
+            "scheduled ai turn finished: user_id=%s schedule_id=%s %s",
+            user_id,
+            schedule_id,
+            usage.snapshot().summary(),
+        )
 
 
 async def run_ai_schedule_job(context: ContextTypes.DEFAULT_TYPE) -> None:

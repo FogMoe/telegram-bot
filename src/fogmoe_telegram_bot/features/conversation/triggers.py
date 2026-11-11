@@ -10,6 +10,7 @@ from collections import deque
 
 from fogmoe_telegram_bot.core import config
 from fogmoe_telegram_bot.features.ai.task_runner import run_ai_task
+from fogmoe_telegram_bot.features.ai.usage import ai_usage_scope
 
 from . import lifecycle
 
@@ -45,24 +46,25 @@ async def should_trigger_ai_response(message_text: str) -> bool:
         logging.debug("AI classifier rate limiter blocked a request.")
         return False
     try:
-        response = await run_ai_task(
-            "classifier",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "你是一个简洁的分类器。判断给定消息是否需要雾萌娘机器人主动回复。"
-                        "仅在遇到相关问题必要时才回复，例如和AI聊天、寻求帮助、提问或请求信息等。"
-                        "如果需要回复，请只回答 YES；如果不需要，请只回答 NO。"
-                        "不要输出任何额外解释。"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": message_text,
-                },
-            ],
-        )
+        with ai_usage_scope(entry="user"):
+            response = await run_ai_task(
+                "classifier",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是一个简洁的分类器。判断给定消息是否需要雾萌娘机器人主动回复。"
+                            "仅在遇到相关问题必要时才回复，例如和AI聊天、寻求帮助、提问或请求信息等。"
+                            "如果需要回复，请只回答 YES；如果不需要，请只回答 NO。"
+                            "不要输出任何额外解释。"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": message_text,
+                    },
+                ],
+            )
         content = response.choices[0].message.content.strip().lower()
         return content.startswith("yes") or content.startswith("是")
     except Exception as exc:

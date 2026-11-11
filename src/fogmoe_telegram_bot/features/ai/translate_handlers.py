@@ -16,6 +16,7 @@ from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.command_identity import message_identity
 from fogmoe_telegram_bot.core.redaction import log_exception
 from fogmoe_telegram_bot.features.ai import ai_chat
+from fogmoe_telegram_bot.features.ai.usage import ai_usage_scope
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,8 @@ async def inline_translate(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     try:
         # 调用异步翻译函数
-        translation = await ai_chat.translate_text(query)
+        with ai_usage_scope(entry="command"):
+            translation = await ai_chat.translate_text(query)
 
         results = [
             InlineQueryResultArticle(
@@ -176,7 +178,8 @@ async def tl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     # 调用翻译函数，交付成功后才贡献奖池；交付失败退回这次扣费
     try:
-        translation = await ai_chat.translate_text(text_to_translate)
+        with ai_usage_scope(entry="command"):
+            translation = await ai_chat.translate_text(text_to_translate)
         await update.message.reply_text(
             f"{translation}"
         )

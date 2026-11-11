@@ -18,6 +18,7 @@ from telegram import Bot, Message
 from fogmoe_telegram_bot.core import config
 from fogmoe_telegram_bot.core.deadline import Deadline
 from fogmoe_telegram_bot.features.ai.types import ToolLog, VisibleContentHandler
+from fogmoe_telegram_bot.features.ai.usage import TurnUsageSummary
 
 # 印象与日记是否存在：用户状态提示词在 `features/ai/user_state.py` 里拼，三个入口共用。
 from fogmoe_telegram_bot.features.ai.user_state import UserStateRecord as UserStateRecord
@@ -176,6 +177,7 @@ class TurnResult:
     charge: billing.TurnCharge | None = None
     runtime_error: str | None = None  # `ai_chat.runtime_error_cause` 的结论
     sent_message_count: int = 0
+    usage: TurnUsageSummary = field(default_factory=TurnUsageSummary)
 
 
 @dataclass(slots=True)

@@ -22,6 +22,7 @@ from .tool_loop_deadline import deadline_guard
 from .tool_loop_messages import json_safe
 from .tools import AI_TOOL_ARG_MODELS
 from .tools.dispatch import is_inline_tool
+from .usage import record_tool_execution_usage
 
 logger = logging.getLogger(__name__)
 
@@ -124,8 +125,10 @@ def _tool_label(function_name: str, handlers: Mapping[str, Any]) -> str:
 def _record_tool_metrics(label: str, started: float, result: Any) -> None:
     metrics.counter("tool.calls", tool=label).inc()
     metrics.histogram("tool.seconds", tool=label).observe(time.perf_counter() - started)
-    if isinstance(result, dict) and result.get("error"):
+    failed = bool(isinstance(result, dict) and result.get("error"))
+    if failed:
         metrics.counter("tool.failures", tool=label).inc()
+    record_tool_execution_usage(label, failed=failed)
 
 
 def _log_generate_image_result(provider_name: str, tool_result: dict[str, Any]) -> None:

@@ -17,6 +17,7 @@ from .tool_runner import run_tool_loop
 from .tools.context import tool_request_scope
 from .tools.schemas import SUMMARY_SEARCH_PRIOR_CONTEXT_TOOL
 from .tools.summary_tools import search_prior_context_tool
+from .usage import ai_usage_scope
 
 SUMMARY_MAX_TOKENS = 2500
 SUMMARY_CONTEXT_HARD_LIMIT_RATIO = 1.5
@@ -99,17 +100,18 @@ async def refresh_summary_after_overflow(user_id: int) -> None:
 
 
 async def _process_summary_for_user(user_id: int) -> None:
-    try:
-        async with _summary_slot():
-            summary_text = await _generate_and_store_summary(user_id)
-            if summary_text is None:
-                return
-            await mysql_connection.async_update_latest_history_state_summary(
-                user_id,
-                summary_text,
-            )
-    except Exception as exc:  # pragma: no cover - defensive logging
-        logging.exception("Unexpected error while processing summary for user %s: %s", user_id, exc)
+    with ai_usage_scope(entry="background", task="summary", clear_accumulator=True):
+        try:
+            async with _summary_slot():
+                summary_text = await _generate_and_store_summary(user_id)
+                if summary_text is None:
+                    return
+                await mysql_connection.async_update_latest_history_state_summary(
+                    user_id,
+                    summary_text,
+                )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logging.exception("Unexpected error while processing summary for user %s: %s", user_id, exc)
 
 
 async def _fetch_pending_snapshot(user_id: int) -> tuple[int, str] | None:

@@ -12,6 +12,7 @@ from .context_budget import enforce_messages_context_budget
 from .errors import is_timeout_error
 from .litellm_message_sanitizer import sanitize_messages_for_provider
 from .litellm_provider_config import provider_params
+from .usage import record_completion_usage
 
 
 def _provider_params(provider: str) -> dict[str, Any]:
@@ -119,6 +120,12 @@ async def create_chat_completion(
     else:
         metrics.histogram("provider.call_seconds", provider=litellm_provider).observe(
             time.perf_counter() - started
+        )
+        record_completion_usage(
+            litellm_provider,
+            model,
+            litellm_model=litellm_model,
+            response=response,
         )
         return response
     finally:

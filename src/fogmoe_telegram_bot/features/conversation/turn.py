@@ -41,6 +41,7 @@ from fogmoe_telegram_bot.features.ai.tool_history import (
 )
 from fogmoe_telegram_bot.features.ai.tools.context import build_tool_context
 from fogmoe_telegram_bot.features.ai.types import ToolLog
+from fogmoe_telegram_bot.features.ai.usage import UsageAccumulator, ai_usage_scope
 
 from . import billing
 from . import messages as message_utils
@@ -168,52 +169,67 @@ class ConversationTurn:
         self.services = services
         self.settings = settings
         self.timer = timer or StageTimer(queue_seconds=request.queue_seconds)
+        self.usage = UsageAccumulator()
+        self._turn_charge: billing.TurnCharge | None = None
         self._pending_warning: str | None = None
         self._sent_messages: list[Any] = []
         self._bot_event_message_ids: set[int] = set()
+
+    @property
+    def charged_coins(self) -> int:
+        return self._turn_charge.total_cost if self._turn_charge is not None else 0
 
     # -- 总流程 -------------------------------------------------------------
 
     async def run(self) -> TurnResult:
         charge: billing.TurnCharge | None = None
-        try:
-            with self.timer.stage(Stage.PLAN):
-                planned = await self._plan()
-            with self.timer.stage(Stage.CHARGE):
-                charge = await self._before_model(Stage.CHARGE, lambda: self._charge(planned))
-            with self.timer.stage(Stage.CONTEXT):
-                user_state_prompt = await self._before_model(
-                    Stage.CONTEXT, lambda: self._load_context(charge)
+        with ai_usage_scope(entry="user", accumulator=self.usage, clear_accumulator=True):
+            try:
+                with self.timer.stage(Stage.PLAN):
+                    planned = await self._plan()
+                with self.timer.stage(Stage.CHARGE):
+                    charge = await self._before_model(
+                        Stage.CHARGE, lambda: self._charge(planned)
+                    )
+                    self._turn_charge = charge
+                with self.timer.stage(Stage.CONTEXT):
+                    user_state_prompt = await self._before_model(
+                        Stage.CONTEXT, lambda: self._load_context(charge)
+                    )
+                with self.timer.stage(Stage.PREPARE):
+                    prepared = await self._before_model(
+                        Stage.PREPARE, lambda: self._prepare_inputs(planned)
+                    )
+                with self.timer.stage(Stage.HISTORY_IN):
+                    chat_history = await self._before_model(
+                        Stage.HISTORY_IN,
+                        lambda: self._record_input(prepared, user_state_prompt),
+                    )
+                with self.timer.stage(Stage.MODEL):
+                    reply = await self._run_model(prepared, chat_history, user_state_prompt)
+                with self.timer.stage(Stage.HISTORY_OUT):
+                    await self._after_model(Stage.HISTORY_OUT, lambda: self._record_output(reply))
+                with self.timer.stage(Stage.DELIVERY):
+                    await self._deliver(reply)
+                with self.timer.stage(Stage.FINALIZE):
+                    await self._finalize(reply)
+            except _Stop as stop:
+                if stop.charge is not None:
+                    self._turn_charge = stop.charge
+                return TurnResult(
+                    status=stop.status,
+                    timings=self.timer.snapshot(),
+                    charge=self._turn_charge,
+                    usage=self.usage.snapshot(),
                 )
-            with self.timer.stage(Stage.PREPARE):
-                prepared = await self._before_model(
-                    Stage.PREPARE, lambda: self._prepare_inputs(planned)
-                )
-            with self.timer.stage(Stage.HISTORY_IN):
-                chat_history = await self._before_model(
-                    Stage.HISTORY_IN, lambda: self._record_input(prepared, user_state_prompt)
-                )
-            with self.timer.stage(Stage.MODEL):
-                reply = await self._run_model(prepared, chat_history, user_state_prompt)
-            with self.timer.stage(Stage.HISTORY_OUT):
-                await self._after_model(Stage.HISTORY_OUT, lambda: self._record_output(reply))
-            with self.timer.stage(Stage.DELIVERY):
-                await self._deliver(reply)
-            with self.timer.stage(Stage.FINALIZE):
-                await self._finalize(reply)
-        except _Stop as stop:
             return TurnResult(
-                status=stop.status,
+                status=TurnStatus.COMPLETED,
                 timings=self.timer.snapshot(),
-                charge=stop.charge or charge,
+                charge=self._turn_charge,
+                runtime_error=reply.runtime_error,
+                sent_message_count=len(self._sent_messages),
+                usage=self.usage.snapshot(),
             )
-        return TurnResult(
-            status=TurnStatus.COMPLETED,
-            timings=self.timer.snapshot(),
-            charge=charge,
-            runtime_error=reply.runtime_error,
-            sent_message_count=len(self._sent_messages),
-        )
 
     # -- 整轮截止时间 ---------------------------------------------------------
 
@@ -775,6 +791,7 @@ async def run_turn(
         return result
     finally:
         timings = turn.timer.snapshot()
+        usage_summary = turn.usage.snapshot()
         metrics.counter("turn.finished", status=status).inc()
         metrics.histogram("turn.queue_seconds").observe(timings.queue_seconds)
         metrics.histogram("turn.run_seconds").observe(timings.run_seconds)
@@ -782,10 +799,12 @@ async def run_turn(
             timings.queue_seconds + timings.run_seconds
         )
         logger.info(
-            "conversation turn finished: user_id=%s chat_id=%s messages=%s status=%s %s",
+            "conversation turn finished: user_id=%s chat_id=%s messages=%s status=%s charged_coins=%s %s %s",
             request.sender.user_id,
             request.chat.chat_id,
             len(request.messages),
             status,
-            turn.timer.snapshot().summary(),
+            turn.charged_coins,
+            usage_summary.summary(),
+            timings.summary(),
         )
