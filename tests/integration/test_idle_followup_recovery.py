@@ -32,6 +32,7 @@ from fogmoe_telegram_bot.features.ai import (
     summary,
 )
 from fogmoe_telegram_bot.features.ai.router import AI_SERVICE_ERROR_MESSAGE
+from fogmoe_telegram_bot.features.ai.types import LoopStatus
 
 REPLY = "just checking in"
 USER_ID = 1
@@ -520,6 +521,7 @@ class TestRetryPolicy:
 
     def test_main_model_failure_without_tool_effects_is_retried(self, env):
         env.ai.reply = AI_SERVICE_ERROR_MESSAGE
+        env.ai.status = LoopStatus.ALL_PROVIDERS_FAILED
         poll(env)
 
         row = idle_row(env.url, USER_ID)
