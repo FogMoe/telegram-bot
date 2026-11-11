@@ -11,9 +11,21 @@ from fogmoe_telegram_bot.core.ai_providers import Capabilities, WireProtocol
 from fogmoe_telegram_bot.features.ai import chat_capabilities, provider_resolver, task_runner
 from fogmoe_telegram_bot.features.ai.litellm_message_sanitizer import sanitize_message_for_provider
 from fogmoe_telegram_bot.features.ai.litellm_provider_config import provider_params
+from fogmoe_telegram_bot.features.ai.tools import AI_TOOL_HANDLERS, OPENAI_TOOLS
 
 SETTING_NAMES = set(config.AppSettings.model_fields)
 TASK_NAMES = tuple(ai_providers.TASK_SPECS)
+REGISTERED_TOOL_NAMES = {
+    tool["function"]["name"]
+    for tool in OPENAI_TOOLS
+} | set(AI_TOOL_HANDLERS)
+
+
+def test_declared_skip_tools_exist_in_registered_tools():
+    for spec in ai_providers.PROVIDERS:
+        unknown = [tool for tool in spec.skip_tools if tool not in REGISTERED_TOOL_NAMES]
+        assert unknown == [], f"{spec.name} declares unknown skip_tools: {unknown}"
+    assert ai_providers.require("zai").skip_tools == ()
 
 
 def test_declared_config_keys_exist_in_settings():

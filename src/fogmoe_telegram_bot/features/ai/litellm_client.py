@@ -18,6 +18,17 @@ def _provider_params(provider: str) -> dict[str, Any]:
     return provider_params(provider)
 
 
+def response_token_counts(response: Any) -> tuple[int, int, int]:
+    """从模型响应里取 `(输入 token, 其中命中缓存的 token, 输出 token)`；响应不带用量时都是 0。"""
+    usage = getattr(response, "usage", None)
+    details = getattr(usage, "prompt_tokens_details", None)
+    return (
+        getattr(usage, "prompt_tokens", None) or 0,
+        getattr(details, "cached_tokens", None) or 0,
+        getattr(usage, "completion_tokens", None) or 0,
+    )
+
+
 class _GeminiNativeAsyncHTTPHandler(AsyncHTTPHandler):
     """Use Gemini's canonical JSON name for custom native endpoints."""
 
@@ -119,6 +130,15 @@ async def create_chat_completion(
     else:
         metrics.histogram("provider.call_seconds", provider=litellm_provider).observe(
             time.perf_counter() - started
+        )
+        input_tokens, cached_tokens, output_tokens = response_token_counts(response)
+        logging.info(
+            "AI call finished: provider=%s model=%s in_tokens=%s cached_tokens=%s out_tokens=%s",
+            litellm_provider,
+            litellm_model,
+            input_tokens,
+            cached_tokens,
+            output_tokens,
         )
         return response
     finally:

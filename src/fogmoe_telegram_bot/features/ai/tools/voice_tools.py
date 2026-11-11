@@ -1,5 +1,4 @@
 import logging
-import math
 import threading
 import time
 import uuid
@@ -13,6 +12,7 @@ from fogmoe_telegram_bot.core.redaction import describe_exception, log_exception
 
 from .context import get_tool_request_context
 from .filename_utils import prompt_to_filename
+from .rate_limit import SlidingWindowRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +33,26 @@ VOICE_RATE_LIMIT_MAX_GENERATIONS = 3
 _SESSION_LOCAL = threading.local()
 _GENERATED_AUDIO_FILES: dict[str, str] = {}
 _GENERATED_AUDIO_LOCK = threading.Lock()
-_VOICE_RATE_LIMITS: dict[int, list[float]] = {}
-_VOICE_RATE_LIMIT_LOCK = threading.Lock()
+_VOICE_RATE_LIMITER = SlidingWindowRateLimiter(clock=time.monotonic)
+_VOICE_RATE_LIMITS = _VOICE_RATE_LIMITER.buckets
+
+
+def resolve_fish_audio_settings(settings: Any = None) -> tuple[str, str, str]:
+    """返回实际生效的 `(api_key, model, reference_id)`：模型与参考音色留空时回落到默认值。
+
+    工具处理函数与 `ToolSpec` 的可见性判断共用这一份解析，避免两边对「是否已配置」各算各的。
+    """
+    source = config if settings is None else settings
+    api_key = str(getattr(source, "FISH_AUDIO_API_KEY", None) or "").strip()
+    model = (
+        str(getattr(source, "FISH_AUDIO_MODEL", None) or "").strip()
+        or DEFAULT_FISH_AUDIO_MODEL
+    )
+    reference_id = (
+        str(getattr(source, "FISH_AUDIO_REFERENCE_ID", None) or "").strip()
+        or DEFAULT_FISH_AUDIO_REFERENCE_ID
+    )
+    return api_key, model, reference_id
 
 
 class VoiceGenerationSizeError(ValueError):
@@ -50,56 +68,17 @@ def _get_request_user_id() -> int | None:
         return None
 
 
-def _prune_voice_rate_limits(now: float) -> None:
-    cutoff = now - VOICE_RATE_LIMIT_WINDOW_SECONDS
-    for user_id, timestamps in list(_VOICE_RATE_LIMITS.items()):
-        active_timestamps = [timestamp for timestamp in timestamps if timestamp > cutoff]
-        if active_timestamps:
-            _VOICE_RATE_LIMITS[user_id] = active_timestamps
-        else:
-            _VOICE_RATE_LIMITS.pop(user_id, None)
-
-
 def _reserve_voice_generation(user_id: int) -> tuple[bool, float | None, int | None]:
-    now = time.time()
-    cutoff = now - VOICE_RATE_LIMIT_WINDOW_SECONDS
-
-    with _VOICE_RATE_LIMIT_LOCK:
-        _prune_voice_rate_limits(now)
-        timestamps = [
-            timestamp
-            for timestamp in _VOICE_RATE_LIMITS.get(user_id, [])
-            if timestamp > cutoff
-        ]
-
-        if len(timestamps) >= VOICE_RATE_LIMIT_MAX_GENERATIONS:
-            retry_after = math.ceil(
-                max(1, VOICE_RATE_LIMIT_WINDOW_SECONDS - (now - timestamps[0]))
-            )
-            _VOICE_RATE_LIMITS[user_id] = timestamps
-            return False, None, retry_after
-
-        timestamps.append(now)
-        _VOICE_RATE_LIMITS[user_id] = timestamps
-        return True, now, None
+    reservation = _VOICE_RATE_LIMITER.reserve(
+        user_id,
+        window_seconds=VOICE_RATE_LIMIT_WINDOW_SECONDS,
+        max_calls=VOICE_RATE_LIMIT_MAX_GENERATIONS,
+    )
+    return reservation.allowed, reservation.token, reservation.retry_after_seconds
 
 
 def _release_voice_generation(user_id: int, reservation_timestamp: float | None) -> None:
-    if reservation_timestamp is None:
-        return
-
-    with _VOICE_RATE_LIMIT_LOCK:
-        timestamps = _VOICE_RATE_LIMITS.get(user_id)
-        if not timestamps:
-            return
-        for index, timestamp in enumerate(timestamps):
-            if timestamp == reservation_timestamp:
-                del timestamps[index]
-                break
-        if timestamps:
-            _VOICE_RATE_LIMITS[user_id] = timestamps
-        else:
-            _VOICE_RATE_LIMITS.pop(user_id, None)
+    _VOICE_RATE_LIMITER.release(user_id, reservation_timestamp)
 
 
 def _is_expired_generated_audio(path: Path, cutoff: float) -> bool:
@@ -351,15 +330,7 @@ def generate_voice_tool(
             ),
         }
 
-    api_key = (getattr(config, "FISH_AUDIO_API_KEY", None) or "").strip()
-    model = (
-        getattr(config, "FISH_AUDIO_MODEL", DEFAULT_FISH_AUDIO_MODEL)
-        or DEFAULT_FISH_AUDIO_MODEL
-    ).strip()
-    reference_id = (
-        getattr(config, "FISH_AUDIO_REFERENCE_ID", DEFAULT_FISH_AUDIO_REFERENCE_ID)
-        or DEFAULT_FISH_AUDIO_REFERENCE_ID
-    ).strip()
+    api_key, model, reference_id = resolve_fish_audio_settings()
 
     if not api_key:
         return {"error": "Fish Audio API key is not configured"}
@@ -409,4 +380,4 @@ def pop_generated_audio_file(audio_id: str) -> str | None:
         return _GENERATED_AUDIO_FILES.pop(audio_id, None)
 
 
-__all__ = ["generate_voice_tool", "pop_generated_audio_file"]
+__all__ = ["generate_voice_tool", "pop_generated_audio_file", "resolve_fish_audio_settings"]

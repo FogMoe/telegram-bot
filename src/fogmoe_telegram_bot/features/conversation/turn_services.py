@@ -62,7 +62,7 @@ class TurnServices:
     archive_completed_clear: Callable[..., Awaitable[None]]
 
     # 媒体
-    analyze_image: Callable[[str], Awaitable[str]]
+    analyze_image: Callable[[str], Awaitable[str | None]]
 
     # 模型
     run_model: Callable[[ModelRequest], Awaitable[ModelResponse]]
@@ -177,12 +177,12 @@ async def _archive_completed_clear(
     summary.schedule_summary_generation(conversation_id)
 
 
-async def _analyze_image(base64_str: str) -> str:
+async def _analyze_image(base64_str: str) -> str | None:
     return await ai_chat.analyze_image(base64_str)
 
 
 async def _run_model(request: ModelRequest) -> ModelResponse:
-    text, tool_logs = await ai_chat.get_ai_response(
+    result = await ai_chat.get_ai_response(
         request.messages,
         request.user_id,
         tool_context=request.tool_context,
@@ -190,7 +190,12 @@ async def _run_model(request: ModelRequest) -> ModelResponse:
         visible_content_handler=request.visible_content_handler,
         deadline=request.deadline,
     )
-    return ModelResponse(text=text, tool_logs=tool_logs)
+    return ModelResponse(
+        text=result.text,
+        tool_logs=result.tool_logs,
+        status=result.status,
+        turn_messages=result.turn_messages,
+    )
 
 
 def _make_visible_handler(**kwargs: Any) -> TelegramVisibleContentHandler:

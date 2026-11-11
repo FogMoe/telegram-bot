@@ -14,7 +14,7 @@ from fogmoe_telegram_bot.core import blocking, metrics
 from fogmoe_telegram_bot.core.deadline import REASON_DEADLINE, REASON_SHUTDOWN, Deadline
 from fogmoe_telegram_bot.features.ai import job_claims, router, tool_runner
 from fogmoe_telegram_bot.features.ai.generated_image_sender import _collect_generated_images
-from fogmoe_telegram_bot.features.ai.tool_history import tool_logs_to_record_entries
+from fogmoe_telegram_bot.features.ai.tool_history import turn_messages_to_record_entries
 from fogmoe_telegram_bot.features.ai.tools.dispatch import inline_tool
 from fogmoe_telegram_bot.features.ai.types import (
     ABORT_EVENT_KEY,
@@ -39,12 +39,35 @@ def call(call_id, name="google_search", arguments='{"query": "x"}', **extra):
     return {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}, **extra}
 
 
+def _assert_tool_calls_paired(messages):
+    """每次发给模型的消息序列里，assistant 的 tool_calls 必须紧跟一一配对的 tool 结果。"""
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
+        if message.get("role") == "assistant" and tool_calls:
+            expected_ids = [call.get("id") for call in tool_calls]
+            assert all(expected_ids), f"assistant tool_calls missing id: {tool_calls}"
+            index += 1
+            actual_ids = []
+            while index < len(messages) and messages[index].get("role") == "tool":
+                actual_ids.append(messages[index].get("tool_call_id"))
+                index += 1
+            assert actual_ids == expected_ids, (
+                f"unpaired tool_calls: expected {expected_ids}, got {actual_ids}"
+            )
+            continue
+        assert message.get("role") != "tool", f"orphan tool message at {index}: {message}"
+        index += 1
+
+
 def script(*responses):
     """按顺序返回响应的模型替身，并记录每次调用的参数。"""
     queue = list(responses)
     calls = []
 
     async def fake_create_chat_completion(provider, model, *, messages, **kwargs):
+        _assert_tool_calls_paired(messages)
         calls.append(SimpleNamespace(provider=provider, model=model, messages=list(messages), kwargs=kwargs))
         item = queue.pop(0)
         if isinstance(item, BaseException):
@@ -114,7 +137,8 @@ def test_async_and_sync_tools_can_be_mixed_in_one_round_and_stay_paired(monkeypa
         seen["loop_thread"] = threading.get_ident()
         return await loop_with(monkeypatch, fake, {"google_search": async_search, "fetch_url": sync_fetch})
 
-    message, tool_logs = run_loop(scenario())
+    result = run_loop(scenario())
+    message, tool_logs = result
 
     assert message == "done"
     assert seen["async_thread"] == seen["loop_thread"]  # async 工具直接在事件循环里 await
@@ -126,7 +150,7 @@ def test_async_and_sync_tools_can_be_mixed_in_one_round_and_stay_paired(monkeypa
     assistant = next(m for m in second_call_messages if m.get("tool_calls"))
     assert [c["id"] for c in assistant["tool_calls"]] == ["c1", "c2"]
     assert [m["tool_call_id"] for m in second_call_messages if m.get("role") == "tool"] == ["c1", "c2"]
-    entries = tool_logs_to_record_entries(tool_logs)
+    entries = turn_messages_to_record_entries(result.turn_messages)
     assert [role for role, _ in entries] == ["assistant", "tool", "tool"]
 
 
@@ -429,7 +453,7 @@ def test_a_tool_cut_off_by_the_deadline_is_paired_and_never_replayed(monkeypatch
     assert set(results) == {"c1", "c2"}  # 每个 tool_call 都有结果，历史仍然配对
     assert results["c1"]["error"] == "interrupted" and results["c1"]["outcome"] == "unknown"
     assert results["c2"]["error"] == "not_executed"
-    entries = tool_logs_to_record_entries(error.tool_logs)
+    entries = turn_messages_to_record_entries(error.turn_messages)
     assert [role for role, _ in entries] == ["assistant", "tool", "tool"]
     assert len(calls) == 1  # 没有为了「重试」再调用模型
 
@@ -534,7 +558,7 @@ def test_media_whose_delivery_is_cut_off_keeps_its_result_and_is_not_sent_again(
     assert media_delivery_attempted(results["c1"])
     assert _collect_generated_images(error.tool_logs) == []
     assert results["c2"]["result"]["error"] == "not_executed"
-    assert [role for role, _ in tool_logs_to_record_entries(error.tool_logs)] == [
+    assert [role for role, _ in turn_messages_to_record_entries(error.turn_messages)] == [
         "assistant",
         "tool",
         "tool",
@@ -581,6 +605,8 @@ def two_providers(settings_override, monkeypatch):
         AI_CHAT_ORDER="openai,gemini",
         OPENAI_CHAT_MODEL="openai-model",
         GEMINI_CHAT_MODEL="gemini-model",
+        # 这组测试经 router 调 google_search：没配置凭据的工具不会暴露给模型。
+        SERPAPI_API_KEY="test-key",
     )
     router.CHAT_CIRCUIT.reset()
     yield
@@ -616,7 +642,7 @@ def test_a_hung_provider_ends_the_whole_turn_at_the_deadline_with_a_notice(monke
 
     assert elapsed < 1.5
     assert response == (router.TURN_DEADLINE_ERROR_MESSAGE, [])
-    assert router.runtime_error_cause(response[0]) == "turn_deadline_exceeded"
+    assert response.runtime_error == "turn_deadline_exceeded"
     assert [c.provider for c in calls] == ["openai"]  # 没有再换下一个 provider
     assert metrics.snapshot().counter("turn.deadline_hits", reason="deadline", phase="model") == 1
 
@@ -754,7 +780,7 @@ def test_shutdown_uses_its_own_notice_and_does_not_count_against_the_provider(mo
     response = run_loop(scenario())
 
     assert response[0] == router.TURN_SHUTDOWN_ERROR_MESSAGE
-    assert router.runtime_error_cause(response[0]) == "turn_interrupted_by_shutdown"
+    assert response.runtime_error == "turn_interrupted_by_shutdown"
     assert router.CHAT_CIRCUIT.failure_count("openai") == 0
 
 

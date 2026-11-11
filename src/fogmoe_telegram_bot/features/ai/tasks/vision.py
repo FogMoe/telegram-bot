@@ -1,30 +1,30 @@
+"""调用 vision 任务生成图片或贴纸的文字描述，用于写入纯文本会话历史。"""
+
+from __future__ import annotations
+
 import logging
 
 from ..task_runner import run_ai_task
 
 
-async def analyze_image(base64_str):
-    """调用配置的 AI vision 模型分析图像并返回描述文本"""
+async def analyze_image(base64_str: str) -> str | None:
+    """调用配置的 AI vision 模型描述图片。
+
+    识别失败或描述为空时返回 None，调用方不往历史里写描述：当轮的多模态主模型照样看得到原图，
+    历史里留一句「识别失败」反而会和它当时的回复对不上。
+    """
+    if not base64_str:
+        logging.error("图片数据为空，跳过识别")
+        return None
     try:
-        if not base64_str:
-            raise ValueError("Image data is empty.")
-
-        return await _describe_image(base64_str)
-
-    except ValueError as exc:
-        logging.error("图片数据验证失败: %s", exc)
-        return "Image validation failed, please check the image format."
-
-    except ConnectionError as exc:
-        logging.error("连接 AI vision 服务失败: %s", exc)
-        return "Failed to connect to AI service."
-
+        description = await _describe_image(base64_str)
     except Exception as exc:
-        logging.error("处理图片时发生未知错误: %s", exc)
-        return "An error occurred while processing the image."
+        logging.error("处理图片描述时失败: %s", exc)
+        return None
+    return description.strip() or None
 
 
-async def _describe_image(base64_str):
+async def _describe_image(base64_str: str) -> str:
     response = await run_ai_task(
         "vision",
         messages=[
@@ -48,5 +48,8 @@ async def _describe_image(base64_str):
             }
         ],
     )
-    return response.choices[0].message.content
-
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        raise RuntimeError("Vision provider returned a response without choices")
+    content = getattr(choices[0].message, "content", None)
+    return str(content or "")

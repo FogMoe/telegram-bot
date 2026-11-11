@@ -29,18 +29,19 @@ from fogmoe_telegram_bot.core.telegram_history import (
 )
 from fogmoe_telegram_bot.core.telegram_utils import partial_send
 from fogmoe_telegram_bot.features.ai import user_state
-from fogmoe_telegram_bot.features.ai.outbound import finish_reply
 from fogmoe_telegram_bot.features.ai.router import (
     TURN_DEADLINE_ERROR_MESSAGE,
     TURN_SHUTDOWN_ERROR_MESSAGE,
 )
-from fogmoe_telegram_bot.features.ai.tool_history import (
-    reply_record_entries,
-    tool_logs_completed_clear,
-    tool_logs_to_record_entries,
-)
 from fogmoe_telegram_bot.features.ai.tools.context import build_tool_context
-from fogmoe_telegram_bot.features.ai.types import ToolLog
+from fogmoe_telegram_bot.features.ai.turn_pipeline import (
+    USER_ENTRY_POLICY,
+    PostInputStage,
+    PreparedModelTurn,
+    execute_post_input_turn,
+    prepare_model_turn,
+    tool_log_type_labels,
+)
 
 from . import billing
 from . import messages as message_utils
@@ -168,9 +169,14 @@ class ConversationTurn:
         self.services = services
         self.settings = settings
         self.timer = timer or StageTimer(queue_seconds=request.queue_seconds)
+        self._turn_charge: billing.TurnCharge | None = None
         self._pending_warning: str | None = None
         self._sent_messages: list[Any] = []
         self._bot_event_message_ids: set[int] = set()
+
+    @property
+    def charged_coins(self) -> int:
+        return self._turn_charge.total_cost if self._turn_charge is not None else 0
 
     # -- 总流程 -------------------------------------------------------------
 
@@ -180,7 +186,10 @@ class ConversationTurn:
             with self.timer.stage(Stage.PLAN):
                 planned = await self._plan()
             with self.timer.stage(Stage.CHARGE):
-                charge = await self._before_model(Stage.CHARGE, lambda: self._charge(planned))
+                charge = await self._before_model(
+                    Stage.CHARGE, lambda: self._charge(planned)
+                )
+                self._turn_charge = charge
             with self.timer.stage(Stage.CONTEXT):
                 user_state_prompt = await self._before_model(
                     Stage.CONTEXT, lambda: self._load_context(charge)
@@ -191,26 +200,37 @@ class ConversationTurn:
                 )
             with self.timer.stage(Stage.HISTORY_IN):
                 chat_history = await self._before_model(
-                    Stage.HISTORY_IN, lambda: self._record_input(prepared, user_state_prompt)
+                    Stage.HISTORY_IN,
+                    lambda: self._record_input(prepared, user_state_prompt),
                 )
-            with self.timer.stage(Stage.MODEL):
-                reply = await self._run_model(prepared, chat_history, user_state_prompt)
-            with self.timer.stage(Stage.HISTORY_OUT):
-                await self._after_model(Stage.HISTORY_OUT, lambda: self._record_output(reply))
-            with self.timer.stage(Stage.DELIVERY):
-                await self._deliver(reply)
-            with self.timer.stage(Stage.FINALIZE):
-                await self._finalize(reply)
+            outcome = await execute_post_input_turn(
+                policy=USER_ENTRY_POLICY,
+                run_model_step=lambda: self._run_model(
+                    prepared,
+                    chat_history,
+                    user_state_prompt,
+                ),
+                persist_output=lambda reply: self._after_model(
+                    Stage.HISTORY_OUT,
+                    lambda: self._record_output(reply),
+                ),
+                deliver_output=self._deliver,
+                finalize_turn=lambda reply, _delivered: self._finalize(reply),
+                wrap_stage=self._wrap_post_input_stage,
+            )
+            reply = outcome.prepared
         except _Stop as stop:
+            if stop.charge is not None:
+                self._turn_charge = stop.charge
             return TurnResult(
                 status=stop.status,
                 timings=self.timer.snapshot(),
-                charge=stop.charge or charge,
+                charge=self._turn_charge,
             )
         return TurnResult(
             status=TurnStatus.COMPLETED,
             timings=self.timer.snapshot(),
-            charge=charge,
+            charge=self._turn_charge,
             runtime_error=reply.runtime_error,
             sent_message_count=len(self._sent_messages),
         )
@@ -501,6 +521,14 @@ class ConversationTurn:
         # 立即获取最新历史记录，以便 AI 能看到刚刚插入的消息
         return await self.services.get_history(conversation_id)
 
+    async def _wrap_post_input_stage(
+        self,
+        stage: PostInputStage,
+        step: Callable[[], Awaitable[_T]],
+    ) -> _T:
+        with self.timer.stage(Stage(stage.value)):
+            return await step()
+
     # -- model --------------------------------------------------------------
 
     async def _run_model(
@@ -508,28 +536,24 @@ class ConversationTurn:
         prepared: _PreparedInput,
         chat_history: list[dict[str, Any]],
         user_state_prompt: str,
-    ) -> _Reply:
+    ) -> PreparedModelTurn:
         request = self.request
         services = self.services
         chat_id = request.chat.chat_id
         reply_target: Any = request.reply_target
 
-        try:
-            await services.send_typing(request.bot, chat_id)
-        except Exception:
-            logger.debug("Failed to send typing action before AI request")
-
-        visible_content_handler = services.make_visible_handler(
-            bot=request.bot,
-            chat_id=chat_id,
-            first_text_send=reply_target.reply_text,
-            fallback_send=self._fallback_send(),
-            reply_to_message_id=getattr(reply_target, "message_id", None),
-        )
-
         # 单一的模型执行调用点：路由、provider 回退、工具循环都在它后面。
-        with suppress_telegram_history():
-            response = await services.run_model(
+        prepared_turn = await prepare_model_turn(
+            policy=USER_ENTRY_POLICY,
+            send_typing=lambda: services.send_typing(request.bot, chat_id),
+            make_visible_handler=lambda: services.make_visible_handler(
+                bot=request.bot,
+                chat_id=chat_id,
+                first_text_send=reply_target.reply_text,
+                fallback_send=self._fallback_send(),
+                reply_to_message_id=getattr(reply_target, "message_id", None),
+            ),
+            invoke_model=lambda visible_content_handler: services.run_model(
                 ModelRequest(
                     messages=message_utils._replace_user_messages_for_ai(
                         chat_history,
@@ -541,23 +565,20 @@ class ConversationTurn:
                     visible_content_handler=visible_content_handler,
                     deadline=request.deadline,
                 )
-            )
-        self._sent_messages.extend(getattr(visible_content_handler, "sent_messages", []))
-        reply = await finish_reply(response.text, normalize_stickers=services.normalize_stickers)
-        return _Reply(
-            text=reply.text,
-            tool_logs=response.tool_logs,
-            runtime_error=reply.runtime_error,
-            tool_record_entries=tool_logs_to_record_entries(response.tool_logs),
-            completed_clear=tool_logs_completed_clear(response.tool_logs),
+            ),
+            normalize_stickers=services.normalize_stickers,
+            logger=logger,
+            user_id=request.sender.user_id,
         )
+        self._sent_messages.extend(prepared_turn.visible_sent_messages)
+        return prepared_turn
 
     def _fallback_send(self) -> Any:
         return partial_send(self.request.bot.send_message, self.request.chat.chat_id)
 
     # -- history_out --------------------------------------------------------
 
-    async def _record_output(self, reply: _Reply) -> None:
+    async def _record_output(self, reply: PreparedModelTurn) -> None:
         if reply.completed_clear:
             return
         conversation_id = self.request.conversation_id
@@ -570,7 +591,7 @@ class ConversationTurn:
                 )
             )
 
-        for role, content in reply_record_entries(reply.text, reply.runtime_error):
+        for role, content in reply.reply_entries:
             await self._persist_records(
                 await self.services.insert_record(
                     conversation_id,
@@ -582,25 +603,11 @@ class ConversationTurn:
 
     # -- delivery -----------------------------------------------------------
 
-    async def _deliver(self, reply: _Reply) -> None:
+    async def _deliver(self, reply: PreparedModelTurn) -> None:
         """投递：受整轮截止时间加上固定宽限约束（宽限让「超时提示」本身还能发出去）。"""
-        deadline = self.request.deadline
-        if deadline is None:
-            await self._deliver_messages(reply)
-            return
-        try:
-            async with deadline.guard(extra=DELIVERY_GRACE_SECONDS):
-                await self._deliver_messages(reply)
-        except DeadlineExceeded as exc:
-            metrics.counter("turn.deadline_hits", reason=exc.reason, phase="delivery").inc()
-            logger.warning(
-                "delivery was cut short by the turn deadline (%s): user_id=%s chat_id=%s",
-                exc.reason,
-                self.request.sender.user_id,
-                self.request.chat.chat_id,
-            )
+        await self._after_model(Stage.DELIVERY, lambda: self._deliver_messages(reply))
 
-    async def _deliver_messages(self, reply: _Reply) -> None:
+    async def _deliver_messages(self, reply: PreparedModelTurn) -> None:
         request = self.request
         services = self.services
         chat_id = request.chat.chat_id
@@ -654,16 +661,11 @@ class ConversationTurn:
             )
         )
         if not sent_messages and not reply.text.strip():
-            tool_log_types = [
-                str(tool_log.get("type", "tool_result"))
-                for tool_log in reply.tool_logs
-                if isinstance(tool_log, dict)
-            ]
             logger.info(
                 "AI produced empty response; no Telegram message sent: user_id=%s conversation_id=%s tool_log_types=%s",
                 request.sender.user_id,
                 request.conversation_id,
-                tool_log_types,
+                tool_log_type_labels(reply.tool_logs),
             )
         if request.chat.is_group:
             for sent_message in sent_messages:
@@ -675,7 +677,7 @@ class ConversationTurn:
 
     # -- finalize -----------------------------------------------------------
 
-    async def _finalize(self, reply: _Reply) -> None:
+    async def _finalize(self, reply: PreparedModelTurn) -> None:
         request = self.request
         conversation_id = request.conversation_id
         if reply.completed_clear:
@@ -689,16 +691,17 @@ class ConversationTurn:
                 runtime_error=reply.runtime_error,
             )
 
-        # 先保存本轮所有成功显示的结果，再把零余额状态作为严格写入边界。
+        # 先保存本轮所有成功显示的结果，再按入口策略写入零余额边界。
         await self.services.flush_events(conversation_id)
-        await self._persist_records(
-            await self.services.insert_records(
-                conversation_id,
-                [],
-                suspend_if_zero=True,
-            ),
-            announce=True,
-        )
+        if USER_ENTRY_POLICY.suspend_if_zero:
+            await self._persist_records(
+                await self.services.insert_records(
+                    conversation_id,
+                    [],
+                    suspend_if_zero=True,
+                ),
+                announce=True,
+            )
 
     # -- 历史写入的收尾 -------------------------------------------------------
 
@@ -746,17 +749,6 @@ class _PreparedInput:
     runtime_replacements: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
 
-@dataclass(frozen=True, slots=True)
-class _Reply:
-    """`model` 阶段的产物：规范化后的回复与由工具日志推出的历史记录。"""
-
-    text: str
-    tool_logs: list[ToolLog]
-    runtime_error: str | None
-    tool_record_entries: list[tuple[str, object]]
-    completed_clear: bool
-
-
 async def run_turn(
     request: TurnRequest,
     services: TurnServices | None = None,
@@ -782,10 +774,11 @@ async def run_turn(
             timings.queue_seconds + timings.run_seconds
         )
         logger.info(
-            "conversation turn finished: user_id=%s chat_id=%s messages=%s status=%s %s",
+            "conversation turn finished: user_id=%s chat_id=%s messages=%s status=%s charged_coins=%s %s",
             request.sender.user_id,
             request.chat.chat_id,
             len(request.messages),
             status,
-            turn.timer.snapshot().summary(),
+            turn.charged_coins,
+            timings.summary(),
         )

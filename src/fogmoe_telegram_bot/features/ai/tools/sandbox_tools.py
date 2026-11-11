@@ -1,6 +1,5 @@
 import logging
 import re
-import threading
 import time
 from typing import Any
 
@@ -8,6 +7,7 @@ from fogmoe_telegram_bot.core import blocking, config
 from fogmoe_telegram_bot.core.redaction import describe_exception
 
 from .context import get_tool_request_context
+from .rate_limit import UserSessionGate
 
 DEFAULT_CWD = "/home/user"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 15
@@ -17,13 +17,15 @@ MAX_OUTPUT_CHARS = 12_000
 MAX_CALLS_PER_REQUEST = 10
 MAX_SANDBOX_LIFETIME_SECONDS = 300
 USER_SANDBOX_CREATE_COOLDOWN_SECONDS = 300
+# 全站同时运行的沙箱数上限：给 E2B 费用和账号并发额度封顶，超出的请求直接拿到 busy，不排队。
+MAX_CONCURRENT_SANDBOXES = 4
 
 _SANDBOX_CONTEXT_KEY = "_linux_sandbox"
 _SANDBOX_CALL_COUNT_KEY = "_linux_sandbox_call_count"
 _SANDBOX_USER_ID_KEY = "_linux_sandbox_user_id"
-_ACTIVE_SANDBOX_USER_IDS: dict[str, float] = {}
-_USER_SANDBOX_CREATE_COOLDOWNS: dict[str, float] = {}
-_ACTIVE_SANDBOX_LOCK = threading.Lock()
+_SANDBOX_GATE = UserSessionGate(clock=time.monotonic)
+_ACTIVE_SANDBOX_USER_IDS = _SANDBOX_GATE.active_users
+_USER_SANDBOX_CREATE_COOLDOWNS = _SANDBOX_GATE.cooldowns
 
 _BACKGROUND_PROCESS_PATTERN = re.compile(
     r"(?:^|[;&|]\s*)(?:nohup|setsid|screen|tmux)\b",
@@ -119,24 +121,6 @@ def _background_process_detected(command: str) -> bool:
     )
 
 
-def _purge_expired_user_locks(now: float) -> None:
-    expired_user_ids = [
-        user_id
-        for user_id, expires_at in _ACTIVE_SANDBOX_USER_IDS.items()
-        if expires_at <= now
-    ]
-    for user_id in expired_user_ids:
-        _ACTIVE_SANDBOX_USER_IDS.pop(user_id, None)
-
-    expired_cooldown_user_ids = [
-        user_id
-        for user_id, cooldown_until in _USER_SANDBOX_CREATE_COOLDOWNS.items()
-        if cooldown_until <= now
-    ]
-    for user_id in expired_cooldown_user_ids:
-        _USER_SANDBOX_CREATE_COOLDOWNS.pop(user_id, None)
-
-
 def _reserve_user_sandbox(context: dict[str, object]) -> None:
     if context.get(_SANDBOX_USER_ID_KEY):
         return
@@ -150,27 +134,35 @@ def _reserve_user_sandbox(context: dict[str, object]) -> None:
             )
         )
 
-    now = time.monotonic()
-    with _ACTIVE_SANDBOX_LOCK:
-        _purge_expired_user_locks(now)
-        if user_id in _ACTIVE_SANDBOX_USER_IDS:
+    reservation = _SANDBOX_GATE.reserve(
+        user_id,
+        active_ttl_seconds=MAX_SANDBOX_LIFETIME_SECONDS,
+        cooldown_seconds=USER_SANDBOX_CREATE_COOLDOWN_SECONDS,
+        max_concurrent_sessions=MAX_CONCURRENT_SANDBOXES,
+        now=time.monotonic(),
+    )
+    if not reservation.allowed:
+        if reservation.blocked_reason == "user_sandbox_busy":
             raise _SandboxBlockedError(
                 _blocked_result(
                     "A Linux sandbox is already running for this user. Try again after the current request finishes.",
                     "user_sandbox_busy",
                 )
             )
-        cooldown_until = _USER_SANDBOX_CREATE_COOLDOWNS.get(user_id)
-        if cooldown_until is not None:
-            retry_after_seconds = max(1, int(cooldown_until - now))
-            result = _blocked_result(
-                f"Linux sandbox creation is rate limited for this user. Try again in {retry_after_seconds} seconds.",
-                "user_rate_limit",
+        if reservation.blocked_reason == "global_sandbox_busy":
+            raise _SandboxBlockedError(
+                _blocked_result(
+                    "Too many Linux sandboxes are currently active. Try again shortly.",
+                    "global_sandbox_busy",
+                )
             )
-            result["retry_after_seconds"] = retry_after_seconds
-            raise _SandboxBlockedError(result)
-        _ACTIVE_SANDBOX_USER_IDS[user_id] = now + MAX_SANDBOX_LIFETIME_SECONDS
-        _USER_SANDBOX_CREATE_COOLDOWNS[user_id] = now + USER_SANDBOX_CREATE_COOLDOWN_SECONDS
+        retry_after_seconds = reservation.retry_after_seconds or 1
+        result = _blocked_result(
+            f"Linux sandbox creation is rate limited for this user. Try again in {retry_after_seconds} seconds.",
+            "user_rate_limit",
+        )
+        result["retry_after_seconds"] = retry_after_seconds
+        raise _SandboxBlockedError(result)
     context[_SANDBOX_USER_ID_KEY] = user_id
 
 
@@ -178,8 +170,7 @@ def _release_user_sandbox(context: dict[str, object]) -> None:
     user_id = context.pop(_SANDBOX_USER_ID_KEY, None)
     if not user_id:
         return
-    with _ACTIVE_SANDBOX_LOCK:
-        _ACTIVE_SANDBOX_USER_IDS.pop(str(user_id), None)
+    _SANDBOX_GATE.release_active(str(user_id))
 
 
 def _result_from_command(
@@ -231,6 +222,7 @@ def _get_or_create_sandbox(context: dict[str, object]):
         context[_SANDBOX_CONTEXT_KEY] = sandbox
         return sandbox
     except Exception:
+        # 没建起来：释放活跃锁和全站名额，创建冷却不退——E2B 出故障时后面的调用直接被冷却挡下。
         _release_user_sandbox(context)
         raise
 

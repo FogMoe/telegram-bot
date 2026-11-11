@@ -10,6 +10,7 @@ import pytest
 from fogmoe_telegram_bot.core import metrics, telegram_history
 from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline
 from fogmoe_telegram_bot.features.ai import router, user_state
+from fogmoe_telegram_bot.features.ai.types import LoopStatus
 from fogmoe_telegram_bot.features.conversation import billing, turn
 from fogmoe_telegram_bot.features.conversation.turn_services import TurnServices
 from fogmoe_telegram_bot.features.conversation.turn_types import (
@@ -489,7 +490,11 @@ class TestCompletedTurn:
 
     def test_an_error_notice_is_delivered_but_never_written_as_an_assistant_record(self):
         world = World()
-        world.model_response = ModelResponse(text=router.AI_SERVICE_ERROR_MESSAGE, tool_logs=[])
+        world.model_response = ModelResponse(
+            text=router.AI_SERVICE_ERROR_MESSAGE,
+            tool_logs=[],
+            status=LoopStatus.ALL_PROVIDERS_FAILED,
+        )
 
         result = run_turn(make_request(text_message()), make_services(world))
 
@@ -504,6 +509,10 @@ class TestCompletedTurn:
             tool_logs=[
                 {"type": "telegram_event", "content": "<event/>"},
                 {"type": "assistant_visible", "content": "稍等"},
+            ],
+            turn_messages=[
+                {"role": "user", "content": "<event/>"},
+                {"role": "assistant", "content": "稍等"},
             ],
         )
 
@@ -570,7 +579,11 @@ class TestCompletedTurn:
         assert [event[1:] for event in logged] == [(900, 100)]
 
         world = World()
-        world.model_response = ModelResponse(text=router.AI_SERVICE_ERROR_MESSAGE, tool_logs=[])
+        world.model_response = ModelResponse(
+            text=router.AI_SERVICE_ERROR_MESSAGE,
+            tool_logs=[],
+            status=LoopStatus.ALL_PROVIDERS_FAILED,
+        )
         run_turn(make_request(text_message(), chat_type="group"), make_services(world))
         assert world.calls("group_log") == []
 
@@ -669,6 +682,48 @@ class TestMedia:
         assert result.status is TurnStatus.MEDIA_FAILED
         assert world.calls("reply_text")[0][2] == turn.MEDIA_FAILED_TEXT
         assert "insert_records" not in world.names()
+
+    def test_vision_failure_omits_description_in_history_and_keeps_multimodal_image(
+        self, monkeypatch
+    ):
+        from fogmoe_telegram_bot.features.ai.tasks import vision
+
+        async def fail_ai_task(*args, **kwargs):
+            raise ConnectionError("vision provider unreachable")
+
+        monkeypatch.setattr(vision, "run_ai_task", fail_ai_task)
+        assert asyncio.run(vision.analyze_image("aGVsbG8=")) is None
+        assert asyncio.run(vision.analyze_image("")) is None
+
+        world = World()
+        captured = {}
+
+        async def insert_records(conversation_id, entries, **options):
+            captured.setdefault("entries", list(entries))
+            return (False, None, [])
+
+        async def get_history(conversation_id):
+            return [{"role": "user", "content": captured["entries"][0][1]}]
+
+        services = make_services(
+            world,
+            analyze_image=vision.analyze_image,
+            insert_records=insert_records,
+            get_history=get_history,
+        )
+        result = run_turn(make_request(photo_message(3, caption="看看这张图")), services)
+
+        assert result.status is TurnStatus.COMPLETED
+        recorded_xml = captured["entries"][0][1]
+        assert '<media type="photo">' in recorded_xml
+        assert "<description>" not in recorded_xml
+        assert "Failed to connect" not in recorded_xml
+        assert "看看这张图" in recorded_xml
+        (model_request,) = world.model_requests
+        (runtime_message,) = model_request.messages
+        assert runtime_message["content"][1]["image_url"]["url"].startswith(
+            "data:image/jpeg;base64,"
+        )
 
 
 # ---------------------------------------------------------------------------

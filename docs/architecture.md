@@ -41,8 +41,9 @@ app → core
 |---|---|
 | `config.py` / `db.py` / `bot_logging.py` | 配置、引擎、日志；配置的覆盖机制见「配置注入」 |
 | `ai_providers.py` / `litellm_models.py` | AI provider 的唯一声明表，以及由它决定的名字与 LiteLLM 模型名转换，契约见 [ai-provider-architecture.md](ai-provider-architecture.md) |
+| `ai_pricing.py` | AI 对话消息、善意赠币与付费 AI 功能（翻译、垃圾识别）的金币价格单一声明表 |
 | `sql.py` | 通用 SQL 助手：`fetch_one` / `fetch_all` / `execute` 与连接别名 |
-| `chat_records.py` | AI 对话历史存储：写入、归档、裁剪、token 预算、history-state 事件 |
+| `chat_records.py` | AI 对话历史存储：写入（含零余额状态边界）、归档、裁剪、token 预算、history-state 事件 |
 | `user_records.py` | user 表的基础读写：存在、余额（只读）、权限、用户名、按名字找 id、开户。跨功能共享的用户读取放这里，读取可传入调用方的 `connection` |
 | `migration_support.py` | Alembic 迁移的支撑代码：数据库 URL 优先级、版本表宽度、可重入 DDL 助手，见 [database-migrations.md](database-migrations.md) |
 | `mysql_connection.py` | **兼容层**：把上面三者 re-export 出去，保留全项目既有的 import 路径 |
@@ -63,7 +64,7 @@ app → core
 | 目录 | 职责 |
 |---|---|
 | `conversation/` | AI 对话主路径，见下表 |
-| `ai/` | 按 provider 声明表解析与调用模型（主聊天路由，以及所有任务共用的回退执行器 `task_runner.py`，契约见 [ai-provider-architecture.md](ai-provider-architecture.md)）、工具循环（`tool_runner.py` 是循环骨架，消息转换、工具执行、投递与截止时间收尾分别在 `tool_loop_messages.py`、`tool_loop_execution.py`、`tool_loop_delivery.py`、`tool_loop_deadline.py`）、tools、summary、定时任务与 idle followup（claim 所有权、租约与崩溃恢复见 [job-recovery.md](job-recovery.md)）、翻译 handler、出站发送；用户消息、定时任务与空闲跟进三个入口共用的步骤：用户状态提示词（`user_state.py`）、工具上下文（`tools/context.py` 的 `build_tool_context`）、回复整理与私聊发送（`outbound.py`），以及后台入口写历史（`history_writer.py`） |
+| `ai/` | 按 provider 声明表解析与调用模型（主聊天路由，以及所有任务共用的回退执行器 `task_runner.py`，契约见 [ai-provider-architecture.md](ai-provider-architecture.md)）、工具循环（`tool_runner.py` 是循环骨架，类型化结果 `LoopResult` 在 `types.py`，消息转换、工具执行、投递与截止时间收尾分别在 `tool_loop_messages.py`、`tool_loop_execution.py`、`tool_loop_delivery.py`、`tool_loop_deadline.py`）、工具单一声明（`tools/specs.py`）、代执行命令的禁止名单（`telegram_command_policy.py`）、summary、定时任务与 idle followup（claim 所有权、租约与崩溃恢复见 [job-recovery.md](job-recovery.md)）、翻译 handler、出站发送；用户消息、定时任务与空闲跟进三个入口共用的能力：用户状态提示词（`user_state.py`）、工具上下文（`tools/context.py` 的 `build_tool_context`）、回复整理与私聊发送（`outbound.py`）、后台入口写历史（`history_writer.py`），以及输入落库后统一的四段收尾流水线（`turn_pipeline.py` 的 `EntryPolicy`、`prepare_model_turn`、`execute_post_input_turn`） |
 | `profile/` | `/start` `/me` `/help` `/github` `/setmyinfo` 与入群欢迎 |
 | `guest/` | Guest Mode 入口：bot 不在的聊天里被 @ 或被回复时收到 `guest_message`，在 group -110（早于历史入口）截住、回一段固定的自我介绍，不再往下传 |
 | `economy/` | 金币相关：`/lottery` `/give` `/rich`、商店、签到、质押、充值、邀请、任务、网页密码；按适配层、`operations/`、`repositories/` 分层，见「经济与游戏的分层」 |

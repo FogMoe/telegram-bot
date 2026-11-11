@@ -295,6 +295,60 @@ def test_linux_sandbox_tool_allows_user_creation_after_rate_limit_expires(monkey
         clear_tool_request_context()
 
 
+def test_failed_sandbox_creation_keeps_cooldown_and_frees_the_slot(monkeypatch):
+    _install_fake_e2b(monkeypatch)
+    monkeypatch.setattr(sandbox_tools.config, "E2B_API_KEY", "e2b_test")
+    monkeypatch.setattr(sandbox_tools.time, "monotonic", lambda: 10_000.0)
+
+    def failing_create(cls, **kwargs):
+        raise RuntimeError("e2b unavailable")
+
+    monkeypatch.setattr(_FakeSandbox, "create", classmethod(failing_create))
+    try:
+        # 失败的人数超过全站上限：没建起来的沙箱不占名额，后面的人不会被 busy 挡住。
+        for user_id in range(1, sandbox_tools.MAX_CONCURRENT_SANDBOXES + 2):
+            context = {"user_id": user_id}
+            set_tool_request_context(context)
+            failed = sandbox_tools.linux_sandbox_tool("echo hi")
+            assert failed["status"] == "error"
+            assert "e2b unavailable" in failed["stderr"]
+            assert sandbox_tools._SANDBOX_USER_ID_KEY not in context
+        assert sandbox_tools._ACTIVE_SANDBOX_USER_IDS == {}
+
+        # 创建冷却不退：同一个用户再试，直接被冷却挡下，不再去建箱。
+        set_tool_request_context({"user_id": 1})
+        blocked = sandbox_tools.linux_sandbox_tool("echo again")
+        assert blocked["status"] == "blocked"
+        assert blocked["blocked_reason"] == "user_rate_limit"
+        assert blocked["retry_after_seconds"] == sandbox_tools.USER_SANDBOX_CREATE_COOLDOWN_SECONDS
+    finally:
+        clear_tool_request_context()
+
+
+def test_linux_sandbox_tool_caps_concurrent_sandboxes(monkeypatch):
+    _install_fake_e2b(monkeypatch)
+    monkeypatch.setattr(sandbox_tools.config, "E2B_API_KEY", "e2b_test")
+    contexts = [
+        {"user_id": user_id}
+        for user_id in range(1, sandbox_tools.MAX_CONCURRENT_SANDBOXES + 1)
+    ]
+    try:
+        for context in contexts:
+            set_tool_request_context(context)
+            assert sandbox_tools.linux_sandbox_tool("echo hi")["status"] == "ok"
+
+        set_tool_request_context({"user_id": 999})
+        blocked = sandbox_tools.linux_sandbox_tool("echo extra")
+        assert blocked["status"] == "blocked"
+        assert blocked["blocked_reason"] == "global_sandbox_busy"
+        assert len(_FakeSandbox.created) == sandbox_tools.MAX_CONCURRENT_SANDBOXES
+    finally:
+        for context in contexts:
+            set_tool_request_context(context)
+            sandbox_tools.cleanup_linux_sandbox()
+        clear_tool_request_context()
+
+
 def test_cleanup_linux_sandbox_keeps_user_lock_when_kill_fails(monkeypatch):
     _install_fake_e2b(monkeypatch)
     _FakeSandbox.fail_kill = True

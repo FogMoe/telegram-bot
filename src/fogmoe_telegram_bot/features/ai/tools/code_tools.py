@@ -1,6 +1,7 @@
 import base64
 import logging
 import threading
+from typing import Any
 
 import requests
 
@@ -9,9 +10,17 @@ from fogmoe_telegram_bot.core.redaction import describe_exception, log_exception
 
 logger = logging.getLogger(__name__)
 
-JUDGE0_API_URL = getattr(config, "JUDGE0_API_URL", "")
-JUDGE0_API_KEY = getattr(config, "JUDGE0_API_KEY", "")
 _SESSION_LOCAL = threading.local()
+
+
+def _judge0_api_url(settings: Any = None) -> str:
+    source = config if settings is None else settings
+    return str(getattr(source, "JUDGE0_API_URL", None) or "").strip()
+
+
+def _judge0_api_key(settings: Any = None) -> str:
+    source = config if settings is None else settings
+    return str(getattr(source, "JUDGE0_API_KEY", None) or "").strip()
 
 
 def _get_session() -> requests.Session:
@@ -31,15 +40,16 @@ def execute_python_code_tool(
     if not (source_code and source_code.strip()):
         return {"error": "Source code is required"}
 
-    base_url = (JUDGE0_API_URL or "").strip()
+    base_url = _judge0_api_url()
     if not base_url:
         return {"error": "Judge0 API URL is not configured"}
 
     request_url = f"{base_url.rstrip('/')}/submissions?base64_encoded=true&wait=true"
 
     headers = {"Content-Type": "application/json"}
-    if JUDGE0_API_KEY:
-        headers["X-Auth-Token"] = JUDGE0_API_KEY
+    api_key = _judge0_api_key()
+    if api_key:
+        headers["X-Auth-Token"] = api_key
 
     try:
         payload: dict[str, object] = {

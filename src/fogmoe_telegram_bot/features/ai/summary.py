@@ -14,16 +14,15 @@ from fogmoe_telegram_bot.core.token_estimator import estimate_tokens
 
 from .task_runner import Candidate, run_with_fallback
 from .tool_runner import run_tool_loop
+from .tools import agent_tool_handlers, agent_tool_schemas
 from .tools.context import tool_request_scope
-from .tools.schemas import SUMMARY_SEARCH_PRIOR_CONTEXT_TOOL
-from .tools.summary_tools import search_prior_context_tool
 
 SUMMARY_MAX_TOKENS = 2500
 SUMMARY_CONTEXT_HARD_LIMIT_RATIO = 1.5
 SUMMARY_RETRY_LIMIT = 3
 SUMMARY_TOOL_MAX_ITERATIONS = 4
-SUMMARY_TOOLS = [SUMMARY_SEARCH_PRIOR_CONTEXT_TOOL]
-SUMMARY_TOOL_HANDLERS = {"search_prior_context": search_prior_context_tool}
+SUMMARY_TOOLS = agent_tool_schemas("summary")
+SUMMARY_TOOL_HANDLERS = agent_tool_handlers("summary")
 
 # 同时生成的摘要数（后台排队与历史溢出时的即时生成共用）。
 SUMMARY_CONCURRENCY = 2

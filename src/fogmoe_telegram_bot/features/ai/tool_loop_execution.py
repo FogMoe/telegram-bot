@@ -20,7 +20,7 @@ from fogmoe_telegram_bot.core.redaction import describe_exception, log_exception
 
 from .tool_loop_deadline import deadline_guard
 from .tool_loop_messages import json_safe
-from .tools import AI_TOOL_ARG_MODELS
+from .tools import AI_TOOL_ARG_MODELS, get_media_tool_spec
 from .tools.dispatch import is_inline_tool
 
 logger = logging.getLogger(__name__)
@@ -128,76 +128,6 @@ def _record_tool_metrics(label: str, started: float, result: Any) -> None:
         metrics.counter("tool.failures", tool=label).inc()
 
 
-def _log_generate_image_result(provider_name: str, tool_result: dict[str, Any]) -> None:
-    if not isinstance(tool_result, dict):
-        logging.warning("%s generate_image returned non-dict result: %s", provider_name, type(tool_result).__name__)
-        return
-
-    if tool_result.get("error"):
-        logging.warning(
-            "%s generate_image returned error: error=%s, status_code=%s, retry_after_seconds=%s, details=%s",
-            provider_name,
-            tool_result.get("error"),
-            tool_result.get("status_code"),
-            tool_result.get("retry_after_seconds"),
-            str(tool_result.get("details") or tool_result.get("response_preview") or "")[:500],
-        )
-        return
-
-    if tool_result.get("status") == "generated":
-        images = [tool_result["image"]] if isinstance(tool_result.get("image"), dict) else []
-        if not images and isinstance(tool_result.get("images"), list):
-            images = tool_result["images"]
-        logging.info(
-            "%s generate_image generated %s image(s): count=%s, warnings=%s",
-            provider_name,
-            len(images),
-            tool_result.get("count"),
-            tool_result.get("warnings"),
-        )
-        return
-
-    logging.info(
-        "%s generate_image returned status=%s",
-        provider_name,
-        tool_result.get("status") or "unknown",
-    )
-
-
-def _log_generate_voice_result(provider_name: str, tool_result: dict[str, Any]) -> None:
-    if not isinstance(tool_result, dict):
-        logging.warning("%s generate_voice returned non-dict result: %s", provider_name, type(tool_result).__name__)
-        return
-
-    if tool_result.get("error"):
-        logging.warning(
-            "%s generate_voice returned error: error=%s, status_code=%s, retry_after_seconds=%s, details=%s",
-            provider_name,
-            tool_result.get("error"),
-            tool_result.get("status_code"),
-            tool_result.get("retry_after_seconds"),
-            str(tool_result.get("details") or tool_result.get("response_preview") or "")[:500],
-        )
-        return
-
-    if tool_result.get("status") == "generated":
-        audios = tool_result.get("audios") if isinstance(tool_result.get("audios"), list) else []
-        logging.info(
-            "%s generate_voice generated %s audio clip(s): count=%s, warnings=%s",
-            provider_name,
-            len(audios),
-            tool_result.get("count"),
-            tool_result.get("warnings"),
-        )
-        return
-
-    logging.info(
-        "%s generate_voice returned status=%s",
-        provider_name,
-        tool_result.get("status") or "unknown",
-    )
-
-
 async def execute_tool_call(
     function_name: str,
     arguments: ToolArguments,
@@ -211,7 +141,19 @@ async def execute_tool_call(
     function_args = arguments.validated
     validation_error = arguments.validation_error
     handler = handlers.get(function_name)
-    if validation_error is not None:
+    if not function_name:
+        logging.warning("%s 返回的工具调用缺少函数名: args=%s", provider_name, arguments.raw)
+        internal_tool_result: Any = {"error": "Tool call is missing function name"}
+    elif function_name not in available_tool_names:
+        logging.warning(
+            "%s 拒绝未开放的工具调用: %s",
+            provider_name,
+            function_name,
+        )
+        internal_tool_result = {
+            "error": f"Tool is not available in this agent: {function_name}"
+        }
+    elif validation_error is not None:
         logging.warning(
             "%s 工具参数校验失败: %s, args=%s, error=%s",
             provider_name,
@@ -222,15 +164,6 @@ async def execute_tool_call(
             validation_error.get("details"),
         )
         internal_tool_result = validation_error
-    elif function_name not in available_tool_names:
-        logging.warning(
-            "%s 拒绝未开放的工具调用: %s",
-            provider_name,
-            function_name,
-        )
-        internal_tool_result = {
-            "error": f"Tool is not available in this agent: {function_name}"
-        }
     elif handler:
         tool_started = time.perf_counter()
         tool_label = _tool_label(function_name, handlers)
@@ -280,8 +213,7 @@ async def execute_tool_call(
         logging.warning("%s 未知工具: %s", provider_name, function_name)
         internal_tool_result = {"error": f"未知工具: {function_name}"}
 
-    if function_name == "generate_image":
-        _log_generate_image_result(provider_name, internal_tool_result)
-    elif function_name == "generate_voice":
-        _log_generate_voice_result(provider_name, internal_tool_result)
+    media_spec = get_media_tool_spec(function_name)
+    if media_spec is not None:
+        media_spec.log_result(provider_name, internal_tool_result)
     return internal_tool_result

@@ -3,14 +3,13 @@ import threading
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from .generated_audio_sender import send_generated_audio_from_tool_result
-from .generated_image_sender import send_generated_images_from_tool_result
 from .reply_filter import normalize_ai_reply_text
 from .sticker_sender import (
     PartialAIReplySendError,
     normalize_sticker_directives,
     send_ai_reply_with_stickers,
 )
+from .tools.specs import get_media_tool_spec
 from .types import JobAbortedError
 
 AsyncSendFunc = Callable[..., Awaitable[Any]]
@@ -98,30 +97,24 @@ class TelegramVisibleContentHandler:
         return await self._send(content)
 
     async def _send_tool_media(self, tool_name: str, result: dict[str, Any]) -> list[Any]:
-        action = "upload_photo" if tool_name == "generate_image" else "upload_voice"
+        media_spec = get_media_tool_spec(tool_name)
+        if media_spec is None:
+            return []
         try:
-            await self.bot.send_chat_action(chat_id=self.chat_id, action=action)
+            await self.bot.send_chat_action(
+                chat_id=self.chat_id,
+                action=media_spec.chat_action,
+            )
         except Exception:
             self.logger.debug("Failed to send upload action before generated media")
         self._raise_if_aborted()
 
-        if tool_name == "generate_image":
-            sent_messages = await send_generated_images_from_tool_result(
-                bot=self.bot,
-                chat_id=self.chat_id,
-                result=result,
-                logger=self.logger,
-            )
-        elif tool_name == "generate_voice":
-            sent_messages = await send_generated_audio_from_tool_result(
-                bot=self.bot,
-                chat_id=self.chat_id,
-                result=result,
-                logger=self.logger,
-            )
-        else:
-            sent_messages = []
-
+        sent_messages = await media_spec.send_from_result(
+            bot=self.bot,
+            chat_id=self.chat_id,
+            result=result,
+            logger=self.logger,
+        )
         self.sent_messages.extend(sent_messages)
         return sent_messages
 

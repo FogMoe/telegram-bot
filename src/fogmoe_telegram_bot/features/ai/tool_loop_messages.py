@@ -8,6 +8,7 @@ provider 返回的对象形态不一（LiteLLM 的 pydantic 对象、dict、带 
 import base64
 import json
 import logging
+import uuid
 from typing import Any
 
 from fogmoe_telegram_bot.core import ai_providers
@@ -50,6 +51,7 @@ def _drop_none_items(value: dict[str, Any]) -> dict[str, Any]:
 
 def _tool_call_to_plain(tool_call: Any) -> dict[str, Any]:
     """Normalize a tool call object into a plain JSON-serializable dict."""
+    plain_call: dict[str, Any] | None = None
     if isinstance(tool_call, dict):
         plain_call = json_safe(dict(tool_call))
         function_payload = plain_call.get("function")
@@ -62,7 +64,6 @@ def _tool_call_to_plain(tool_call: Any) -> dict[str, Any]:
                 plain_function["arguments"] = "{}"
             plain_call["function"] = plain_function
         return _drop_none_items(plain_call)
-    plain_call: dict[str, Any] | None = None
 
     for attr in ("model_dump", "dict"):
         if hasattr(tool_call, attr):
@@ -181,7 +182,24 @@ def assistant_message_to_plain(
 def normalise_tool_calls(tool_calls: list[Any] | None) -> list[dict[str, Any]]:
     if not tool_calls:
         return []
-    return [_tool_call_to_plain(call) for call in tool_calls]
+    normalised: list[dict[str, Any]] = []
+    for call in tool_calls:
+        plain = _tool_call_to_plain(call)
+        raw_id = plain.get("id")
+        call_id = str(raw_id).strip() if raw_id is not None else ""
+        if not call_id:
+            # provider 没给 id 时自己生成。必须在整段历史里唯一：写库时的配对清洗按 id 去重，
+            # 重复的 id 会让后一次调用的 tool 结果被当成重复删掉。
+            call_id = f"call_{uuid.uuid4().hex}"
+        plain["id"] = call_id
+        plain.setdefault("type", "function")
+        function_payload = plain.get("function")
+        if not isinstance(function_payload, dict):
+            plain["function"] = {"name": "", "arguments": "{}"}
+        else:
+            function_payload.setdefault("arguments", "{}")
+        normalised.append(plain)
+    return normalised
 
 
 def resolve_assistant_message(

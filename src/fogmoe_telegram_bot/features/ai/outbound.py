@@ -1,9 +1,11 @@
 """AI 回复的整理与出站发送，用户消息、定时任务和空闲跟进三个入口共用。
 
-- `finish_reply`：去掉不回复标记、识别固定的错误提示、校验贴纸指令；
+- `finish_reply`：去掉不回复标记、根据结构化 `LoopStatus`（无状态时兼容固定错误文案）判定运行时错误、校验贴纸指令；
 - `send_private_reply`：定时任务与空闲跟进把回复发到私聊；
 - `send_generated_media`：发送本轮工具产出的媒体，三处共用同一个抑制历史记录的作用域。
 """
+
+from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
@@ -16,12 +18,10 @@ from fogmoe_telegram_bot.core.telegram_history import (
 )
 from fogmoe_telegram_bot.core.telegram_utils import partial_send
 
-from .generated_audio_sender import send_generated_audio_from_tool_logs
-from .generated_image_sender import send_generated_images_from_tool_logs
 from .reply_filter import normalize_ai_reply_text
-from .router import runtime_error_cause
 from .sticker_sender import send_ai_reply_with_stickers
-from .types import ToolLog
+from .tools.specs import iter_media_tool_specs
+from .types import LoopStatus, ToolLog
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,12 +36,12 @@ async def finish_reply(
     text: str,
     *,
     normalize_stickers: Callable[[str], Awaitable[str]],
+    status: LoopStatus,
 ) -> AIReply:
     reply_text = normalize_ai_reply_text(text)
-    runtime_error = runtime_error_cause(reply_text)
     if reply_text.strip():
         reply_text = await normalize_stickers(reply_text)
-    return AIReply(text=reply_text, runtime_error=runtime_error)
+    return AIReply(text=reply_text, runtime_error=status.runtime_error_cause())
 
 
 async def send_private_reply(
@@ -100,20 +100,13 @@ async def send_generated_media(
 
     sent_messages: list[Any] = []
     with suppress_telegram_history():
-        sent_messages.extend(
-            await send_generated_audio_from_tool_logs(
-                bot=bot,
-                chat_id=chat_id,
-                tool_logs=tool_logs,
-                logger=logger,
+        for _tool_name, media_spec in iter_media_tool_specs():
+            sent_messages.extend(
+                await media_spec.send_from_logs(
+                    bot=bot,
+                    chat_id=chat_id,
+                    tool_logs=tool_logs,
+                    logger=logger,
+                )
             )
-        )
-        sent_messages.extend(
-            await send_generated_images_from_tool_logs(
-                bot=bot,
-                chat_id=chat_id,
-                tool_logs=tool_logs,
-                logger=logger,
-            )
-        )
     return sent_messages

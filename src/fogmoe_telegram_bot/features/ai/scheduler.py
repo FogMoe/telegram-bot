@@ -19,14 +19,12 @@ from telegram.ext import ContextTypes
 
 from fogmoe_telegram_bot.core import mysql_connection, process_user
 from fogmoe_telegram_bot.core.prompt_utils import format_metadata_attrs, xml_escape
-from fogmoe_telegram_bot.core.telegram_history import suppress_telegram_history
 from fogmoe_telegram_bot.core.telegram_utils import partial_send
 from fogmoe_telegram_bot.features.ai import ai_chat, job_claims
 from fogmoe_telegram_bot.features.ai.conversation_locks import get_conversation_lock
 from fogmoe_telegram_bot.features.ai.history_writer import write_history
 from fogmoe_telegram_bot.features.ai.job_claims import ClaimLostError
 from fogmoe_telegram_bot.features.ai.outbound import (
-    finish_reply,
     send_generated_media,
     send_private_reply,
 )
@@ -36,11 +34,14 @@ from fogmoe_telegram_bot.features.ai.schedule_limits import (
 )
 from fogmoe_telegram_bot.features.ai.sticker_sender import normalize_sticker_directives
 from fogmoe_telegram_bot.features.ai.telegram_visible_sender import TelegramVisibleContentHandler
-from fogmoe_telegram_bot.features.ai.tool_history import (
-    reply_record_entries,
-    tool_logs_to_record_entries,
-)
 from fogmoe_telegram_bot.features.ai.tools.context import build_tool_context
+from fogmoe_telegram_bot.features.ai.turn_pipeline import (
+    SCHEDULE_ENTRY_POLICY,
+    PreparedModelTurn,
+    execute_post_input_turn,
+    prepare_model_turn,
+    tool_log_type_labels,
+)
 from fogmoe_telegram_bot.features.ai.user_state import build_user_state_prompt
 
 logger = logging.getLogger(__name__)
@@ -683,80 +684,84 @@ async def _process_schedule_task_locked(
         abort_event=run.abort_event,
     )
 
-    try:
-        await context.bot.send_chat_action(chat_id=user_id, action="typing")
-    except Exception:
-        logger.debug("Failed to send typing action for scheduled task %s", schedule_id)
-
     send_func = partial_send(context.bot.send_message, user_id)
-    visible_content_handler = TelegramVisibleContentHandler(
-        bot=context.bot,
-        chat_id=user_id,
-        first_text_send=send_func,
-        fallback_send=send_func,
-        logger=logger,
-        abort_event=run.abort_event,
-    )
 
-    with suppress_telegram_history():
-        assistant_message, tool_logs = await ai_chat.get_ai_response(
-            list(chat_history),
+    async def _before_persist_and_deliver(_prepared: PreparedModelTurn) -> bool:
+        # 工具结果与回复文本此时只存在于内存里，没有安全的中间状态可以恢复：
+        # 进入 delivering 之后崩溃一律按结果未知处理，不重跑、不重发。
+        await _begin_delivery(run)
+        return True
+
+    async def _persist_schedule_output(prepared: PreparedModelTurn) -> None:
+        await write_history(
             user_id,
-            tool_context=tool_context,
-            visible_content_handler=visible_content_handler,
-        )
-    sent_messages: list = list(visible_content_handler.sent_messages)
-    reply = await finish_reply(
-        assistant_message,
-        normalize_stickers=lambda text: normalize_sticker_directives(text, logger=logger),
-    )
-
-    # 工具结果与回复文本此时只存在于内存里，没有安全的中间状态可以恢复：
-    # 进入 delivering 之后崩溃一律按结果未知处理，不重跑、不重发。
-    await _begin_delivery(run)
-
-    await write_history(
-        user_id,
-        tool_logs_to_record_entries(tool_logs),
-        bot=context.bot,
-        logger=logger,
-    )
-    await write_history(
-        user_id,
-        reply_record_entries(reply.text, reply.runtime_error),
-        bot=context.bot,
-        logger=logger,
-    )
-    sent_messages.extend(
-        await send_private_reply(
+            prepared.tool_record_entries,
             bot=context.bot,
+            logger=logger,
+        )
+        await write_history(
+            user_id,
+            prepared.reply_entries,
+            bot=context.bot,
+            logger=logger,
+        )
+
+    async def _deliver_schedule_output(prepared: PreparedModelTurn) -> None:
+        sent_messages: list = list(prepared.visible_sent_messages)
+        sent_messages.extend(
+            await send_private_reply(
+                bot=context.bot,
+                user_id=user_id,
+                text=prepared.text,
+                runtime_error=prepared.runtime_error,
+                logger=logger,
+            )
+        )
+        sent_messages.extend(
+            await send_generated_media(
+                bot=context.bot,
+                chat_id=user_id,
+                tool_logs=prepared.tool_logs,
+                logger=logger,
+            )
+        )
+        if not sent_messages and not prepared.text.strip():
+            logger.info(
+                "Scheduled AI produced empty response; no Telegram message sent: user_id=%s schedule_id=%s tool_log_types=%s",
+                user_id,
+                schedule_id,
+                tool_log_type_labels(prepared.tool_logs),
+            )
+
+    await execute_post_input_turn(
+        policy=SCHEDULE_ENTRY_POLICY,
+        run_model_step=lambda: prepare_model_turn(
+            policy=SCHEDULE_ENTRY_POLICY,
+            send_typing=lambda: context.bot.send_chat_action(chat_id=user_id, action="typing"),
+            typing_debug_message=f"Failed to send typing action for scheduled task {schedule_id}",
+            make_visible_handler=lambda: TelegramVisibleContentHandler(
+                bot=context.bot,
+                chat_id=user_id,
+                first_text_send=send_func,
+                fallback_send=send_func,
+                logger=logger,
+                abort_event=run.abort_event,
+            ),
+            invoke_model=lambda visible_content_handler: ai_chat.get_ai_response(
+                list(chat_history),
+                user_id,
+                tool_context=tool_context,
+                visible_content_handler=visible_content_handler,
+            ),
+            normalize_stickers=lambda text: normalize_sticker_directives(text, logger=logger),
+            logger=logger,
             user_id=user_id,
-            text=reply.text,
-            runtime_error=reply.runtime_error,
-            logger=logger,
-        )
+        ),
+        before_persist_and_deliver=_before_persist_and_deliver,
+        persist_output=_persist_schedule_output,
+        deliver_output=_deliver_schedule_output,
+        finalize_turn=lambda _prepared, _delivered: _complete_claim(run),
     )
-    sent_messages.extend(
-        await send_generated_media(
-            bot=context.bot,
-            chat_id=user_id,
-            tool_logs=tool_logs,
-            logger=logger,
-        )
-    )
-    if not sent_messages and not reply.text.strip():
-        tool_log_types = [
-            str(tool_log.get("type", "tool_result"))
-            for tool_log in tool_logs
-            if isinstance(tool_log, dict)
-        ]
-        logger.info(
-            "Scheduled AI produced empty response; no Telegram message sent: user_id=%s schedule_id=%s tool_log_types=%s",
-            user_id,
-            schedule_id,
-            tool_log_types,
-        )
-    await _complete_claim(run)
 
 
 async def run_ai_schedule_job(context: ContextTypes.DEFAULT_TYPE) -> None:

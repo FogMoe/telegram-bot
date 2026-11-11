@@ -266,7 +266,6 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         credentials=Credentials(api_key="ZAI_API_KEY", api_base="ZAI_API_BASE"),
         model_prefix="ZHIPU",
         litellm_prefix="zai",
-        skip_tools=("web_search", "web_browser"),
     ),
 )
 

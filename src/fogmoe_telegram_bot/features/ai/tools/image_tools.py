@@ -1,7 +1,6 @@
 import base64
 import json
 import logging
-import math
 import re
 import threading
 import time
@@ -16,6 +15,7 @@ from fogmoe_telegram_bot.core.redaction import describe_exception, log_exception
 
 from .context import get_tool_request_context
 from .filename_utils import prompt_to_filename
+from .rate_limit import SlidingWindowRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +37,8 @@ IMAGE_RATE_LIMIT_MAX_GENERATIONS = 2
 _SESSION_LOCAL = threading.local()
 _GENERATED_IMAGE_FILES: dict[str, str] = {}
 _GENERATED_IMAGE_LOCK = threading.Lock()
-_IMAGE_RATE_LIMITS: dict[int, list[float]] = {}
-_IMAGE_RATE_LIMIT_LOCK = threading.Lock()
+_IMAGE_RATE_LIMITER = SlidingWindowRateLimiter(clock=time.monotonic)
+_IMAGE_RATE_LIMITS = _IMAGE_RATE_LIMITER.buckets
 _IMAGE_VALUE_KEYS = {
     "b64",
     "b64_json",
@@ -70,56 +70,17 @@ def _get_request_user_id() -> int | None:
         return None
 
 
-def _prune_image_rate_limits(now: float) -> None:
-    cutoff = now - IMAGE_RATE_LIMIT_WINDOW_SECONDS
-    for user_id, timestamps in list(_IMAGE_RATE_LIMITS.items()):
-        active_timestamps = [timestamp for timestamp in timestamps if timestamp > cutoff]
-        if active_timestamps:
-            _IMAGE_RATE_LIMITS[user_id] = active_timestamps
-        else:
-            _IMAGE_RATE_LIMITS.pop(user_id, None)
-
-
 def _reserve_image_generation(user_id: int) -> tuple[bool, float | None, int | None]:
-    now = time.time()
-    cutoff = now - IMAGE_RATE_LIMIT_WINDOW_SECONDS
-
-    with _IMAGE_RATE_LIMIT_LOCK:
-        _prune_image_rate_limits(now)
-        timestamps = [
-            timestamp
-            for timestamp in _IMAGE_RATE_LIMITS.get(user_id, [])
-            if timestamp > cutoff
-        ]
-
-        if len(timestamps) >= IMAGE_RATE_LIMIT_MAX_GENERATIONS:
-            retry_after = math.ceil(
-                max(1, IMAGE_RATE_LIMIT_WINDOW_SECONDS - (now - timestamps[0]))
-            )
-            _IMAGE_RATE_LIMITS[user_id] = timestamps
-            return False, None, retry_after
-
-        timestamps.append(now)
-        _IMAGE_RATE_LIMITS[user_id] = timestamps
-        return True, now, None
+    reservation = _IMAGE_RATE_LIMITER.reserve(
+        user_id,
+        window_seconds=IMAGE_RATE_LIMIT_WINDOW_SECONDS,
+        max_calls=IMAGE_RATE_LIMIT_MAX_GENERATIONS,
+    )
+    return reservation.allowed, reservation.token, reservation.retry_after_seconds
 
 
 def _release_image_generation(user_id: int, reservation_timestamp: float | None) -> None:
-    if reservation_timestamp is None:
-        return
-
-    with _IMAGE_RATE_LIMIT_LOCK:
-        timestamps = _IMAGE_RATE_LIMITS.get(user_id)
-        if not timestamps:
-            return
-        for index, timestamp in enumerate(timestamps):
-            if timestamp == reservation_timestamp:
-                del timestamps[index]
-                break
-        if timestamps:
-            _IMAGE_RATE_LIMITS[user_id] = timestamps
-        else:
-            _IMAGE_RATE_LIMITS.pop(user_id, None)
+    _IMAGE_RATE_LIMITER.release(user_id, reservation_timestamp)
 
 
 def _is_expired_generated_image(path: Path, cutoff: float) -> bool:

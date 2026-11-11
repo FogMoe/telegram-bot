@@ -1,6 +1,4 @@
 import logging
-import math
-import threading
 import time
 from typing import Any
 
@@ -10,40 +8,30 @@ from ..errors import is_timeout_error
 from ..provider_resolver import get_models_for_task, get_provider_order_for_task
 from ..task_runner import run_ai_task
 from .context import get_tool_request_context
+from .rate_limit import NonBlockingConcurrencyLimiter, SlidingWindowRateLimiter
 
 _CALL_COUNT_CONTEXT_KEY = "_advisor_call_count"
-_RATE_LIMITS: dict[str, list[float]] = {}
-_RATE_LIMIT_LOCK = threading.Lock()
+_ADVISOR_RATE_LIMITER = SlidingWindowRateLimiter(clock=time.monotonic)
+_RATE_LIMITS = _ADVISOR_RATE_LIMITER.buckets
+_ADVISOR_SEMAPHORE = NonBlockingConcurrencyLimiter(
+    lambda: config.AI_ADVISOR_MAX_CONCURRENT_REQUESTS
+)
 
 
-class _AdvisorConcurrency:
-    """顾问的并发上限：不等待，满了就让调用方返回 busy。
-
-    工具在事件循环里运行，检查与占用之间没有 await，所以不需要锁；
-    上限在每次占用时读取配置，换配置立即生效。
-    """
-
-    def __init__(self) -> None:
-        self._inflight = 0
-
-    def acquire(self, blocking: bool = False) -> bool:
-        if self._inflight >= config.AI_ADVISOR_MAX_CONCURRENT_REQUESTS:
-            return False
-        self._inflight += 1
-        return True
-
-    def release(self) -> None:
-        self._inflight = max(self._inflight - 1, 0)
-
-
-_ADVISOR_SEMAPHORE = _AdvisorConcurrency()
-
-
-def _configured_advisor_available() -> bool:
-    providers = get_provider_order_for_task("advisor")
+def _configured_advisor_available(settings: Any = None) -> bool:
+    providers = (
+        get_provider_order_for_task("advisor")
+        if settings is None
+        else get_provider_order_for_task("advisor", settings)
+    )
     for provider in providers:
         try:
-            if get_models_for_task(provider, "advisor"):
+            models = (
+                get_models_for_task(provider, "advisor")
+                if settings is None
+                else get_models_for_task(provider, "advisor", settings)
+            )
+            if models:
                 return True
         except Exception as exc:
             logging.warning(
@@ -64,33 +52,13 @@ def _reserve_request_call(context: dict[str, object]) -> bool:
 
 
 def _reserve_user_rate_limit(user_id: object) -> tuple[bool, int | None]:
-    now = time.monotonic()
-    window_seconds = config.AI_ADVISOR_RATE_LIMIT_WINDOW_SECONDS
-    max_calls = config.AI_ADVISOR_RATE_LIMIT_MAX_CALLS
-    cutoff = now - window_seconds
-    user_key = str(user_id)
-
-    with _RATE_LIMIT_LOCK:
-        for existing_user_key, existing_timestamps in list(_RATE_LIMITS.items()):
-            active_timestamps = [
-                timestamp
-                for timestamp in existing_timestamps
-                if timestamp > cutoff
-            ]
-            if active_timestamps:
-                _RATE_LIMITS[existing_user_key] = active_timestamps
-            else:
-                _RATE_LIMITS.pop(existing_user_key, None)
-
-        timestamps = list(_RATE_LIMITS.get(user_key, []))
-        if len(timestamps) >= max_calls:
-            _RATE_LIMITS[user_key] = timestamps
-            retry_after = math.ceil(max(1, window_seconds - (now - timestamps[0])))
-            return False, retry_after
-
-        timestamps.append(now)
-        _RATE_LIMITS[user_key] = timestamps
-        return True, None
+    reservation = _ADVISOR_RATE_LIMITER.reserve(
+        user_id,
+        window_seconds=config.AI_ADVISOR_RATE_LIMIT_WINDOW_SECONDS,
+        max_calls=config.AI_ADVISOR_RATE_LIMIT_MAX_CALLS,
+        now=time.monotonic(),
+    )
+    return reservation.allowed, reservation.retry_after_seconds
 
 
 def _advisor_messages(task: str, case_facts: str | None) -> list[dict[str, str]]:
