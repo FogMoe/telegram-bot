@@ -61,8 +61,10 @@ explicit_package_bases = true
 files = [
     "src/fogmoe_telegram_bot/core/sql.py",
     "src/fogmoe_telegram_bot/core/db.py",
+    "src/fogmoe_telegram_bot/core/ai_pricing.py",
     "src/fogmoe_telegram_bot/core/ai_providers.py",
     "src/fogmoe_telegram_bot/core/litellm_models.py",
+    "src/fogmoe_telegram_bot/features/ai/telegram_command_policy.py",
     "src/fogmoe_telegram_bot/features/ai/provider_resolver.py",
     "src/fogmoe_telegram_bot/features/ai/litellm_provider_config.py",
     "src/fogmoe_telegram_bot/features/ai/litellm_message_sanitizer.py",

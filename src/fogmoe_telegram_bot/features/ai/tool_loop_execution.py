@@ -211,7 +211,19 @@ async def execute_tool_call(
     function_args = arguments.validated
     validation_error = arguments.validation_error
     handler = handlers.get(function_name)
-    if validation_error is not None:
+    if not function_name:
+        logging.warning("%s 返回的工具调用缺少函数名: args=%s", provider_name, arguments.raw)
+        internal_tool_result: Any = {"error": "Tool call is missing function name"}
+    elif function_name not in available_tool_names:
+        logging.warning(
+            "%s 拒绝未开放的工具调用: %s",
+            provider_name,
+            function_name,
+        )
+        internal_tool_result = {
+            "error": f"Tool is not available in this agent: {function_name}"
+        }
+    elif validation_error is not None:
         logging.warning(
             "%s 工具参数校验失败: %s, args=%s, error=%s",
             provider_name,
@@ -222,15 +234,6 @@ async def execute_tool_call(
             validation_error.get("details"),
         )
         internal_tool_result = validation_error
-    elif function_name not in available_tool_names:
-        logging.warning(
-            "%s 拒绝未开放的工具调用: %s",
-            provider_name,
-            function_name,
-        )
-        internal_tool_result = {
-            "error": f"Tool is not available in this agent: {function_name}"
-        }
     elif handler:
         tool_started = time.perf_counter()
         tool_label = _tool_label(function_name, handlers)

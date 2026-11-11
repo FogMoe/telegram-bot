@@ -21,6 +21,8 @@ from fogmoe_telegram_bot.core.telegram_history import (
     delegated_telegram_command,
 )
 
+from .telegram_command_policy import evaluate_delegated_command
+
 logger = logging.getLogger(__name__)
 
 COMMAND_EXECUTION_TIMEOUT_SECONDS = 30.0
@@ -231,6 +233,15 @@ async def execute_telegram_command(
     「不记录 bot 自己发出的消息」等历史作用域，命令的回复要照常被记录、被捕获，
     这与它由用户亲自发出时一致。调用方被取消（整轮截止时间到期）时，命令任务一起取消。
     """
+    decision = evaluate_delegated_command(command_text)
+    if not decision.allowed:
+        return TelegramCommandOutcome(
+            success=False,
+            error_code="command_not_allowed",
+            error_message=decision.error_message
+            or f"/{command} is not allowed for delegated AI execution.",
+        )
+
     with _RUNTIME_LOCK:
         application = _APPLICATION
 

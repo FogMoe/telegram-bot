@@ -8,6 +8,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 from . import ai_providers, config
@@ -46,6 +47,44 @@ async def _retry_first_write[T](operation: Callable[[], Awaitable[T]]) -> T:
 PERMANENT_RECORDS_KEEP = 100
 COIN_SERVICE_STATE_SUSPENDED = "suspended"
 COIN_SERVICE_STATE_RESUMED = "resumed"
+
+
+class ZeroBalancePolicy(StrEnum):
+    """零余额时的历史写入策略。
+
+    `telegram_history` 会在 `ConversationTurn` 之外异步追加命令/按钮事件，且 `coin_service`
+    的 `suspended` / `resumed` 状态跃迁必须与会话 `SELECT ... FOR UPDATE` 行锁串行判定，否则并发事件
+    会重复写入或漏写状态事件。因此调用方通过单一策略枚举表达本轮的业务边界，存储层在行锁内原子完成状态跃迁：
+
+    - `ENFORCE`（默认）：非付费旁路事件；余额为 0 时首次追加 `suspended`，已暂停时跳过写入。
+    - `ALLOW`：已付过费的对话轮次或免扣费的后台轮次；即使扣费后余额恰好归零也照常写入，若此前为 `suspended` 则先补 `resumed`。
+    - `SUSPEND_BOUNDARY`：对话轮次收尾边界；不写普通消息，仅在余额已归零且尚未处于 `suspended` 时补一条 `suspended` 事件。
+    """
+
+    ENFORCE = "enforce"
+    ALLOW = "allow"
+    SUSPEND_BOUNDARY = "suspend_boundary"
+
+
+def _resolve_zero_balance_policy(
+    zero_balance_policy: ZeroBalancePolicy | None,
+    *,
+    allow_zero_balance: bool,
+    suspend_if_zero: bool,
+) -> ZeroBalancePolicy:
+    if allow_zero_balance and suspend_if_zero:
+        raise ValueError("allow_zero_balance and suspend_if_zero cannot both be True")
+    if zero_balance_policy is not None:
+        if allow_zero_balance or suspend_if_zero:
+            raise ValueError(
+                "Pass either zero_balance_policy or legacy boolean flags, not both"
+            )
+        return zero_balance_policy
+    if suspend_if_zero:
+        return ZeroBalancePolicy.SUSPEND_BOUNDARY
+    if allow_zero_balance:
+        return ZeroBalancePolicy.ALLOW
+    return ZeroBalancePolicy.ENFORCE
 
 
 def _configured_chat_models_for_provider(provider: str) -> list[str | None]:
@@ -465,14 +504,19 @@ async def insert_chat_records(
     system_prompt_extra: str | None = None,
     allow_zero_balance: bool = False,
     suspend_if_zero: bool = False,
+    zero_balance_policy: ZeroBalancePolicy | None = None,
 ):
+    policy = _resolve_zero_balance_policy(
+        zero_balance_policy,
+        allow_zero_balance=allow_zero_balance,
+        suspend_if_zero=suspend_if_zero,
+    )
     return await _retry_first_write(
         lambda: _insert_chat_records_once(
             conversation_id,
             records,
             system_prompt_extra=system_prompt_extra,
-            allow_zero_balance=allow_zero_balance,
-            suspend_if_zero=suspend_if_zero,
+            zero_balance_policy=policy,
         )
     )
 
@@ -482,8 +526,7 @@ async def _insert_chat_records_once(
     records: list[tuple[str, Any]],
     *,
     system_prompt_extra: str | None = None,
-    allow_zero_balance: bool = False,
-    suspend_if_zero: bool = False,
+    zero_balance_policy: ZeroBalancePolicy = ZeroBalancePolicy.ENFORCE,
 ):
     snapshot_created = False
     warning_level = None
@@ -494,7 +537,10 @@ async def _insert_chat_records_once(
         _coerce_message_entry(role, content)
         for role, content in records
     ]
-    if not message_entries and not suspend_if_zero:
+    if (
+        not message_entries
+        and zero_balance_policy is not ZeroBalancePolicy.SUSPEND_BOUNDARY
+    ):
         return snapshot_created, warning_level, archived_records
 
     async with transaction() as connection:
@@ -523,7 +569,7 @@ async def _insert_chat_records_once(
         coin_service_state = _last_coin_service_state(messages)
         zero_balance_transition = False
 
-        if suspend_if_zero:
+        if zero_balance_policy is ZeroBalancePolicy.SUSPEND_BOUNDARY:
             if (
                 total_coins is None
                 or total_coins > 0
@@ -535,7 +581,7 @@ async def _insert_chat_records_once(
             ]
             zero_balance_transition = True
         elif total_coins is not None and total_coins <= 0:
-            if allow_zero_balance:
+            if zero_balance_policy is ZeroBalancePolicy.ALLOW:
                 if coin_service_state == COIN_SERVICE_STATE_SUSPENDED:
                     message_entries.insert(
                         0,
@@ -815,12 +861,14 @@ async def insert_chat_record(
     *,
     system_prompt_extra: str | None = None,
     allow_zero_balance: bool = False,
+    zero_balance_policy: ZeroBalancePolicy | None = None,
 ):
     return await insert_chat_records(
         conversation_id,
         [(role, content)],
         system_prompt_extra=system_prompt_extra,
         allow_zero_balance=allow_zero_balance,
+        zero_balance_policy=zero_balance_policy,
     )
 
 
@@ -831,6 +879,7 @@ async def async_insert_chat_record(
     *,
     system_prompt_extra: str | None = None,
     allow_zero_balance: bool = False,
+    zero_balance_policy: ZeroBalancePolicy | None = None,
 ):
     return await insert_chat_record(
         conversation_id,
@@ -838,6 +887,7 @@ async def async_insert_chat_record(
         content,
         system_prompt_extra=system_prompt_extra,
         allow_zero_balance=allow_zero_balance,
+        zero_balance_policy=zero_balance_policy,
     )
 
 
@@ -848,6 +898,7 @@ async def async_insert_chat_records(
     system_prompt_extra: str | None = None,
     allow_zero_balance: bool = False,
     suspend_if_zero: bool = False,
+    zero_balance_policy: ZeroBalancePolicy | None = None,
 ):
     return await insert_chat_records(
         conversation_id,
@@ -855,6 +906,7 @@ async def async_insert_chat_records(
         system_prompt_extra=system_prompt_extra,
         allow_zero_balance=allow_zero_balance,
         suspend_if_zero=suspend_if_zero,
+        zero_balance_policy=zero_balance_policy,
     )
 
 

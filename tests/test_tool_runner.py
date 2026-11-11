@@ -771,21 +771,17 @@ def test_visible_content_alone_makes_a_later_error_partial(monkeypatch):
     class BadRequestError(Exception):
         status_code = 400
 
-    responses = [
-        _Response(_Message("我先想想。", [_search_call()])),
-        BadRequestError("invalid request"),
-    ]
-
     async def fake_create_chat_completion(*args, **kwargs):
-        item = responses.pop(0)
-        if isinstance(item, Exception):
-            raise item
-        return item
+        return _Response(_Message("我先想想。", [_search_call()]))
 
     async def visible_handler(content):
         return content
 
+    def broken_plain(*args, **kwargs):
+        raise BadRequestError("invalid request")
+
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
+    monkeypatch.setattr(tool_runner, "assistant_message_to_plain", broken_plain)
 
     with pytest.raises(tool_runner.PartialAIResponseError) as exc_info:
         asyncio.run(tool_runner.run_tool_loop(
@@ -793,11 +789,87 @@ def test_visible_content_alone_makes_a_later_error_partial(monkeypatch):
             "test_model",
             [{"role": "user", "content": "hi"}],
             provider_name="Test",
-            skip_tools=["google_search"],
             visible_content_handler=visible_handler,
         ))
 
     assert exc_info.value.tool_logs == [{"type": "assistant_visible", "content": "我先想想。"}]
+
+
+def test_skip_tools_hides_schema_and_pairs_error_when_called_anyway(monkeypatch):
+    responses = [
+        _Response(_Message("", [_search_call("call_skipped")])),
+        _Response(_Message("fallback answer", None)),
+    ]
+    calls = []
+    handler_calls = []
+
+    async def fake_create_chat_completion(*args, **kwargs):
+        calls.append(kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
+    monkeypatch.setitem(
+        tool_runner.AI_TOOL_HANDLERS,
+        "google_search",
+        lambda **kwargs: handler_calls.append(kwargs) or {"organic_results": []},
+    )
+
+    message, tool_logs = asyncio.run(tool_runner.run_tool_loop(
+        "test_provider",
+        "test_model",
+        [{"role": "user", "content": "search example"}],
+        provider_name="Test",
+        skip_tools=["google_search"],
+    ))
+
+    advertised_names = {tool["function"]["name"] for tool in calls[0]["tools"]}
+    assert "google_search" not in advertised_names
+    assert handler_calls == []
+    assert message == "fallback answer"
+
+    followup_messages = calls[1]["messages"]
+    assistant_msg = next(m for m in followup_messages if m.get("tool_calls"))
+    tool_msg = next(m for m in followup_messages if m.get("role") == "tool")
+    assert assistant_msg["tool_calls"][0]["id"] == "call_skipped"
+    assert tool_msg["tool_call_id"] == "call_skipped"
+    assert "Tool is not available in this agent: google_search" in tool_msg["content"]
+    assert [log["type"] for log in tool_logs] == ["assistant_tool_call", "tool_result"]
+
+
+def test_missing_function_name_and_id_still_pairs_tool_call_and_result(monkeypatch):
+    responses = [
+        _Response(
+            _Message(
+                "",
+                [{"type": "function", "function": {"name": "", "arguments": "{}"}}],
+            )
+        ),
+        _Response(_Message("recovered", None)),
+    ]
+    calls = []
+
+    async def fake_create_chat_completion(*args, **kwargs):
+        calls.append(kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
+
+    message, tool_logs = asyncio.run(tool_runner.run_tool_loop(
+        "test_provider",
+        "test_model",
+        [{"role": "user", "content": "hi"}],
+        provider_name="Test",
+    ))
+
+    assert message == "recovered"
+    followup_messages = calls[1]["messages"]
+    assistant_msg = next(m for m in followup_messages if m.get("tool_calls"))
+    tool_msg = next(m for m in followup_messages if m.get("role") == "tool")
+    generated_id = assistant_msg["tool_calls"][0]["id"]
+    assert generated_id == "call_1_1"
+    assert tool_msg["tool_call_id"] == "call_1_1"
+    assert "Tool call is missing function name" in tool_msg["content"]
+    assert [log["tool_call_id"] for log in tool_logs] == ["call_1_1", "call_1_1"]
 
 
 def test_an_unserializable_tool_result_reaches_the_model_as_text(monkeypatch):

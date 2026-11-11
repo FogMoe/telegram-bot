@@ -9,6 +9,10 @@ from fogmoe_telegram_bot.features.ai.telegram_command_executor import (
     execute_telegram_command,
     registered_telegram_commands,
 )
+from fogmoe_telegram_bot.features.ai.telegram_command_policy import (
+    evaluate_delegated_command,
+    split_telegram_command,
+)
 from fogmoe_telegram_bot.features.ai.types import TOOL_CONTEXT_MESSAGES_KEY
 
 from .context import get_tool_request_context
@@ -47,9 +51,7 @@ async def execute_telegram_command_tool(
             "Pass one complete Telegram command as a single line.",
         )
 
-    command_parts = command_input.split(maxsplit=1)
-    command_token = command_parts[0] if command_parts else ""
-    command_value = command_token[1:].lower() if command_token.startswith("/") else ""
+    command_value, _ = split_telegram_command(command_input)
     if not _COMMAND_NAME_PATTERN.fullmatch(command_value):
         return _error(
             "invalid_command",
@@ -79,6 +81,14 @@ async def execute_telegram_command_tool(
                 "the corrected complete command. If no matching command exists, "
                 "tell the user it is unavailable."
             ),
+        )
+
+    decision = evaluate_delegated_command(command_input)
+    if not decision.allowed:
+        return _error(
+            "command_not_allowed",
+            decision.error_message
+            or f"/{command_value} is not allowed for delegated AI execution.",
         )
 
     request_context = get_tool_request_context()

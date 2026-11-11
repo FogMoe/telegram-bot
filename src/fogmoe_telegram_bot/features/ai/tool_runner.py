@@ -132,7 +132,16 @@ async def run_tool_loop(
     执行过工具或发出过可见内容之后（`has_side_effects`），其他异常一律包成 `PartialAIResponseError`
     （带着已有的工具日志）离开循环：调用方不能再换模型或 provider 从头重跑这一轮。
     """
-    tools = OPENAI_TOOLS if tool_definitions is None else list(tool_definitions)
+    skip_set = {name for name in (skip_tools or ()) if name}
+    raw_tools = OPENAI_TOOLS if tool_definitions is None else list(tool_definitions)
+    tools = [
+        tool
+        for tool in raw_tools
+        if not (
+            isinstance(tool, dict)
+            and (tool.get("function") or {}).get("name") in skip_set
+        )
+    ]
     handlers = AI_TOOL_HANDLERS if tool_handlers is None else dict(tool_handlers)
     available_tool_names = {
         str((tool.get("function") or {}).get("name"))
@@ -154,7 +163,6 @@ async def run_tool_loop(
     filtered_messages.insert(0, system_message)
 
     tool_logs: list[ToolLog] = []
-    skip_set = set(skip_tools or [])
     request_timeout: float | None = (
         config.AI_CHAT_COMPLETION_TIMEOUT_SECONDS
         if completion_timeout is None
@@ -213,7 +221,10 @@ async def run_tool_loop(
                     deadline=deadline,
                 )
 
-            tool_calls = normalise_tool_calls(raw_tool_calls)
+            tool_calls = normalise_tool_calls(
+                raw_tool_calls,
+                round_index=iteration + 1,
+            )
             logging.info("%s 第 %s 轮：检测到 %s 个工具调用", provider_name, iteration + 1, len(tool_calls))
 
             assistant_content_for_model = assistant_content
@@ -247,13 +258,7 @@ async def run_tool_loop(
             round_context_messages: list[dict[str, str]] = []
             for call_index, tool_call in enumerate(tool_calls):
                 function_payload = tool_call.get("function") or {}
-                function_name = function_payload.get("name")
-                if not function_name:
-                    logging.warning("%s 返回的工具调用缺少函数名: %s", provider_name, tool_call)
-                    continue
-
-                if function_name in skip_set:
-                    continue
+                function_name = str(function_payload.get("name") or "").strip()
 
                 # 后台任务被撤销后不再执行剩余的工具。
                 raise_if_aborted(tool_context)

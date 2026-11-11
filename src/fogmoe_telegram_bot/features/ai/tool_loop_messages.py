@@ -178,10 +178,29 @@ def assistant_message_to_plain(
     return message
 
 
-def normalise_tool_calls(tool_calls: list[Any] | None) -> list[dict[str, Any]]:
+def normalise_tool_calls(
+    tool_calls: list[Any] | None,
+    *,
+    round_index: int = 1,
+) -> list[dict[str, Any]]:
     if not tool_calls:
         return []
-    return [_tool_call_to_plain(call) for call in tool_calls]
+    normalised: list[dict[str, Any]] = []
+    for call_index, call in enumerate(tool_calls, start=1):
+        plain = _tool_call_to_plain(call)
+        raw_id = plain.get("id")
+        call_id = str(raw_id).strip() if raw_id is not None else ""
+        if not call_id:
+            call_id = f"call_{round_index}_{call_index}"
+        plain["id"] = call_id
+        plain.setdefault("type", "function")
+        function_payload = plain.get("function")
+        if not isinstance(function_payload, dict):
+            plain["function"] = {"name": "", "arguments": "{}"}
+        else:
+            function_payload.setdefault("arguments", "{}")
+        normalised.append(plain)
+    return normalised
 
 
 def resolve_assistant_message(

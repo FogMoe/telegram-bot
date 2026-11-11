@@ -2,10 +2,16 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from telegram.ext import CommandHandler
 
+from fogmoe_telegram_bot.app.handler_registry import register_handlers
 from fogmoe_telegram_bot.core import telegram_history
 from fogmoe_telegram_bot.features.ai import telegram_command_executor
 from fogmoe_telegram_bot.features.ai.telegram_command_executor import _execute_on_telegram_loop
+from fogmoe_telegram_bot.features.ai.telegram_command_policy import (
+    COMMAND_POLICIES,
+    evaluate_delegated_command,
+)
 from fogmoe_telegram_bot.features.ai.tools import telegram_command_tools
 from fogmoe_telegram_bot.features.ai.tools.context import (
     clear_tool_request_context,
@@ -132,7 +138,7 @@ def test_complete_command_arguments_are_forwarded_to_handler(monkeypatch):
     monkeypatch.setattr(
         telegram_command_tools,
         "registered_telegram_commands",
-        lambda: {"give"},
+        lambda: {"music"},
     )
     calls = []
     monkeypatch.setattr(
@@ -141,11 +147,146 @@ def test_complete_command_arguments_are_forwarded_to_handler(monkeypatch):
         _recording_execute(calls),
     )
 
-    result = asyncio.run(telegram_command_tools.execute_telegram_command_tool("/give 456 100"))
+    result = asyncio.run(
+        telegram_command_tools.execute_telegram_command_tool("/music again")
+    )
 
     assert result == {"success": True}
-    assert calls[0]["command"] == "give"
-    assert calls[0]["command_text"] == "/give 456 100"
+    assert calls[0]["command"] == "music"
+    assert calls[0]["command_text"] == "/music again"
+
+
+def test_every_registered_command_has_an_explicit_delegated_policy():
+    class FakeJobQueue:
+        def run_repeating(self, *args, **kwargs):
+            return None
+
+    class FakeApplication:
+        def __init__(self):
+            self.handlers = []
+            self.job_queue = FakeJobQueue()
+
+        def add_handler(self, handler, group=0):
+            self.handlers.append(handler)
+
+        def add_error_handler(self, handler):
+            return None
+
+    app = FakeApplication()
+    register_handlers(app)
+    registered = {
+        str(cmd).lower()
+        for handler in app.handlers
+        if isinstance(handler, CommandHandler)
+        for cmd in handler.commands
+    }
+
+    assert set(COMMAND_POLICIES) == registered
+
+
+@pytest.mark.parametrize(
+    "command_text",
+    [
+        "/me",
+        "/help",
+        "/github",
+        "/rich",
+        "/start",
+        "/lottery",
+        "/checkin",
+        "/clear",
+        "/setmyinfo hello world",
+        "/music again",
+        "/ref",
+        "/shop",
+        "/task",
+        "/gamble",
+        "/sicbo",
+        "/stake",
+        "/btc_predict",
+        "/chart",
+        "/rpg",
+        "/rpg help",
+        "/rpg monsters",
+        "/me@FogMoeBot",
+    ],
+)
+def test_allowed_delegated_commands_pass_policy(command_text):
+    assert evaluate_delegated_command(command_text).allowed is True
+
+
+@pytest.mark.parametrize(
+    "command_text",
+    [
+        "/give alice 100",
+        "/stake 100",
+        "/btc_predict 50",
+        "/chart bind eth 0x123",
+        "/rpg heal",
+        "/rpg battle monster slime",
+        "/rpg equip 1",
+        "/rpg item 1",
+        "/pic",
+        "/omikuji",
+        "/swap 10",
+        "/tl hello",
+        "/rps_game",
+        "/charge SECRET-CODE",
+        "/webpassword secret",
+        "/recharge",
+        "/verify",
+        "/keyword",
+        "/spam",
+        "/xfeed",
+        "/report",
+        "/admin_announce hi",
+        "/start_test_monitor",
+        "/stop_test_monitor",
+        "/create_code",
+        "/stats",
+        "/logs",
+        "/fogmoebot hello",
+    ],
+)
+def test_blocked_delegated_commands_are_rejected_by_policy(command_text):
+    decision = evaluate_delegated_command(command_text)
+    assert decision.allowed is False
+    assert decision.error_message
+
+
+def test_give_command_is_blocked_at_both_tool_and_executor_boundaries(monkeypatch):
+    set_tool_request_context(_request_context())
+    monkeypatch.setattr(
+        telegram_command_tools,
+        "registered_telegram_commands",
+        lambda: set(COMMAND_POLICIES),
+    )
+    executed = []
+
+    class FakeApplication:
+        async def process_update(self, update):
+            executed.append(update)
+
+    app = FakeApplication()
+    app.bot = SimpleNamespace(username="FogMoeBot")
+    monkeypatch.setattr(telegram_command_executor, "_APPLICATION", app)
+
+    tool_result = asyncio.run(
+        telegram_command_tools.execute_telegram_command_tool("/give alice 100")
+    )
+    executor_outcome = asyncio.run(
+        telegram_command_executor.execute_telegram_command(
+            command="give",
+            command_text="/give alice 100",
+            request_context=_request_context(),
+        )
+    )
+
+    assert tool_result["success"] is False
+    assert tool_result["error"]["code"] == "command_not_allowed"
+    assert executor_outcome.success is False
+    assert executor_outcome.error_code == "command_not_allowed"
+    assert executed == []
 
 
 def test_same_command_is_not_executed_twice_in_one_ai_request(monkeypatch):

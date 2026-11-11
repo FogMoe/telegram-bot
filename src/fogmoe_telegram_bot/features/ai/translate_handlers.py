@@ -6,7 +6,12 @@ from telegram import InlineQueryResultArticle, InputTextMessageContent, Update
 from telegram.constants import ParseMode
 from telegram.ext import CommandHandler, ContextTypes
 
-from fogmoe_telegram_bot.core import balance, mysql_connection, stake_reward_pool
+from fogmoe_telegram_bot.core import (
+    ai_pricing,
+    balance,
+    mysql_connection,
+    stake_reward_pool,
+)
 from fogmoe_telegram_bot.core.command_cooldown import cooldown
 from fogmoe_telegram_bot.core.command_identity import message_identity
 from fogmoe_telegram_bot.core.redaction import log_exception
@@ -137,21 +142,15 @@ async def tl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     # 如果文本过长，拒绝翻译
-    if len(text_to_translate) > 3000:
+    if len(text_to_translate) > ai_pricing.TRANSLATE_MAX_TEXT_LENGTH:
         await update.message.reply_text(
             "文本太长，无法翻译。请尝试缩短文本。\n"
             "Text too long for translation. Please try with a shorter text."
         )
         return
 
-    # 按长度收费；500 字以内免费
-    coin_cost = 0
-    if len(text_to_translate) > 500:
-        coin_cost = 1
-    if len(text_to_translate) > 1000:
-        coin_cost = 2
-    if len(text_to_translate) > 2000:
-        coin_cost = 3
+    # 按长度收费；免费长度与各档硬币由 core.ai_pricing 统一声明
+    coin_cost = ai_pricing.translate_text_cost(len(text_to_translate))
 
     # 先扣费再翻译。op_key 取命令消息的身份：同一条 /tl 被重复投递不会再扣一次。
     debit_key = None

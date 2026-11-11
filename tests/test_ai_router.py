@@ -542,7 +542,9 @@ def test_visible_handler_and_deadline_reach_the_tool_loop(settings_override, cha
     assert chat_loop.calls[0]["kwargs"]["deadline"] is deadline
 
 
-def test_zai_hides_web_tools_and_zhipu_resolves_to_it(settings_override, chat_loop):
+def test_zhipu_resolves_to_zai_and_forwards_declared_skip_tools(
+    monkeypatch, settings_override, chat_loop
+):
     settings_override(AI_CHAT_ORDER="zhipu", ZHIPU_CHAT_MODEL="glm-chat")
 
     asyncio.run(router.get_ai_response([], 1))
@@ -551,7 +553,26 @@ def test_zai_hides_web_tools_and_zhipu_resolves_to_it(settings_override, chat_lo
     assert call["provider"] == "zai"
     assert call["model"] == "glm-chat"
     assert call["kwargs"]["provider_name"] == "Z.ai"
-    assert set(call["kwargs"]["skip_tools"]) == {"web_search", "web_browser"}
+    assert tuple(call["kwargs"]["skip_tools"]) == ()
+
+    from dataclasses import replace
+    from types import MappingProxyType
+
+    from fogmoe_telegram_bot.core import ai_providers
+
+    patched = {
+        key: (
+            replace(spec, skip_tools=("google_search",))
+            if spec.name == "zai"
+            else spec
+        )
+        for key, spec in ai_providers._BY_NAME.items()
+    }
+    monkeypatch.setattr(ai_providers, "_BY_NAME", MappingProxyType(patched))
+
+    asyncio.run(router.get_ai_response([], 1))
+
+    assert tuple(chat_loop.calls[1]["kwargs"]["skip_tools"]) == ("google_search",)
 
 
 def test_other_providers_hide_no_tools(settings_override, chat_loop):

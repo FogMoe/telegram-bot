@@ -16,6 +16,8 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from .ai_pricing import render_pricing_placeholders
+
 # 包内只读数据（提示词、帮助文本、内部文档、贴纸包与垃圾词表），随包一起安装。
 RESOURCES_DIR = Path(__file__).resolve().parents[1] / "resources"
 # 运行目录：从这里读取 .env，日志和生成的媒体写到这里的 logs/。
@@ -473,7 +475,9 @@ def _read_text_resource(relative_path: str) -> str:
 HELP_TEXT = _read_text_resource("telegram_help.md")
 
 # AI 系统提示词
-SYSTEM_PROMPT = _read_text_resource("prompts/system_prompt.md")
+SYSTEM_PROMPT = render_pricing_placeholders(
+    _read_text_resource("prompts/system_prompt.md")
+)
 ADVISOR_SYSTEM_PROMPT = _read_text_resource(
     "prompts/advisor_system_prompt.md"
 )
@@ -498,7 +502,7 @@ def _load_internal_docs() -> dict[str, str]:
         except OSError:
             continue
         if text.strip():
-            docs[path.stem] = text
+            docs[path.stem] = render_pricing_placeholders(text)
     return docs
 
 

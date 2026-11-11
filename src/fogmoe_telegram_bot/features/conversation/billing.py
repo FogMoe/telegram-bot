@@ -30,22 +30,17 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from fogmoe_telegram_bot.core import balance, mysql_connection, stake_reward_pool
+from fogmoe_telegram_bot.core import ai_pricing, balance, mysql_connection, stake_reward_pool
 
 CHAT_REASON = "ai_chat"
 
-MEDIA_COST = 5
-MAX_TEXT_LENGTH = 4096
-# (长度下限（不含）, 价格)，从高到低；不超过最低一档的文字消息 1 个币。
-_TEXT_COST_TIERS = ((2000, 5), (1000, 4), (500, 3), (100, 2))
+MEDIA_COST = ai_pricing.CHAT_MEDIA_COST
+MAX_TEXT_LENGTH = ai_pricing.CHAT_MAX_TEXT_LENGTH
 
 
 def text_message_cost(length: int) -> int:
     """文字消息按长度阶梯计费。调用方应先用 `MAX_TEXT_LENGTH` 拒绝超长消息。"""
-    for threshold, cost in _TEXT_COST_TIERS:
-        if length > threshold:
-            return cost
-    return 1
+    return ai_pricing.chat_text_cost(length)
 
 
 @dataclass(frozen=True, slots=True)

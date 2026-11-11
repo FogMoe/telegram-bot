@@ -45,10 +45,12 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     _tool_definition(
         "execute_telegram_command",
         (
-            "Run a Telegram command as the current user in the current chat. The "
-            "normal command handler sends its mechanical reply directly, and its "
-            "events enter the conversation before the next model response. Returns "
-            "execution status only."
+            "Run an allowed Telegram command as the current user in the current chat. "
+            "Only read-only, status, and non-spending self-service commands can be "
+            "delegated; commands that transfer or spend coins, handle credentials, or "
+            "administer chats must be run by the user directly. The normal command "
+            "handler sends its mechanical reply directly, and its events enter the "
+            "conversation before the next model response. Returns execution status only."
         ),
     ),
     _tool_definition(

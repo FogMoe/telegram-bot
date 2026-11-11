@@ -39,12 +39,35 @@ def call(call_id, name="google_search", arguments='{"query": "x"}', **extra):
     return {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}, **extra}
 
 
+def _assert_tool_calls_paired(messages):
+    """每次发给模型的消息序列里，assistant 的 tool_calls 必须紧跟一一配对的 tool 结果。"""
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
+        if message.get("role") == "assistant" and tool_calls:
+            expected_ids = [call.get("id") for call in tool_calls]
+            assert all(expected_ids), f"assistant tool_calls missing id: {tool_calls}"
+            index += 1
+            actual_ids = []
+            while index < len(messages) and messages[index].get("role") == "tool":
+                actual_ids.append(messages[index].get("tool_call_id"))
+                index += 1
+            assert actual_ids == expected_ids, (
+                f"unpaired tool_calls: expected {expected_ids}, got {actual_ids}"
+            )
+            continue
+        assert message.get("role") != "tool", f"orphan tool message at {index}: {message}"
+        index += 1
+
+
 def script(*responses):
     """按顺序返回响应的模型替身，并记录每次调用的参数。"""
     queue = list(responses)
     calls = []
 
     async def fake_create_chat_completion(provider, model, *, messages, **kwargs):
+        _assert_tool_calls_paired(messages)
         calls.append(SimpleNamespace(provider=provider, model=model, messages=list(messages), kwargs=kwargs))
         item = queue.pop(0)
         if isinstance(item, BaseException):

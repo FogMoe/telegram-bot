@@ -52,9 +52,7 @@ def close_interrupted_round(
         if index < interrupted_index:
             continue
         function_payload = tool_call.get("function") or {}
-        function_name = function_payload.get("name")
-        if not function_name or function_name in skip_set:
-            continue
+        function_name = str(function_payload.get("name") or "").strip()
         if index == interrupted_index and running:
             result = {**_INTERRUPTED_TOOL_RESULT, "reason": reason}
         else:
