@@ -174,6 +174,7 @@ def test_command_with_bot_suffix_is_invalid(monkeypatch):
         ("give", "/give"),
         ("ref", "/ref 456"),
         ("start", "/start 456"),
+        ("swap", "/swap 10000 5iz3epFDf9SKvLNHWQ42f4wMMrENaudE9eMkxfBLFd2n"),
     ],
 )
 def test_commands_that_benefit_a_third_party_are_blocked(command, command_text):
@@ -185,6 +186,7 @@ def test_commands_that_benefit_a_third_party_are_blocked(command, command_text):
     [
         ("ref", "/ref"),
         ("start", "/start"),
+        ("swap", "/swap"),
         ("stake", "/stake 100"),
         ("pic", "/pic a cat"),
         ("charge", "/charge SOME-CODE"),
