@@ -316,12 +316,10 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="execute_telegram_command",
         description=(
-            "Run an allowed Telegram command as the current user in the current chat. "
-            "Only read-only, status, and non-spending self-service commands can be "
-            "delegated; commands that transfer or spend coins, handle credentials, or "
-            "administer chats must be run by the user directly. The normal command "
-            "handler sends its mechanical reply directly, and its events enter the "
-            "conversation before the next model response. Returns execution status only."
+            "Run a Telegram command as the current user in the current chat. The "
+            "normal command handler sends its mechanical reply directly, and its "
+            "events enter the conversation before the next model response. Returns "
+            "execution status only."
         ),
         arg_model=ExecuteTelegramCommandArgs,
         handler=execute_telegram_command_tool,
