@@ -3,50 +3,25 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from enum import StrEnum
 
 from ..task_runner import run_ai_task
 
 
-class VisionStatus(StrEnum):
-    OK = "ok"
-    EMPTY = "empty"
-    FAILED = "failed"
+async def analyze_image(base64_str: str) -> str | None:
+    """调用配置的 AI vision 模型描述图片。
 
-
-@dataclass(frozen=True, slots=True)
-class VisionResult:
-    """图片识别结果：失败时返回结构化状态而非英文错误文案，避免把错误句子写进聊天历史。"""
-
-    status: VisionStatus
-    description: str | None = None
-    error: str | None = None
-
-    @property
-    def ok(self) -> bool:
-        return self.status is VisionStatus.OK and bool(
-            self.description and self.description.strip()
-        )
-
-
-async def analyze_image(base64_str: str) -> VisionResult:
-    """调用配置的 AI vision 模型分析图像并返回类型化的 `VisionResult`。"""
-    if not base64_str or not base64_str.strip():
-        logging.error("图片数据验证失败: Image data is empty.")
-        return VisionResult(status=VisionStatus.EMPTY, error="empty_image_data")
-
+    识别失败或描述为空时返回 None，调用方不往历史里写描述：当轮的多模态主模型照样看得到原图，
+    历史里留一句「识别失败」反而会和它当时的回复对不上。
+    """
+    if not base64_str:
+        logging.error("图片数据为空，跳过识别")
+        return None
     try:
         description = await _describe_image(base64_str)
     except Exception as exc:
         logging.error("处理图片描述时失败: %s", exc)
-        return VisionResult(status=VisionStatus.FAILED, error=type(exc).__name__)
-
-    cleaned = (description or "").strip()
-    if not cleaned:
-        logging.warning("AI vision 返回了空的图片描述")
-        return VisionResult(status=VisionStatus.FAILED, error="empty_vision_response")
-    return VisionResult(status=VisionStatus.OK, description=cleaned)
+        return None
+    return description.strip() or None
 
 
 async def _describe_image(base64_str: str) -> str:

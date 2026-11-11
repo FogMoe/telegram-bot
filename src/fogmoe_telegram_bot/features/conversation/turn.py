@@ -33,7 +33,6 @@ from fogmoe_telegram_bot.features.ai.router import (
     TURN_DEADLINE_ERROR_MESSAGE,
     TURN_SHUTDOWN_ERROR_MESSAGE,
 )
-from fogmoe_telegram_bot.features.ai.tasks.vision import VisionResult
 from fogmoe_telegram_bot.features.ai.tools.context import build_tool_context
 from fogmoe_telegram_bot.features.ai.turn_pipeline import (
     USER_ENTRY_POLICY,
@@ -121,16 +120,6 @@ def history_warning_text(level: str | None) -> str | None:
         return NEAR_LIMIT_WARNING_TEXT
     if level == OVERFLOW:
         return OVERFLOW_WARNING_TEXT
-    return None
-
-
-def _extract_media_description(vision_output: VisionResult | str | None) -> str | None:
-    """提取可写入历史的文字描述；vision 失败或为空时返回 None，不在历史里留错误句子。"""
-    if isinstance(vision_output, VisionResult):
-        return vision_output.description if vision_output.ok else None
-    if isinstance(vision_output, str):
-        cleaned = vision_output.strip()
-        return cleaned if cleaned else None
     return None
 
 
@@ -473,8 +462,7 @@ class ConversationTurn:
 
             base64_str = base64.b64encode(file_bytes).decode("utf-8")
 
-            vision_output = await self.services.analyze_image(base64_str)
-            image_description = _extract_media_description(vision_output)
+            image_description = await self.services.analyze_image(base64_str)
 
             # 组合图片描述和用户文本说明
             message_text = caption if caption else f"[{media_type}]"

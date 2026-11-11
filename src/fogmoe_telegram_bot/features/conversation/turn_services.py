@@ -36,7 +36,6 @@ from fogmoe_telegram_bot.features.ai import (
     summary,
     user_state,
 )
-from fogmoe_telegram_bot.features.ai.tasks.vision import VisionResult
 from fogmoe_telegram_bot.features.ai.telegram_visible_sender import TelegramVisibleContentHandler
 from fogmoe_telegram_bot.features.ai.tool_history import reply_record_entries
 from fogmoe_telegram_bot.features.ai.types import LoopResult
@@ -64,7 +63,7 @@ class TurnServices:
     archive_completed_clear: Callable[..., Awaitable[None]]
 
     # 媒体
-    analyze_image: Callable[[str], Awaitable[VisionResult | str | None]]
+    analyze_image: Callable[[str], Awaitable[str | None]]
 
     # 模型
     run_model: Callable[[ModelRequest], Awaitable[ModelResponse]]
@@ -179,7 +178,7 @@ async def _archive_completed_clear(
     summary.schedule_summary_generation(conversation_id)
 
 
-async def _analyze_image(base64_str: str) -> VisionResult:
+async def _analyze_image(base64_str: str) -> str | None:
     return await ai_chat.analyze_image(base64_str)
 
 

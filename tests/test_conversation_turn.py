@@ -670,7 +670,7 @@ class TestMedia:
         assert world.calls("reply_text")[0][2] == turn.MEDIA_FAILED_TEXT
         assert "insert_records" not in world.names()
 
-    def test_vision_result_failure_omits_description_in_history_and_keeps_multimodal_image(
+    def test_vision_failure_omits_description_in_history_and_keeps_multimodal_image(
         self, monkeypatch
     ):
         from fogmoe_telegram_bot.features.ai.tasks import vision
@@ -679,14 +679,8 @@ class TestMedia:
             raise ConnectionError("vision provider unreachable")
 
         monkeypatch.setattr(vision, "run_ai_task", fail_ai_task)
-        vision_res = asyncio.run(vision.analyze_image("aGVsbG8="))
-        assert vision_res.status is vision.VisionStatus.FAILED
-        assert not vision_res.ok
-        assert vision_res.description is None
-
-        empty_res = asyncio.run(vision.analyze_image(""))
-        assert empty_res.status is vision.VisionStatus.EMPTY
-        assert not empty_res.ok
+        assert asyncio.run(vision.analyze_image("aGVsbG8=")) is None
+        assert asyncio.run(vision.analyze_image("")) is None
 
         world = World()
         captured = {}
