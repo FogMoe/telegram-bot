@@ -71,21 +71,10 @@ def _get_request_user_id() -> int | None:
 
 
 def _reserve_image_generation(user_id: int) -> tuple[bool, float | None, int | None]:
-    window_seconds = getattr(
-        config,
-        "AI_IMAGE_RATE_LIMIT_WINDOW_SECONDS",
-        IMAGE_RATE_LIMIT_WINDOW_SECONDS,
-    )
-    max_calls = getattr(
-        config,
-        "AI_IMAGE_RATE_LIMIT_MAX_CALLS",
-        IMAGE_RATE_LIMIT_MAX_GENERATIONS,
-    )
     reservation = _IMAGE_RATE_LIMITER.reserve(
         user_id,
-        window_seconds=window_seconds,
-        max_calls=max_calls,
-        now=time.monotonic(),
+        window_seconds=IMAGE_RATE_LIMIT_WINDOW_SECONDS,
+        max_calls=IMAGE_RATE_LIMIT_MAX_GENERATIONS,
     )
     return reservation.allowed, reservation.token, reservation.retry_after_seconds
 
@@ -541,21 +530,11 @@ def generate_image_tool(
 
     allowed, reservation_timestamp, retry_after = _reserve_image_generation(user_id)
     if not allowed:
-        max_calls = getattr(
-            config,
-            "AI_IMAGE_RATE_LIMIT_MAX_CALLS",
-            IMAGE_RATE_LIMIT_MAX_GENERATIONS,
-        )
-        window_seconds = getattr(
-            config,
-            "AI_IMAGE_RATE_LIMIT_WINDOW_SECONDS",
-            IMAGE_RATE_LIMIT_WINDOW_SECONDS,
-        )
         return {
             "error": "Image generation rate limit exceeded",
             "details": (
-                f"Each user can generate up to {max_calls} "
-                f"images every {window_seconds} seconds."
+                f"Each user can generate up to {IMAGE_RATE_LIMIT_MAX_GENERATIONS} "
+                "images every 5 minutes."
             ),
             "retry_after_seconds": retry_after,
         }

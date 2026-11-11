@@ -17,12 +17,12 @@ MAX_OUTPUT_CHARS = 12_000
 MAX_CALLS_PER_REQUEST = 10
 MAX_SANDBOX_LIFETIME_SECONDS = 300
 USER_SANDBOX_CREATE_COOLDOWN_SECONDS = 300
-DEFAULT_MAX_CONCURRENT_SANDBOXES = 4
+# 全站同时运行的沙箱数上限：给 E2B 费用和账号并发额度封顶，超出的请求直接拿到 busy，不排队。
+MAX_CONCURRENT_SANDBOXES = 4
 
 _SANDBOX_CONTEXT_KEY = "_linux_sandbox"
 _SANDBOX_CALL_COUNT_KEY = "_linux_sandbox_call_count"
 _SANDBOX_USER_ID_KEY = "_linux_sandbox_user_id"
-_SANDBOX_RESERVATION_TOKEN_KEY = "_linux_sandbox_reservation_token"
 _SANDBOX_GATE = UserSessionGate(clock=time.monotonic)
 _ACTIVE_SANDBOX_USER_IDS = _SANDBOX_GATE.active_users
 _USER_SANDBOX_CREATE_COOLDOWNS = _SANDBOX_GATE.cooldowns
@@ -134,33 +134,11 @@ def _reserve_user_sandbox(context: dict[str, object]) -> None:
             )
         )
 
-    cooldown_seconds = getattr(
-        config,
-        "AI_SANDBOX_COOLDOWN_SECONDS",
-        USER_SANDBOX_CREATE_COOLDOWN_SECONDS,
-    )
-    max_concurrent = getattr(
-        config,
-        "AI_SANDBOX_MAX_CONCURRENT_SESSIONS",
-        DEFAULT_MAX_CONCURRENT_SANDBOXES,
-    )
-    window_seconds = getattr(
-        config,
-        "AI_SANDBOX_RATE_LIMIT_WINDOW_SECONDS",
-        USER_SANDBOX_CREATE_COOLDOWN_SECONDS,
-    )
-    max_calls = getattr(
-        config,
-        "AI_SANDBOX_RATE_LIMIT_MAX_CALLS",
-        1,
-    )
     reservation = _SANDBOX_GATE.reserve(
         user_id,
         active_ttl_seconds=MAX_SANDBOX_LIFETIME_SECONDS,
-        cooldown_seconds=cooldown_seconds,
-        max_concurrent_sessions=max_concurrent,
-        window_seconds=window_seconds,
-        max_calls=max_calls,
+        cooldown_seconds=USER_SANDBOX_CREATE_COOLDOWN_SECONDS,
+        max_concurrent_sessions=MAX_CONCURRENT_SANDBOXES,
         now=time.monotonic(),
     )
     if not reservation.allowed:
@@ -186,27 +164,13 @@ def _reserve_user_sandbox(context: dict[str, object]) -> None:
         result["retry_after_seconds"] = retry_after_seconds
         raise _SandboxBlockedError(result)
     context[_SANDBOX_USER_ID_KEY] = user_id
-    context[_SANDBOX_RESERVATION_TOKEN_KEY] = reservation.token
 
 
 def _release_user_sandbox(context: dict[str, object]) -> None:
-    context.pop(_SANDBOX_RESERVATION_TOKEN_KEY, None)
     user_id = context.pop(_SANDBOX_USER_ID_KEY, None)
     if not user_id:
         return
     _SANDBOX_GATE.release_active(str(user_id))
-
-
-def _rollback_user_sandbox(context: dict[str, object]) -> None:
-    """沙箱没建起来：释放活跃锁，并退回本次占用的冷却与滑动窗口配额。"""
-    token = context.pop(_SANDBOX_RESERVATION_TOKEN_KEY, None)
-    user_id = context.pop(_SANDBOX_USER_ID_KEY, None)
-    if not user_id:
-        return
-    _SANDBOX_GATE.rollback_creation(
-        str(user_id),
-        token if isinstance(token, float) else None,
-    )
 
 
 def _result_from_command(
@@ -246,7 +210,6 @@ def _get_or_create_sandbox(context: dict[str, object]):
     try:
         from e2b import Sandbox
     except ImportError:
-        _rollback_user_sandbox(context)
         logging.exception("E2B SDK is not installed")
         raise RuntimeError("E2B SDK is not installed. Install the e2b package.") from None
 
@@ -258,7 +221,8 @@ def _get_or_create_sandbox(context: dict[str, object]):
         context[_SANDBOX_CONTEXT_KEY] = sandbox
         return sandbox
     except Exception:
-        _rollback_user_sandbox(context)
+        # 没建起来：释放活跃锁和全站名额，创建冷却不退——E2B 出故障时后面的调用直接被冷却挡下。
+        _release_user_sandbox(context)
         raise
 
 

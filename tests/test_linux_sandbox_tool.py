@@ -295,48 +295,57 @@ def test_linux_sandbox_tool_allows_user_creation_after_rate_limit_expires(monkey
         clear_tool_request_context()
 
 
-def test_failed_sandbox_creation_returns_cooldown_and_window_quota(monkeypatch):
+def test_failed_sandbox_creation_keeps_cooldown_and_frees_the_slot(monkeypatch):
     _install_fake_e2b(monkeypatch)
     monkeypatch.setattr(sandbox_tools.config, "E2B_API_KEY", "e2b_test")
-    monkeypatch.setattr(sandbox_tools.config, "AI_SANDBOX_COOLDOWN_SECONDS", 30)
-    monkeypatch.setattr(sandbox_tools.config, "AI_SANDBOX_RATE_LIMIT_WINDOW_SECONDS", 300)
-    monkeypatch.setattr(sandbox_tools.config, "AI_SANDBOX_RATE_LIMIT_MAX_CALLS", 1)
     monkeypatch.setattr(sandbox_tools.time, "monotonic", lambda: 10_000.0)
 
-    real_create = _FakeSandbox.create.__func__
-    create_attempts = []
+    def failing_create(cls, **kwargs):
+        raise RuntimeError("e2b unavailable")
 
-    def flaky_create(cls, **kwargs):
-        create_attempts.append(kwargs)
-        if len(create_attempts) == 1:
-            raise RuntimeError("e2b unavailable")
-        return real_create(cls, **kwargs)
-
-    monkeypatch.setattr(_FakeSandbox, "create", classmethod(flaky_create))
-    first_context = {"user_id": 123}
-    second_context = {"user_id": 123}
+    monkeypatch.setattr(_FakeSandbox, "create", classmethod(failing_create))
     try:
-        set_tool_request_context(first_context)
-        failed = sandbox_tools.linux_sandbox_tool("echo first")
-        assert failed["status"] == "error"
-        assert "e2b unavailable" in failed["stderr"]
-        # 没建出沙箱：活跃锁、冷却与滑动窗口配额都退回，上下文里不留占座信息
+        # 失败的人数超过全站上限：没建起来的沙箱不占名额，后面的人不会被 busy 挡住。
+        for user_id in range(1, sandbox_tools.MAX_CONCURRENT_SANDBOXES + 2):
+            context = {"user_id": user_id}
+            set_tool_request_context(context)
+            failed = sandbox_tools.linux_sandbox_tool("echo hi")
+            assert failed["status"] == "error"
+            assert "e2b unavailable" in failed["stderr"]
+            assert sandbox_tools._SANDBOX_USER_ID_KEY not in context
         assert sandbox_tools._ACTIVE_SANDBOX_USER_IDS == {}
-        assert sandbox_tools._USER_SANDBOX_CREATE_COOLDOWNS == {}
-        assert sandbox_tools._SANDBOX_GATE._window.buckets == {}
-        assert sandbox_tools._SANDBOX_USER_ID_KEY not in first_context
-        assert sandbox_tools._SANDBOX_RESERVATION_TOKEN_KEY not in first_context
 
-        # 同一时刻再试一次：不会被 user_rate_limit 挡住
-        set_tool_request_context(second_context)
-        second = sandbox_tools.linux_sandbox_tool("echo second")
-        assert second["status"] == "ok"
-        assert len(create_attempts) == 2
-        assert len(_FakeSandbox.created) == 1
+        # 创建冷却不退：同一个用户再试，直接被冷却挡下，不再去建箱。
+        set_tool_request_context({"user_id": 1})
+        blocked = sandbox_tools.linux_sandbox_tool("echo again")
+        assert blocked["status"] == "blocked"
+        assert blocked["blocked_reason"] == "user_rate_limit"
+        assert blocked["retry_after_seconds"] == sandbox_tools.USER_SANDBOX_CREATE_COOLDOWN_SECONDS
     finally:
-        sandbox_tools.cleanup_linux_sandbox()
-        sandbox_tools._ACTIVE_SANDBOX_USER_IDS.clear()
-        sandbox_tools._USER_SANDBOX_CREATE_COOLDOWNS.clear()
+        clear_tool_request_context()
+
+
+def test_linux_sandbox_tool_caps_concurrent_sandboxes(monkeypatch):
+    _install_fake_e2b(monkeypatch)
+    monkeypatch.setattr(sandbox_tools.config, "E2B_API_KEY", "e2b_test")
+    contexts = [
+        {"user_id": user_id}
+        for user_id in range(1, sandbox_tools.MAX_CONCURRENT_SANDBOXES + 1)
+    ]
+    try:
+        for context in contexts:
+            set_tool_request_context(context)
+            assert sandbox_tools.linux_sandbox_tool("echo hi")["status"] == "ok"
+
+        set_tool_request_context({"user_id": 999})
+        blocked = sandbox_tools.linux_sandbox_tool("echo extra")
+        assert blocked["status"] == "blocked"
+        assert blocked["blocked_reason"] == "global_sandbox_busy"
+        assert len(_FakeSandbox.created) == sandbox_tools.MAX_CONCURRENT_SANDBOXES
+    finally:
+        for context in contexts:
+            set_tool_request_context(context)
+            sandbox_tools.cleanup_linux_sandbox()
         clear_tool_request_context()
 
 

@@ -1,8 +1,7 @@
 """AI 工具共用的进程内限流、冷却与并发闸门。
 
 所有状态只驻留在当前进程内存里（单进程部署，见 docs/architecture.md），并在每次检查时顺手清理过期键，
-避免长期运行后按 `user_id` 无限增长。限流阈值由调用方在每次判定时传入（读取 `core.config`），
-因此 `override_settings` 与运行时配置切换会立即生效。
+避免长期运行后按 `user_id` 无限增长。限流阈值由调用方在每次判定时传入。
 """
 
 from __future__ import annotations
@@ -145,31 +144,16 @@ class SessionReservation(NamedTuple):
     allowed: bool
     blocked_reason: str | None
     retry_after_seconds: int | None
-    token: float | None = None
-
-
-class _LinkedCooldownDict(dict[str, float]):
-    """兼容旧测试直接 `.clear()` 冷却字典时同步清空关联滑动窗口。"""
-
-    def __init__(self, on_clear: Callable[[], None]) -> None:
-        super().__init__()
-        self._on_clear = on_clear
-
-    def clear(self) -> None:
-        super().clear()
-        self._on_clear()
 
 
 class UserSessionGate:
-    """有状态会话型工具（如 E2B 沙箱）的并发互斥、全局会话上限、创建冷却与滑动窗口。"""
+    """有状态会话型工具（如 E2B 沙箱）的每用户互斥、全局会话上限与创建冷却。"""
 
     def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
         self._lock = threading.Lock()
-        self._window = SlidingWindowRateLimiter(clock=clock)
         self.active_users: dict[str, float] = {}
-        self._cooldowns = _LinkedCooldownDict(self._window.reset)
-        self.cooldowns: dict[str, float] = self._cooldowns
+        self.cooldowns: dict[str, float] = {}
         _register(self)
 
     def _purge_unlocked(self, now: float) -> None:
@@ -187,61 +171,34 @@ class UserSessionGate:
         active_ttl_seconds: float,
         cooldown_seconds: float,
         max_concurrent_sessions: int,
-        window_seconds: float | None = None,
-        max_calls: int | None = None,
         now: float | None = None,
     ) -> SessionReservation:
         current_time = self._clock() if now is None else now
         with self._lock:
             self._purge_unlocked(current_time)
             if user_key in self.active_users:
-                return SessionReservation(False, "user_sandbox_busy", None, None)
-            if len(self.active_users) >= max(1, int(max_concurrent_sessions)):
-                return SessionReservation(False, "global_sandbox_busy", None, None)
+                return SessionReservation(False, "user_sandbox_busy", None)
+            if len(self.active_users) >= max_concurrent_sessions:
+                return SessionReservation(False, "global_sandbox_busy", None)
 
             cooldown_until = self.cooldowns.get(user_key)
             if cooldown_until is not None:
                 retry_after = max(1, int(cooldown_until - current_time))
-                return SessionReservation(False, "user_rate_limit", retry_after, None)
-
-            token: float | None = None
-            if window_seconds is not None and max_calls is not None:
-                window_res = self._window.reserve(
-                    user_key,
-                    window_seconds=window_seconds,
-                    max_calls=max_calls,
-                    now=current_time,
-                )
-                if not window_res.allowed:
-                    return SessionReservation(
-                        False,
-                        "user_rate_limit",
-                        window_res.retry_after_seconds,
-                        None,
-                    )
-                token = window_res.token
+                return SessionReservation(False, "user_rate_limit", retry_after)
 
             self.active_users[user_key] = current_time + active_ttl_seconds
-            if cooldown_seconds > 0:
-                self.cooldowns[user_key] = current_time + cooldown_seconds
-            return SessionReservation(True, None, None, token)
+            self.cooldowns[user_key] = current_time + cooldown_seconds
+            return SessionReservation(True, None, None)
 
     def release_active(self, user_key: str) -> None:
+        """会话结束或没建起来：释放活跃锁，创建冷却照常保留。"""
         with self._lock:
             self.active_users.pop(str(user_key), None)
-
-    def rollback_creation(self, user_key: str, token: float | None = None) -> None:
-        """会话尚未真正建起来就失败时，释放活跃锁并退回本次冷却与窗口配额。"""
-        with self._lock:
-            self.active_users.pop(str(user_key), None)
-            self.cooldowns.pop(str(user_key), None)
-            self._window.release(user_key, token)
 
     def reset(self) -> None:
         with self._lock:
             self.active_users.clear()
-            dict.clear(self._cooldowns)
-        self._window.reset()
+            self.cooldowns.clear()
 
 
 __all__ = [

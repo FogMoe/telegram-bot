@@ -69,21 +69,10 @@ def _get_request_user_id() -> int | None:
 
 
 def _reserve_voice_generation(user_id: int) -> tuple[bool, float | None, int | None]:
-    window_seconds = getattr(
-        config,
-        "AI_VOICE_RATE_LIMIT_WINDOW_SECONDS",
-        VOICE_RATE_LIMIT_WINDOW_SECONDS,
-    )
-    max_calls = getattr(
-        config,
-        "AI_VOICE_RATE_LIMIT_MAX_CALLS",
-        VOICE_RATE_LIMIT_MAX_GENERATIONS,
-    )
     reservation = _VOICE_RATE_LIMITER.reserve(
         user_id,
-        window_seconds=window_seconds,
-        max_calls=max_calls,
-        now=time.monotonic(),
+        window_seconds=VOICE_RATE_LIMIT_WINDOW_SECONDS,
+        max_calls=VOICE_RATE_LIMIT_MAX_GENERATIONS,
     )
     return reservation.allowed, reservation.token, reservation.retry_after_seconds
 
@@ -359,21 +348,11 @@ def generate_voice_tool(
 
     allowed, reservation_timestamp, retry_after = _reserve_voice_generation(user_id)
     if not allowed:
-        max_calls = getattr(
-            config,
-            "AI_VOICE_RATE_LIMIT_MAX_CALLS",
-            VOICE_RATE_LIMIT_MAX_GENERATIONS,
-        )
-        window_seconds = getattr(
-            config,
-            "AI_VOICE_RATE_LIMIT_WINDOW_SECONDS",
-            VOICE_RATE_LIMIT_WINDOW_SECONDS,
-        )
         return {
             "error": "Voice generation rate limit exceeded",
             "details": (
-                f"Each user can generate up to {max_calls} "
-                f"audio clips every {window_seconds} seconds."
+                f"Each user can generate up to {VOICE_RATE_LIMIT_MAX_GENERATIONS} "
+                "audio clips every 5 minutes."
             ),
             "retry_after_seconds": retry_after,
         }
