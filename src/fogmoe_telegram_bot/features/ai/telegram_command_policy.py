@@ -4,6 +4,8 @@
 `/ref` 与 `/start`（绑定邀请人，邀请人拿到奖励）、带参数的 `/swap`（把硬币兑换到指定的钱包地址）。
 模型会读到群里别人发的消息、网页正文和搜索结果，只有这几种值得别人诱导模型去执行；硬币可以充值购买，
 损失是真钱。
+
+另外禁 `/fogmoebot`：它会再进一次对话入口，等的正是当前这一轮持有的会话锁，只会卡到命令超时。
 """
 
 from __future__ import annotations
@@ -35,6 +37,11 @@ def delegated_command_block_reason(command: str, command_text: str) -> str | Non
             "cannot be executed on the user's behalf. You may run /swap without arguments "
             "to show how it works, or tell the user to send the full /swap command "
             "themselves in Telegram."
+        )
+    if command == "fogmoebot":
+        return (
+            "/fogmoebot starts a conversation with you, and you are already in one. "
+            "Reply to the user directly instead. Do not retry this tool."
         )
     return None
 

@@ -197,6 +197,12 @@ def test_other_commands_are_not_blocked(command, command_text):
     assert delegated_command_block_reason(command, command_text) is None
 
 
+def test_the_conversation_command_is_blocked():
+    # 代执行 /fogmoebot 会等当前这一轮自己持有的会话锁，只能卡到命令超时。
+    assert delegated_command_block_reason("fogmoebot", "/fogmoebot hello")
+    assert delegated_command_block_reason("fogmoebot", "/fogmoebot")
+
+
 def test_blocked_command_never_reaches_the_handler(monkeypatch):
     set_tool_request_context(_request_context())
     monkeypatch.setattr(
