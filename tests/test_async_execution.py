@@ -605,6 +605,8 @@ def two_providers(settings_override, monkeypatch):
         AI_CHAT_ORDER="openai,gemini",
         OPENAI_CHAT_MODEL="openai-model",
         GEMINI_CHAT_MODEL="gemini-model",
+        # 这组测试经 router 调 google_search：没配置凭据的工具不会暴露给模型。
+        SERPAPI_API_KEY="test-key",
     )
     router.CHAT_CIRCUIT.reset()
     yield

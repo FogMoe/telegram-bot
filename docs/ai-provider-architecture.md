@@ -103,10 +103,10 @@ provider 特有的协议要求由什么承载。权威定义是代码，本页�
 1. 消息含图片而该 provider 不支持视觉（`chat_service_supports_vision`）时，改用纯文本历史
    （`text_fallback_messages`，没有则去掉图片）。
 2. 在一份新的工具请求上下文里（`tool_request_scope`）直接 `await` 工具循环（原生 async，没有线程池），
-   通过 `tools/specs.py` 的 `resolve_agent_tools` 按当前入口、聊天类型、provider 的 `skip_tools` 与配置完备性筛选本次暴露的工具，结束后清理沙箱（清理失败只记日志，不影响这次的结果）。
+   工具列表由 `tools/specs.py` 的 `resolve_agent_tools` 给出（只去掉没配置凭据的工具和 provider 的 `skip_tools`，不随入口或聊天类型变化），结束后清理沙箱（清理失败只记日志，不影响这次的结果）。
    传入的整轮 `Deadline` 一路带到工具循环，等待模型时到期给这个 provider 记一次熔断失败。规则见 [runtime.md](runtime.md)。
 
-每次 LiteLLM 调用完成时，`litellm_client` 经 `features/ai/usage.py` 记录输入/缓存/输出 token，并结合 `AI_MODEL_PRICING` 累积微美元成本到当前 `ai_usage_scope` 与进程内指标。
+每次 LiteLLM 调用完成时，`litellm_client` 写一行日志，记下 provider、模型与输入、命中缓存、输出的 token 数；工具循环结束时再写一行本次循环的合计。
 
 执行结果转成固定的提示文案：截止时间到期返回 `TURN_DEADLINE_ERROR_MESSAGE`（进程停止时是 `TURN_SHUTDOWN_ERROR_MESSAGE`）
 与已有的工具日志；上下文超限返回 `CONTEXT_BUDGET_ERROR_MESSAGE`；执行过工具之后的失败返回
@@ -115,7 +115,7 @@ provider 特有的协议要求由什么承载。权威定义是代码，本页�
 都包成 `PartialAIResponseError`，所以不会换模型或 provider 把已经执行过的工具再跑一遍。
 
 所有 provider 失败后，如果消息含图片，用纯文本历史把整个顺序再走一遍；仍然失败返回
-`AI_SERVICE_ERROR_MESSAGE`。截止时间到期时不再走这一遍。`router.runtime_error_cause` 把这三条固定文案（以及上面两条超时提示）识别成错误通知，
+`AI_SERVICE_ERROR_MESSAGE`。截止时间到期时不再走这一遍。这些固定文案都带着对应的 `LoopStatus`（`LoopResult.runtime_error`），
 对话入口据此不把它们写成 assistant 记录。
 
 ## 增加或修改 provider

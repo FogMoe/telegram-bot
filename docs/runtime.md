@@ -131,7 +131,7 @@ PTB handler（concurrent_updates 有界）
   正在运行的那个是 `{"error": "interrupted", "outcome": "unknown", ...}`（可能已经完成，不要假定失败、不要重复执行），
   后面没来得及运行的是 `{"error": "not_executed", ...}`。这样 assistant 的 `tool_calls` 与 `tool` 结果一一配对，
   下一轮不会因为不配对被 provider 拒绝。这一轮里已经完成的工具照常留下结果，它们带回的 Telegram 事件
-  （例如代执行命令的回复）也照常记进历史。超时提示是固定的运行时错误文案（`router.runtime_error_cause` 识别为
+  （例如代执行命令的回复）也照常记进历史。超时提示是固定的运行时错误文案（`LoopStatus.DEADLINE_EXCEEDED`，原因
   `turn_deadline_exceeded`），不当作 AI 回复写进历史，按错误通知的作用域投递。
 - **不重复执行工具副作用。** 到期之后不会换模型或 provider 重跑，也不会重试已经开始的工具；已经在线程里运行的同步工具无法被中断，
   线程自己跑完、结果被丢弃（线程适配器保证：还在排队、没开始的调用被取消后不会再执行）。
@@ -230,9 +230,10 @@ runtime metrics (last 300s): admission.admitted=118 admission.rejected{reason=qu
 | 超时次数 | `turn.deadline_hits{reason=deadline\|shutdown, phase=charge\|context\|prepare\|history_in\|model\|fallback\|tool\|delivery\|history_out}`、`provider.timeouts{provider}`（单次调用超时） |
 | 过载 | `admission.rejected{reason=...}`、`admission.admitted` |
 | provider 失败 | `provider.failures{provider}`、`provider.calls{provider}` |
-| AI 模型与成本计量 | `ai.calls{entry,task,provider}`、`ai.input_tokens{entry,task,provider}`、`ai.cached_input_tokens{entry,task,provider}`、`ai.output_tokens{entry,task,provider}`、`ai.cost_microusd{entry,task,provider}`（单价由 `AI_MODEL_PRICING` 给出）；TypeSafe 垃圾识别另记 `ai.typesafe_calls{entry,task}` 与 `ai.typesafe_input_tokens{entry,task}` |
-| 工具失败与外部计费 | `tool.failures{tool}`（执行异常，或返回了 `error`）、`tool.calls{tool}`、`tool.billed_calls{entry,category,tool}`（SerpApi、Jina、Judge0、E2B、生图、语音等外部资源调用） |
-| 一轮的结局 | `turn.finished{status=...}`（`TurnStatus` 的取值）；`ConversationTurn`、`scheduler`、`idle_followup` 与 `summary` 的完成日志均附带本轮 `UsageAccumulator` 的 token、微美元成本与计费工具计数汇总 |
+| 工具失败 | `tool.failures{tool}`（执行异常，或返回了 `error`）、`tool.calls{tool}` |
+| 一轮的结局 | `turn.finished{status=...}`（`TurnStatus` 的取值）；完成日志带本轮扣的硬币数 `charged_coins` |
+
+模型 token 用量不进指标，只写日志：每次模型调用一行 `AI call finished`（provider、模型、输入、命中缓存、输出），每次工具循环结束一行 `tool loop finished`（本次循环的调用次数、token 合计与工具调用数）。外部付费工具的用量看各自服务商的控制台。
 
 标签只用有限集合：入口名、任务名、provider 名、工具计费分类、注册过的工具名（模型编造的工具名记为 `unknown`）、拒绝原因、阶段。**不要把用户 id 或动态模型名放进指标标签。**
 

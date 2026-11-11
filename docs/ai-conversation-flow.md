@@ -72,7 +72,7 @@ uv run python scripts/gen_ai_flow_doc.py
 
 ## 4. 工具箱
 
-所有工具在 `TOOL_SPECS`（[ai/tools/specs.py](../src/fogmoe_telegram_bot/features/ai/tools/specs.py)）单一声明，每次运行由 `resolve_agent_tools` 按入口、聊天类型、provider 的 `skip_tools` 与配置完备性筛出本次可见的 schema 与处理函数。兼容层导出的主聊天集合是 `OPENAI_TOOLS` 与 `AI_TOOL_HANDLERS`（[ai/tools/schemas.py](../src/fogmoe_telegram_bot/features/ai/tools/schemas.py)、
+所有工具在 `TOOL_SPECS`（[ai/tools/specs.py](../src/fogmoe_telegram_bot/features/ai/tools/specs.py)）单一声明。`resolve_agent_tools` 只去掉没配置凭据的工具和 provider 的 `skip_tools`，不按入口或聊天类型裁剪：历史在私聊、群聊和后台轮之间共享，工具列表每一轮都相同，不适用的场景由处理函数返回错误。兼容层导出的主聊天集合是 `OPENAI_TOOLS` 与 `AI_TOOL_HANDLERS`（[ai/tools/schemas.py](../src/fogmoe_telegram_bot/features/ai/tools/schemas.py)、
 [ai/tools/registry.py](../src/fogmoe_telegram_bot/features/ai/tools/registry.py)）；空闲回顾用 `IDLE_RECAP_TOOLS`，
 摘要助手用 `SUMMARY_TOOLS`。参数模型在 `AI_TOOL_ARG_MODELS`，工具读取请求上下文用 `get_tool_request_context`。
 加工具的步骤见 [ai/tools/README.md](../src/fogmoe_telegram_bot/features/ai/tools/README.md)，描述怎么写见
@@ -174,7 +174,7 @@ uv run python scripts/gen_ai_flow_doc.py
 | 摘要助手 `_run_summary_agent` | `search_prior_context` | [ai/summary.py](../src/fogmoe_telegram_bot/features/ai/summary.py) |
 
 定时消息和空闲跟进的主模型与一轮对话共用同一套收尾流水线（`execute_post_input_turn` 与 `prepare_model_turn`，策略分别是 `SCHEDULE_ENTRY_POLICY` 和 `IDLE_FOLLOWUP_ENTRY_POLICY`，见 [ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)）：用户状态提示词 `build_user_state_prompt`、工具上下文
-`build_tool_context`（没有聊天字段，带撤销信号；`resolve_agent_tools` 自动隐藏群聊工具与代执行命令）、回复整理 `finish_reply`；历史经 `write_history` 写入
+`build_tool_context`（没有聊天字段，带撤销信号；工具列表与用户轮次相同，群聊工具与代执行命令在这里调用会返回错误）、回复整理 `finish_reply`；历史经 `write_history` 写入
 （[ai/history_writer.py](../src/fogmoe_telegram_bot/features/ai/history_writer.py)），回复经 `send_private_reply` 发出。
 claim、租约与崩溃恢复见 [job-recovery.md](job-recovery.md)。
 
