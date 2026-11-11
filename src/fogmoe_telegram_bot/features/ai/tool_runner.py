@@ -44,7 +44,6 @@ from .tool_loop_messages import (
 )
 from .tools import AI_TOOL_HANDLERS, OPENAI_TOOLS
 from .types import (
-    JobAbortedError,
     LoopResult,
     LoopStatus,
     PartialAIResponseError,
@@ -240,10 +239,7 @@ async def run_tool_loop(
                     turn_start=turn_start,
                 )
 
-            tool_calls = normalise_tool_calls(
-                raw_tool_calls,
-                round_index=iteration + 1,
-            )
+            tool_calls = normalise_tool_calls(raw_tool_calls)
             logging.info("%s 第 %s 轮：检测到 %s 个工具调用", provider_name, iteration + 1, len(tool_calls))
 
             assistant_content_for_model = assistant_content
@@ -295,21 +291,8 @@ async def run_tool_loop(
                 function_payload = tool_call.get("function") or {}
                 function_name = str(function_payload.get("name") or "").strip()
 
-                # 后台任务被撤销后不再执行剩余的工具，同时补齐未执行结果保持消息配对。
-                try:
-                    raise_if_aborted(tool_context)
-                except JobAbortedError:
-                    close_interrupted_round(
-                        tool_logs,
-                        tool_calls,
-                        call_index,
-                        skip_set,
-                        "aborted",
-                        round_context_messages,
-                        running=False,
-                        filtered_messages=filtered_messages,
-                    )
-                    raise
+                # 后台任务被撤销后不再执行剩余的工具。
+                raise_if_aborted(tool_context)
 
                 arguments = parse_tool_arguments(
                     function_name,
@@ -348,7 +331,6 @@ async def run_tool_loop(
                         tool_logs,
                         tool_calls,
                         call_index,
-                        skip_set,
                         exc.reason,
                         round_context_messages,
                         filtered_messages=filtered_messages,
@@ -369,7 +351,6 @@ async def run_tool_loop(
                         tool_logs,
                         tool_calls,
                         call_index,
-                        skip_set,
                         exc.reason,
                         round_context_messages,
                         function_name=function_name,

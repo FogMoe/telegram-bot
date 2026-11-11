@@ -866,10 +866,47 @@ def test_missing_function_name_and_id_still_pairs_tool_call_and_result(monkeypat
     assistant_msg = next(m for m in followup_messages if m.get("tool_calls"))
     tool_msg = next(m for m in followup_messages if m.get("role") == "tool")
     generated_id = assistant_msg["tool_calls"][0]["id"]
-    assert generated_id == "call_1_1"
-    assert tool_msg["tool_call_id"] == "call_1_1"
+    assert generated_id.startswith("call_")
+    assert tool_msg["tool_call_id"] == generated_id
     assert "Tool call is missing function name" in tool_msg["content"]
-    assert [log["tool_call_id"] for log in tool_logs] == ["call_1_1", "call_1_1"]
+    assert [log["tool_call_id"] for log in tool_logs] == [generated_id, generated_id]
+
+
+def test_generated_tool_call_ids_stay_paired_across_turns(monkeypatch):
+    """provider 不给 id 时，每一轮生成的 id 都不同：两轮的消息拼进同一段历史后，写库时的配对清洗
+    不会把后一轮的 tool 结果当成重复删掉。"""
+    from fogmoe_telegram_bot.core.chat_records import _sanitize_messages_with_tool_pairs
+
+    def one_turn():
+        responses = [
+            _Response(
+                _Message(
+                    "",
+                    [{"type": "function", "function": {"name": "read_doc", "arguments": "{}"}}],
+                )
+            ),
+            _Response(_Message("done", None)),
+        ]
+
+        async def fake_create_chat_completion(*args, **kwargs):
+            return responses.pop(0)
+
+        monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
+        monkeypatch.setitem(tool_runner.AI_TOOL_HANDLERS, "read_doc", lambda **kwargs: {"ok": True})
+        result = asyncio.run(tool_runner.run_tool_loop(
+            "test_provider",
+            "test_model",
+            [{"role": "user", "content": "hi"}],
+            provider_name="Test",
+        ))
+        return result.turn_messages
+
+    history = one_turn() + one_turn()
+
+    sanitized, changed = _sanitize_messages_with_tool_pairs(history)
+
+    assert changed is False
+    assert [message["role"] for message in sanitized] == ["assistant", "tool", "assistant", "tool"]
 
 
 def test_an_unserializable_tool_result_reaches_the_model_as_text(monkeypatch):

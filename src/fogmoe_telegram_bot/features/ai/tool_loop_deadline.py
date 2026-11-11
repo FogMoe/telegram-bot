@@ -39,7 +39,6 @@ def close_interrupted_round(
     tool_logs: list[ToolLog],
     tool_calls: list[dict[str, Any]],
     interrupted_index: int,
-    skip_set: set[str],
     reason: str,
     round_context_messages: list[dict[str, str]],
     *,
@@ -53,7 +52,6 @@ def close_interrupted_round(
     `interrupted_index` 那个调用还没开始（前一个工具已经有结果，是在投递它的媒体时到期的）。
     这一轮已经完成的工具带回来的 Telegram 事件（例如代执行命令的回复）照常记进消息序列与日志。
     """
-    del skip_set  # 所有声明的 tool_calls 均必须回填配对的 tool 消息
     for index, tool_call in enumerate(tool_calls):
         if index < interrupted_index:
             continue
