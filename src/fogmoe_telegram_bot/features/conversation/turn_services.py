@@ -30,7 +30,6 @@ from fogmoe_telegram_bot.core.archive_utils import send_permanent_records_archiv
 from fogmoe_telegram_bot.core.telegram_utils import partial_send, safe_send_markdown
 from fogmoe_telegram_bot.features.ai import (
     ai_chat,
-    idle_followup,
     outbound,
     sticker_sender,
     summary,
@@ -40,7 +39,7 @@ from fogmoe_telegram_bot.features.ai.telegram_visible_sender import TelegramVisi
 from fogmoe_telegram_bot.features.ai.tool_history import reply_record_entries
 from fogmoe_telegram_bot.features.ai.types import LoopResult
 
-from . import billing, history_hooks
+from . import billing, history_hooks, idle_followup
 from .turn_types import HistoryInsert, ModelRequest, UserStateRecord
 
 logger = logging.getLogger(__name__)

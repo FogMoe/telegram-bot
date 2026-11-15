@@ -3,8 +3,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
 
-from fogmoe_telegram_bot.features.ai import idle_followup
 from fogmoe_telegram_bot.features.ai.types import LoopResult, ToolCallRecord, ToolCallStatus
+from fogmoe_telegram_bot.features.conversation import idle_followup
 
 
 def test_claim_due_followups_skips_registered_users_without_coins(monkeypatch):

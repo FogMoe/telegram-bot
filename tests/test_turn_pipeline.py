@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import pytest
 
 from fogmoe_telegram_bot.core import telegram_history
-from fogmoe_telegram_bot.features.ai import idle_followup, scheduler
 from fogmoe_telegram_bot.features.ai.router import (
     AI_SERVICE_ERROR_MESSAGE,
     PARTIAL_AI_RESPONSE_ERROR_MESSAGE,
@@ -32,6 +31,7 @@ from fogmoe_telegram_bot.features.ai.types import (
     ToolCallRecord,
     ToolCallStatus,
 )
+from fogmoe_telegram_bot.features.conversation import idle_followup, scheduler
 
 logger = logging.getLogger(__name__)
 

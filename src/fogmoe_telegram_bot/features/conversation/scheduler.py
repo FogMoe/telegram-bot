@@ -20,17 +20,12 @@ from telegram.ext import ContextTypes
 from fogmoe_telegram_bot.core import mysql_connection, process_user
 from fogmoe_telegram_bot.core.prompt_utils import format_metadata_attrs, xml_escape
 from fogmoe_telegram_bot.core.telegram_utils import partial_send
-from fogmoe_telegram_bot.features.ai import ai_chat, job_claims
+from fogmoe_telegram_bot.features.ai import ai_chat
 from fogmoe_telegram_bot.features.ai.conversation_locks import get_conversation_lock
 from fogmoe_telegram_bot.features.ai.history_writer import write_history
-from fogmoe_telegram_bot.features.ai.job_claims import ClaimLostError
 from fogmoe_telegram_bot.features.ai.outbound import (
     send_generated_media,
     send_private_reply,
-)
-from fogmoe_telegram_bot.features.ai.schedule_limits import (
-    DAILY_SCHEDULE_TRIGGER_LIMIT,
-    reserve_daily_schedule_trigger,
 )
 from fogmoe_telegram_bot.features.ai.sticker_sender import normalize_sticker_directives
 from fogmoe_telegram_bot.features.ai.telegram_visible_sender import TelegramVisibleContentHandler
@@ -43,6 +38,12 @@ from fogmoe_telegram_bot.features.ai.turn_pipeline import (
     tool_call_labels,
 )
 from fogmoe_telegram_bot.features.ai.user_state import build_user_state_prompt
+from fogmoe_telegram_bot.features.conversation import job_claims
+from fogmoe_telegram_bot.features.conversation.job_claims import ClaimLostError
+from fogmoe_telegram_bot.features.conversation.schedule_limits import (
+    DAILY_SCHEDULE_TRIGGER_LIMIT,
+    reserve_daily_schedule_trigger,
+)
 
 logger = logging.getLogger(__name__)
 

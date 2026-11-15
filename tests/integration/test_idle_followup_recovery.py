@@ -26,13 +26,15 @@ from mysql_support import execute, run
 
 from fogmoe_telegram_bot.features.ai import (
     conversation_locks,
-    idle_followup,
-    job_claims,
     outbound,
     summary,
 )
 from fogmoe_telegram_bot.features.ai.router import AI_SERVICE_ERROR_MESSAGE
 from fogmoe_telegram_bot.features.ai.types import LoopStatus, ToolCallRecord, ToolCallStatus
+from fogmoe_telegram_bot.features.conversation import (
+    idle_followup,
+    job_claims,
+)
 
 REPLY = "just checking in"
 USER_ID = 1

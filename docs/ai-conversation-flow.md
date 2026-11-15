@@ -169,8 +169,8 @@ uv run python scripts/gen_ai_flow_doc.py
 
 | 入口 | 工具 | 文件 |
 |---|---|---|
-| 定时消息 | 主聊天全套（经 `get_ai_response`） | [ai/scheduler.py](../src/fogmoe_telegram_bot/features/ai/scheduler.py) |
-| 空闲回顾：`RECAP_AGENT` 写回顾（`idle_recap` 事件），主模型再写跟进消息 | 回顾：只读的记忆工具；跟进：主聊天全套 | [ai/recap.py](../src/fogmoe_telegram_bot/features/ai/recap.py)、[ai/idle_followup.py](../src/fogmoe_telegram_bot/features/ai/idle_followup.py) |
+| 定时消息 | 主聊天全套（经 `get_ai_response`） | [conversation/scheduler.py](../src/fogmoe_telegram_bot/features/conversation/scheduler.py) |
+| 空闲回顾：`RECAP_AGENT` 写回顾（`idle_recap` 事件），主模型再写跟进消息 | 回顾：只读的记忆工具；跟进：主聊天全套 | [ai/recap.py](../src/fogmoe_telegram_bot/features/ai/recap.py)、[conversation/idle_followup.py](../src/fogmoe_telegram_bot/features/conversation/idle_followup.py) |
 | 摘要助手 `SUMMARY_AGENT` | `search_prior_context` | [ai/summary.py](../src/fogmoe_telegram_bot/features/ai/summary.py) |
 
 定时消息和空闲跟进的主模型与一轮对话共用同一套收尾流水线（`execute_post_input_turn` 与 `prepare_model_turn`，策略分别是 `SCHEDULE_ENTRY_POLICY` 和 `IDLE_FOLLOWUP_ENTRY_POLICY`，见 [ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)）：用户状态提示词 `build_user_state_prompt`、工具上下文

@@ -25,12 +25,14 @@ from mysql_support import execute, fetch, fetch_scalar, run
 
 from fogmoe_telegram_bot.features.ai import (
     conversation_locks,
-    job_claims,
     outbound,
-    scheduler,
     summary,
 )
 from fogmoe_telegram_bot.features.ai.tools import schedule_tools
+from fogmoe_telegram_bot.features.conversation import (
+    job_claims,
+    scheduler,
+)
 
 REPLY = "drink some water"
 

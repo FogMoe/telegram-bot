@@ -13,8 +13,9 @@ from fogmoe_telegram_bot.core.telegram_history import (
     telegram_history_capture_active,
     telegram_history_scope,
 )
-from fogmoe_telegram_bot.features.ai import idle_followup, summary
+from fogmoe_telegram_bot.features.ai import summary
 from fogmoe_telegram_bot.features.ai.conversation_locks import get_conversation_lock
+from fogmoe_telegram_bot.features.conversation import idle_followup
 
 logger = logging.getLogger(__name__)
 

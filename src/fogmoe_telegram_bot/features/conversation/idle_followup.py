@@ -26,10 +26,9 @@ from telegram.ext import ContextTypes
 
 from fogmoe_telegram_bot.core import mysql_connection, process_user
 from fogmoe_telegram_bot.core.prompt_utils import format_metadata_attrs, xml_escape
-from fogmoe_telegram_bot.features.ai import ai_chat, job_claims
+from fogmoe_telegram_bot.features.ai import ai_chat
 from fogmoe_telegram_bot.features.ai.conversation_locks import get_conversation_lock
 from fogmoe_telegram_bot.features.ai.history_writer import write_history
-from fogmoe_telegram_bot.features.ai.job_claims import ClaimLostError
 from fogmoe_telegram_bot.features.ai.outbound import (
     send_generated_media,
     send_private_reply,
@@ -53,6 +52,8 @@ from fogmoe_telegram_bot.features.ai.turn_pipeline import (
 )
 from fogmoe_telegram_bot.features.ai.types import ToolCallRecord
 from fogmoe_telegram_bot.features.ai.user_state import build_user_state_prompt
+from fogmoe_telegram_bot.features.conversation import job_claims
+from fogmoe_telegram_bot.features.conversation.job_claims import ClaimLostError
 
 logger = logging.getLogger(__name__)
 

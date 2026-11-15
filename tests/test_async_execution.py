@@ -14,7 +14,7 @@ from tool_fakes import use_tool
 
 from fogmoe_telegram_bot.core import ai_providers, blocking, metrics
 from fogmoe_telegram_bot.core.deadline import REASON_DEADLINE, REASON_SHUTDOWN, Deadline
-from fogmoe_telegram_bot.features.ai import job_claims, router, tool_runner
+from fogmoe_telegram_bot.features.ai import router, tool_runner
 from fogmoe_telegram_bot.features.ai.tool_history import turn_messages_to_record_entries
 from fogmoe_telegram_bot.features.ai.tools.dispatch import ToolExecution
 from fogmoe_telegram_bot.features.ai.types import (
@@ -26,6 +26,7 @@ from fogmoe_telegram_bot.features.ai.types import (
     ToolCallStatus,
     TurnDeadlineError,
 )
+from fogmoe_telegram_bot.features.conversation import job_claims
 
 
 class Message:

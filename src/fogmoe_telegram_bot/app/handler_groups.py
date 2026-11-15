@@ -10,9 +10,9 @@ from telegram.ext import CommandHandler
 from fogmoe_telegram_bot.features.admin import developer
 from fogmoe_telegram_bot.features.admin import group_usage as admin_group_usage
 from fogmoe_telegram_bot.features.admin.announce import admin_announce
-from fogmoe_telegram_bot.features.ai import idle_followup, scheduler, translate_handlers
+from fogmoe_telegram_bot.features.ai import translate_handlers
 from fogmoe_telegram_bot.features.conversation import handlers as conversation
-from fogmoe_telegram_bot.features.conversation import history_hooks
+from fogmoe_telegram_bot.features.conversation import history_hooks, idle_followup, scheduler
 from fogmoe_telegram_bot.features.conversation.clear import clear_command
 from fogmoe_telegram_bot.features.crypto import (
     chart,

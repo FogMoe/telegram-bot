@@ -117,6 +117,6 @@ def test_current_db_access_is_detected():
         or ("/repositories/" in path and not path.endswith("__init__.py"))
     }
     missed = [path for path, source in modules.items() if not _detector().touches_db(source, path)]
-    assert "src/fogmoe_telegram_bot/features/ai/schedule_limits.py" in modules
+    assert "src/fogmoe_telegram_bot/features/conversation/schedule_limits.py" in modules
     assert len(modules) > 30
     assert missed == []

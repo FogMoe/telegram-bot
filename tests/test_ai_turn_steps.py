@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from fogmoe_telegram_bot.core import telegram_history
 from fogmoe_telegram_bot.features.ai import (
     history_writer,
-    idle_followup,
     outbound,
     router,
     summary,
@@ -17,6 +16,9 @@ from fogmoe_telegram_bot.features.ai import (
 from fogmoe_telegram_bot.features.ai.tool_history import reply_record_entries
 from fogmoe_telegram_bot.features.ai.tools.context import build_tool_context
 from fogmoe_telegram_bot.features.ai.types import ABORT_EVENT_KEY, LoopStatus
+from fogmoe_telegram_bot.features.conversation import (
+    idle_followup,
+)
 
 SECRET = "sk-test-0123456789abcdef"
 

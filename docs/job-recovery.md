@@ -1,6 +1,6 @@
 # 定时任务与空闲跟进的恢复
 
-本页是 AI 定时任务（`features/ai/scheduler.py`）和空闲跟进（`features/ai/idle_followup.py`）在进程崩溃、卡死、重启之后如何恢复的契约，也是运维排查卡住任务的手册。共用部分在 `features/ai/job_claims.py`；表结构在 `alembic/versions/0020_job_claims.py`。
+本页是 AI 定时任务（`features/conversation/scheduler.py`）和空闲跟进（`features/conversation/idle_followup.py`）在进程崩溃、卡死、重启之后如何恢复的契约，也是运维排查卡住任务的手册。共用部分在 `features/conversation/job_claims.py`；表结构在 `alembic/versions/0020_job_claims.py`。
 
 范围是这两个后台任务。持有金币的游戏（多人下注、石头剪刀布）的状态持久化与重启恢复在文末「游戏状态」。
 
