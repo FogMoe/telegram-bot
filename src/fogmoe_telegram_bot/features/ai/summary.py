@@ -357,7 +357,7 @@ async def _run_summary_agent(
 
     async def attempt(candidate: Candidate) -> tuple[str, str]:
         with tool_request_scope(tool_context):
-            content, _tool_logs = await run_tool_loop(
+            result = await run_tool_loop(
                 candidate.provider,
                 candidate.model,
                 messages,
@@ -369,7 +369,7 @@ async def _run_summary_agent(
                 tool_handlers=SUMMARY_TOOL_HANDLERS,
                 system_prompt_override=config.SUMMARY_SYSTEM_PROMPT,
             )
-        summary_text = str(content or "").strip()
+        summary_text = result.text.strip()
         if not summary_text:
             raise ValueError("summary model returned empty content")
         return summary_text, candidate.model

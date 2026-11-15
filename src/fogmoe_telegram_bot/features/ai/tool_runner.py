@@ -2,6 +2,7 @@
 
 这里只放循环骨架与模型调用（含工具执行后的重试）。细节在同目录的模块里：
 
+- `tool_loop_state.py`：这一轮的消息序列、每次工具调用的记录与已发出的内容，结束时冻结成 `LoopResult`；
 - `tool_loop_messages.py`：模型返回的 assistant 消息与 tool_calls 转成普通 dict，以及 provider 的协议兼容；
 - `tool_loop_execution.py`：一次工具调用的参数校验、执行、日志与指标；
 - `tool_loop_delivery.py`：可见内容与生成媒体立刻发到 Telegram，交回模型的公开工具结果；
@@ -16,21 +17,17 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from fogmoe_telegram_bot.core import config
-from fogmoe_telegram_bot.core.deadline import Deadline, DeadlineExceeded
+from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline, DeadlineExceeded
 
 from .errors import is_retryable_completion_error
 from .litellm_client import create_chat_completion, response_token_counts
 from .prompts import compose_system_prompt
-from .tool_loop_deadline import (
-    close_interrupted_round,
-    deadline_guard,
-    log_round_context,
-    tool_result_log,
-)
+from .tool_loop_deadline import close_interrupted_round, deadline_guard
 from .tool_loop_delivery import (
     close_round_after_media_deadline,
     context_messages_from_tool_result,
     emit_visible_content,
+    media_delivery_after_execution,
     public_tool_result,
     return_final_text_response,
     send_media_result_immediately,
@@ -40,17 +37,16 @@ from .tool_loop_messages import (
     assistant_message_to_plain,
     normalise_tool_calls,
     resolve_assistant_message,
-    tool_result_json,
 )
+from .tool_loop_state import LoopState
 from .tools import AI_TOOL_HANDLERS, OPENAI_TOOLS
 from .types import (
     LoopResult,
     LoopStatus,
     PartialAIResponseError,
-    ToolLog,
+    ToolCallStatus,
     TurnDeadlineError,
-    VisibleContentSink,
-    has_side_effects,
+    VisibleContentHandler,
     raise_if_aborted,
 )
 
@@ -64,7 +60,7 @@ async def _create_chat_completion_with_post_tool_retries(
     messages: list[dict[str, Any]],
     request_kwargs: dict[str, Any],
     provider_name: str,
-    tool_logs: list[ToolLog],
+    has_side_effects: bool,
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | dict[str, object] | None = None,
 ) -> Any:
@@ -74,11 +70,7 @@ async def _create_chat_completion_with_post_tool_retries(
     if tool_choice is not None:
         call_kwargs["tool_choice"] = tool_choice
 
-    retry_delays = (
-        POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS
-        if has_side_effects(tool_logs)
-        else ()
-    )
+    retry_delays = POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS if has_side_effects else ()
     retry_index = 0
 
     while True:
@@ -122,18 +114,18 @@ async def run_tool_loop(
     completion_timeout: int | None = None,
     skip_tools: Iterable[str] | None = None,
     completion_kwargs: dict[str, Any] | None = None,
-    visible_content_handler: VisibleContentSink | None = None,
+    visible_content_handler: VisibleContentHandler | None = None,
     tool_definitions: list[dict[str, Any]] | None = None,
     tool_handlers: Mapping[str, Callable[..., Any]] | None = None,
     system_prompt_override: str | None = None,
     deadline: Deadline | None = None,
 ) -> LoopResult:
-    """Run a tool loop, returning a typed `LoopResult` (also 2-tuple unpackable).
+    """Run a tool loop, returning a typed `LoopResult`.
 
     原生 async：模型调用 `await`，async 工具直接 `await`，同步工具走有界线程适配器。
-    `deadline` 到期时取消正在等待的步骤，抛 `TurnDeadlineError`（带着已有的工具日志与已配对消息）。
-    执行过工具或发出过可见内容之后（`has_side_effects`），其他异常一律包成 `PartialAIResponseError`
-    （带着已有的工具日志与已配对消息）离开循环：调用方不能再换模型或 provider 从头重跑这一轮。
+    `deadline` 到期时取消正在等待的步骤，抛 `TurnDeadlineError`（带着到期为止的结果）。
+    开始执行工具或发出过可见内容之后（`LoopState.has_side_effects`），其他异常一律包成
+    `PartialAIResponseError`（带着到失败为止的结果）离开循环：调用方不能再换模型或 provider 从头重跑。
     """
     skip_set = {name for name in (skip_tools or ()) if name}
     raw_tools = OPENAI_TOOLS if tool_definitions is None else list(tool_definitions)
@@ -164,12 +156,8 @@ async def run_tool_loop(
         msg for msg in messages if msg.get("content") is not None or msg.get("tool_calls")
     ]
     filtered_messages.insert(0, system_message)
-    turn_start = len(filtered_messages)
+    state = LoopState(messages=filtered_messages, turn_start=len(filtered_messages))
 
-    def snapshot_turn_messages() -> list[dict[str, Any]]:
-        return list(filtered_messages[turn_start:])
-
-    tool_logs: list[ToolLog] = []
     # 本次循环的模型调用次数与 token 合计（输入、其中命中缓存的、输出），结束时写一行日志。
     ai_calls = 0
     token_totals = [0, 0, 0]
@@ -196,10 +184,10 @@ async def run_tool_loop(
             response = await _create_chat_completion_with_post_tool_retries(
                 provider,
                 model,
-                messages=filtered_messages,
+                messages=state.messages,
                 request_kwargs=request_kwargs,
                 provider_name=provider_name,
-                tool_logs=tool_logs,
+                has_side_effects=state.has_side_effects,
                 tools=tools,
                 tool_choice=tool_choice,
             )
@@ -229,21 +217,19 @@ async def run_tool_loop(
                 logging.info("%s 第 %s 轮：无工具调用，直接返回答案", provider_name, iteration + 1)
                 phase = "delivery"
                 return await return_final_text_response(
+                    state,
                     content_text=assistant_content,
-                    tool_logs=tool_logs,
                     visible_content_handler=visible_content_handler,
                     provider_name=provider_name,
                     deadline=deadline,
                     status=LoopStatus.COMPLETED,
-                    filtered_messages=filtered_messages,
-                    turn_start=turn_start,
                 )
 
             tool_calls = normalise_tool_calls(raw_tool_calls)
             logging.info("%s 第 %s 轮：检测到 %s 个工具调用", provider_name, iteration + 1, len(tool_calls))
 
             assistant_content_for_model = assistant_content
-            if visible_content_handler and assistant_content.strip():
+            if visible_content_handler is not None and assistant_content.strip():
                 phase = "delivery"
                 visible_result = await emit_visible_content(
                     visible_content_handler,
@@ -253,39 +239,23 @@ async def run_tool_loop(
                 )
                 if visible_result.content:
                     assistant_content_for_model = visible_result.content
-                    tool_logs.append(
-                        {
-                            "type": "assistant_visible",
-                            "content": visible_result.content,
-                        }
+                    # 只发出了一部分：这一轮到此为止，发出的部分单独成为一条 assistant 消息，工具不执行。
+                    state.record_delivered(
+                        visible_result.content,
+                        append_message=not visible_result.completed,
                     )
                     if not visible_result.completed:
-                        filtered_messages.append(
-                            {"role": "assistant", "content": visible_result.content}
-                        )
-                        return LoopResult(
-                            text="",
-                            tool_logs=tool_logs,
-                            status=LoopStatus.COMPLETED,
-                            turn_messages=snapshot_turn_messages(),
-                        )
-                elif not visible_result.completed:
-                    return LoopResult(
-                        text="",
-                        tool_logs=tool_logs,
-                        status=LoopStatus.COMPLETED,
-                        turn_messages=snapshot_turn_messages(),
-                    )
+                        return state.result("")
 
             raise_if_aborted(tool_context)
-            assistant_model_message = assistant_message_to_plain(
-                assistant_message,
-                content=assistant_content_for_model,
-                tool_calls=tool_calls,
+            state.messages.append(
+                assistant_message_to_plain(
+                    assistant_message,
+                    content=assistant_content_for_model,
+                    tool_calls=tool_calls,
+                )
             )
-            filtered_messages.append(assistant_model_message)
 
-            assistant_message_logged = False
             round_context_messages: list[dict[str, str]] = []
             for call_index, tool_call in enumerate(tool_calls):
                 function_payload = tool_call.get("function") or {}
@@ -299,26 +269,16 @@ async def run_tool_loop(
                     function_payload,
                     provider_name=provider_name,
                 )
-                function_args = arguments.validated
-
-                tool_call_id = tool_call.get("id")
-                tool_log_entry: ToolLog = {
-                    "type": "assistant_tool_call",
-                    "tool_name": function_name,
-                    "arguments": arguments.logged,
-                    "tool_call_id": tool_call_id,
-                }
-                if arguments.validation_error is not None:
-                    tool_log_entry["validation_error"] = arguments.validation_error
-                if not assistant_message_logged:
-                    tool_log_entry["assistant_message"] = assistant_model_message
-                    assistant_message_logged = True
-                tool_logs.append(tool_log_entry)
+                record_index = state.start_tool_call(
+                    function_name,
+                    tool_call["id"],
+                    arguments.logged,
+                )
 
                 # 只有真正运行处理函数时才会在这里到期；校验失败、未开放、未知工具都直接返回错误结果。
                 phase = "tool"
                 try:
-                    internal_tool_result = await execute_tool_call(
+                    execution = await execute_tool_call(
                         function_name,
                         arguments,
                         handlers=handlers,
@@ -328,12 +288,12 @@ async def run_tool_loop(
                     )
                 except DeadlineExceeded as exc:
                     close_interrupted_round(
-                        tool_logs,
+                        state,
                         tool_calls,
-                        call_index,
+                        call_index + 1,
                         exc.reason,
                         round_context_messages,
-                        filtered_messages=filtered_messages,
+                        running_record=record_index,
                     )
                     raise
 
@@ -342,55 +302,42 @@ async def run_tool_loop(
                     sent_media_messages = await send_media_result_immediately(
                         visible_content_handler=visible_content_handler,
                         tool_name=function_name,
-                        tool_result=internal_tool_result,
+                        tool_result=execution.result,
                         provider_name=provider_name,
                         deadline=deadline,
                     )
                 except DeadlineExceeded as exc:
                     close_round_after_media_deadline(
-                        tool_logs,
+                        state,
+                        record_index,
                         tool_calls,
                         call_index,
                         exc.reason,
                         round_context_messages,
-                        function_name=function_name,
-                        function_args=function_args,
-                        tool_call_id=tool_call_id,
-                        internal_tool_result=internal_tool_result,
-                        filtered_messages=filtered_messages,
+                        internal_tool_result=execution.result,
                     )
                     raise
 
-                tool_result = public_tool_result(
-                    function_name,
-                    internal_tool_result,
-                    media_sent=bool(sent_media_messages),
-                )
-
-                filtered_messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "name": function_name,
-                        "content": tool_result_json(tool_result),
-                    }
-                )
-                tool_logs.append(
-                    tool_result_log(
+                state.finish_tool_call(
+                    record_index,
+                    status=execution.status,
+                    public_result=public_tool_result(
                         function_name,
-                        function_args,
-                        tool_call_id,
-                        tool_result,
-                        internal_tool_result,
-                        sent_media_messages=sent_media_messages,
-                    )
+                        execution.result,
+                        media_sent=bool(sent_media_messages),
+                    ),
+                    internal_result=execution.result,
+                    media_delivery=media_delivery_after_execution(
+                        function_name,
+                        execution.result,
+                        sent_media_messages,
+                    ),
                 )
                 round_context_messages.extend(
-                    context_messages_from_tool_result(internal_tool_result)
+                    context_messages_from_tool_result(execution.result)
                 )
 
-            filtered_messages.extend(round_context_messages)
-            log_round_context(tool_logs, round_context_messages)
+            state.add_context_messages(round_context_messages)
 
         logging.warning("%s 工具调用次数超限（%s轮）", provider_name, max_iterations)
         phase = "model"
@@ -410,28 +357,23 @@ async def run_tool_loop(
             )
         phase = "delivery"
         return await return_final_text_response(
+            state,
             content_text=assistant_message.content or "",
-            tool_logs=tool_logs,
             visible_content_handler=visible_content_handler,
             provider_name=provider_name,
             deadline=deadline,
             status=LoopStatus.TOOL_LIMIT_REACHED,
-            filtered_messages=filtered_messages,
-            turn_start=turn_start,
         )
     except DeadlineExceeded as exc:
-        raise TurnDeadlineError(
-            exc.reason,
-            phase,
-            tool_logs,
-            turn_messages=snapshot_turn_messages(),
-        ) from exc
+        status = (
+            LoopStatus.SHUTDOWN if exc.reason == REASON_SHUTDOWN else LoopStatus.DEADLINE_EXCEEDED
+        )
+        raise TurnDeadlineError(exc.reason, phase, state.result("", status)) from exc
     except Exception as exc:
-        if has_side_effects(tool_logs):
+        if state.has_side_effects:
             raise PartialAIResponseError(
                 str(exc),
-                tool_logs,
-                turn_messages=snapshot_turn_messages(),
+                state.result("", LoopStatus.PARTIAL_FAILURE),
             ) from exc
         raise
     finally:
@@ -443,5 +385,5 @@ async def run_tool_loop(
             (tool_context or {}).get("user_id"),
             ai_calls,
             *token_totals,
-            sum(1 for log in tool_logs if log.get("type") == "assistant_tool_call"),
+            sum(1 for record in state.tool_calls if record.status is not ToolCallStatus.NOT_EXECUTED),
         )

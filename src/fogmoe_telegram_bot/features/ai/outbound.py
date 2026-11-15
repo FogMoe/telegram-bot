@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,7 +21,7 @@ from fogmoe_telegram_bot.core.telegram_utils import partial_send
 from .reply_filter import normalize_ai_reply_text
 from .sticker_sender import send_ai_reply_with_stickers
 from .tools.specs import iter_media_tool_specs
-from .types import LoopStatus, ToolLog
+from .types import LoopStatus, ToolCallRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,22 +90,32 @@ async def send_generated_media(
     *,
     bot: Any,
     chat_id: int,
-    tool_logs: list[ToolLog],
+    tool_calls: Sequence[ToolCallRecord],
     logger: logging.Logger,
 ) -> list[Any]:
-    """发送本轮工具产出的语音与图片，返回已发出的消息。
+    """发送本轮工具产出、还没有即时发出的语音与图片，返回已发出的消息。
 
-    这些消息由工具产生而非用户可见对话，因此写入期间抑制历史记录。
+    即时发送过或发送时被打断（是否送达未知）的不再发。这些消息由工具产生而非用户可见对话，
+    因此写入期间抑制历史记录。
     """
 
     sent_messages: list[Any] = []
     with suppress_telegram_history():
-        for _tool_name, media_spec in iter_media_tool_specs():
+        for tool_name, media_spec in iter_media_tool_specs():
+            results = [
+                record.internal_result
+                for record in tool_calls
+                if record.tool_name == tool_name
+                and not record.media_delivery_attempted
+                and isinstance(record.internal_result, dict)
+            ]
+            if not results:
+                continue
             sent_messages.extend(
-                await media_spec.send_from_logs(
+                await media_spec.send_pending(
                     bot=bot,
                     chat_id=chat_id,
-                    tool_logs=tool_logs,
+                    results=results,
                     logger=logger,
                 )
             )

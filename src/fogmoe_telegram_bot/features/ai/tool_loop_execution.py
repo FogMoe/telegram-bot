@@ -22,6 +22,7 @@ from .tool_loop_deadline import deadline_guard
 from .tool_loop_messages import json_safe
 from .tools import AI_TOOL_ARG_MODELS, get_media_tool_spec
 from .tools.dispatch import is_inline_tool
+from .types import ToolCallStatus
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,13 @@ async def _call_tool(handler: Callable[..., Any], arguments: dict[str, Any]) -> 
     return result
 
 
+class ToolExecution(NamedTuple):
+    """一次工具调用的内部结果，以及处理函数运行过（`COMPLETED`）还是调用被拒绝（`REJECTED`）。"""
+
+    result: Any
+    status: ToolCallStatus
+
+
 def _tool_label(function_name: str, handlers: Mapping[str, Any]) -> str:
     """指标标签只用注册过的工具名，模型编造的名字统一记为 unknown。"""
     return function_name if function_name in handlers else "unknown"
@@ -136,11 +144,12 @@ async def execute_tool_call(
     available_tool_names: set[str],
     provider_name: str,
     deadline: Deadline | None = None,
-) -> Any:
+) -> ToolExecution:
     """执行一个工具调用，返回工具的内部结果。截止时间到期时记一次 interrupted 指标后向上抛。"""
     function_args = arguments.validated
     validation_error = arguments.validation_error
     handler = handlers.get(function_name)
+    status = ToolCallStatus.REJECTED
     if not function_name:
         logging.warning("%s 返回的工具调用缺少函数名: args=%s", provider_name, arguments.raw)
         internal_tool_result: Any = {"error": "Tool call is missing function name"}
@@ -165,6 +174,7 @@ async def execute_tool_call(
         )
         internal_tool_result = validation_error
     elif handler:
+        status = ToolCallStatus.COMPLETED
         tool_started = time.perf_counter()
         tool_label = _tool_label(function_name, handlers)
         try:
@@ -216,4 +226,4 @@ async def execute_tool_call(
     media_spec = get_media_tool_spec(function_name)
     if media_spec is not None:
         media_spec.log_result(provider_name, internal_tool_result)
-    return internal_tool_result
+    return ToolExecution(internal_tool_result, status)

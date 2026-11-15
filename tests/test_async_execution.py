@@ -13,14 +13,16 @@ import pytest
 from fogmoe_telegram_bot.core import blocking, metrics
 from fogmoe_telegram_bot.core.deadline import REASON_DEADLINE, REASON_SHUTDOWN, Deadline
 from fogmoe_telegram_bot.features.ai import job_claims, router, tool_runner
-from fogmoe_telegram_bot.features.ai.generated_image_sender import _collect_generated_images
 from fogmoe_telegram_bot.features.ai.tool_history import turn_messages_to_record_entries
 from fogmoe_telegram_bot.features.ai.tools.dispatch import inline_tool
 from fogmoe_telegram_bot.features.ai.types import (
     ABORT_EVENT_KEY,
     TOOL_CONTEXT_MESSAGES_KEY,
+    LoopResult,
+    LoopStatus,
+    MediaDeliveryState,
+    ToolCallStatus,
     TurnDeadlineError,
-    media_delivery_attempted,
 )
 
 
@@ -83,6 +85,21 @@ def run_loop(coro):
     return asyncio.run(coro)
 
 
+class RecordingHandler:
+    """实现 `VisibleContentHandler` 的替身：原样「发出」可见内容并记下。"""
+
+    def __init__(self):
+        self.sent_messages = []
+        self.sent_contents = []
+
+    async def __call__(self, content):
+        self.sent_contents.append(content)
+        return content
+
+    async def send_tool_media(self, tool_name, result):
+        return []
+
+
 async def stateless_one_tool_call(provider, model, *, messages, **kwargs):
     """无状态的模型替身：没有工具结果就发起一次工具调用，有了就回答。多个会话可以共用。"""
     if any(message.get("role") == "tool" for message in messages):
@@ -138,13 +155,11 @@ def test_async_and_sync_tools_can_be_mixed_in_one_round_and_stay_paired(monkeypa
         return await loop_with(monkeypatch, fake, {"google_search": async_search, "fetch_url": sync_fetch})
 
     result = run_loop(scenario())
-    message, tool_logs = result
 
-    assert message == "done"
+    assert result.text == "done"
     assert seen["async_thread"] == seen["loop_thread"]  # async 工具直接在事件循环里 await
     assert seen["sync_thread"] != seen["loop_thread"]  # 同步工具在线程适配器里
-    results = [log for log in tool_logs if log["type"] == "tool_result"]
-    assert [log["tool_call_id"] for log in results] == ["c1", "c2"]
+    assert [record.tool_call_id for record in result.tool_calls] == ["c1", "c2"]
     # 第二次模型调用看到的 assistant 消息带着两个 tool_calls，后面跟着两条配对的 tool 消息。
     second_call_messages = calls[1].messages
     assistant = next(m for m in second_call_messages if m.get("tool_calls"))
@@ -170,14 +185,14 @@ def test_multiple_tool_rounds_run_until_the_model_answers(monkeypatch):
         order.append("fetch")
         return {"ok": True}
 
-    message, tool_logs = run_loop(
+    result = run_loop(
         loop_with(monkeypatch, fake, {"google_search": search, "fetch_url": fetch})
     )
 
-    assert message == "final"
+    assert result.text == "final"
     assert order == ["search", "fetch"]
     assert len(calls) == 3
-    assert [log["tool_call_id"] for log in tool_logs if log["type"] == "tool_result"] == ["c1", "c2"]
+    assert [record.tool_call_id for record in result.tool_calls] == ["c1", "c2"]
 
 
 @pytest.mark.slow
@@ -207,7 +222,7 @@ def test_sync_tool_concurrency_is_bounded_by_the_thread_adapter(monkeypatch, set
 
     results = run_loop(scenario())
 
-    assert all(message == "done" for message, _ in results)
+    assert all(result.text == "done" for result in results)
     assert state["peak"] == 2
 
 
@@ -306,19 +321,16 @@ def test_visible_content_is_delivered_before_the_tool_it_precedes_runs(monkeypat
     )
     events = []
 
-    class Handler:
-        sent_contents: list[str] = []
-
+    class Handler(RecordingHandler):
         async def __call__(self, content):
             events.append(("visible", content))
-            self.sent_contents.append(content)
-            return content
+            return await super().__call__(content)
 
     async def search(**kwargs):
         events.append(("tool", "google_search"))
         return {"ok": True}
 
-    message, tool_logs = run_loop(
+    result = run_loop(
         loop_with(monkeypatch, fake, {"google_search": search}, visible_content_handler=Handler())
     )
 
@@ -327,21 +339,15 @@ def test_visible_content_is_delivered_before_the_tool_it_precedes_runs(monkeypat
         ("tool", "google_search"),
         ("visible", "查到了。"),
     ]
-    assert message == ""  # 已经即时发送，最终回复不再重复
-    assert [log["content"] for log in tool_logs if log["type"] == "assistant_visible"] == [
-        "我先查一下。",
-        "查到了。",
-    ]
+    assert result.text == ""  # 已经即时发送，最终回复不再重复
+    assert result.delivered_contents == ("我先查一下。", "查到了。")
 
 
 def test_generated_media_is_sent_right_after_the_tool_that_produced_it(monkeypatch):
     fake, _ = script(Response(Message("", [call("c1", "generate_image", '{"prompt": "cat"}')])), Response(Message("好了")))
     sent = []
 
-    class Handler:
-        async def __call__(self, content):
-            return content
-
+    class Handler(RecordingHandler):
         async def send_tool_media(self, tool_name, result):
             sent.append(tool_name)
             return ["photo"]
@@ -349,13 +355,12 @@ def test_generated_media_is_sent_right_after_the_tool_that_produced_it(monkeypat
     def make_image(**kwargs):
         return {"status": "generated", "image": {"image_id": "i"}}
 
-    message, tool_logs = run_loop(
+    result = run_loop(
         loop_with(monkeypatch, fake, {"generate_image": make_image}, visible_content_handler=Handler())
     )
 
     assert sent == ["generate_image"]
-    result = next(log for log in tool_logs if log["type"] == "tool_result")
-    assert result["media_sent"] is True
+    assert [record.media_delivery for record in result.tool_calls] == [MediaDeliveryState.SENT]
 
 
 def test_provider_specific_fields_survive_the_round_trip(monkeypatch):
@@ -368,12 +373,12 @@ def test_provider_specific_fields_survive_the_round_trip(monkeypatch):
     async def search(**kwargs):
         return {"ok": True}
 
-    _, tool_logs = run_loop(loop_with(monkeypatch, fake, {"google_search": search}))
+    result = run_loop(loop_with(monkeypatch, fake, {"google_search": search}))
 
     sent_assistant = next(m for m in calls[1].messages if m.get("tool_calls"))
     assert sent_assistant["tool_calls"][0]["provider_specific_fields"] == signature
-    logged = next(log for log in tool_logs if log["type"] == "assistant_tool_call")
-    assert logged["assistant_message"]["tool_calls"][0]["provider_specific_fields"] == signature
+    recorded = next(m for m in result.turn_messages if m.get("tool_calls"))
+    assert recorded["tool_calls"][0]["provider_specific_fields"] == signature
 
 
 def test_skipped_tools_are_not_executed(monkeypatch):
@@ -409,7 +414,7 @@ def test_a_hanging_provider_call_ends_at_the_deadline_with_a_typed_error(monkeyp
 
     assert elapsed < 1.5
     assert error.phase == "model" and error.reason == "deadline"
-    assert error.tool_logs == []
+    assert error.partial.tool_calls == ()
 
 
 def test_the_per_call_timeout_is_tightened_to_the_remaining_deadline(monkeypatch):
@@ -449,11 +454,14 @@ def test_a_tool_cut_off_by_the_deadline_is_paired_and_never_replayed(monkeypatch
 
     assert error.phase == "tool"
     assert executed == ["google_search"]  # 后面的工具没有被执行
-    results = {log["tool_call_id"]: log["result"] for log in error.tool_logs if log["type"] == "tool_result"}
-    assert set(results) == {"c1", "c2"}  # 每个 tool_call 都有结果，历史仍然配对
-    assert results["c1"]["error"] == "interrupted" and results["c1"]["outcome"] == "unknown"
-    assert results["c2"]["error"] == "not_executed"
-    entries = turn_messages_to_record_entries(error.turn_messages)
+    records = {record.tool_call_id: record for record in error.partial.tool_calls}
+    assert set(records) == {"c1", "c2"}  # 每个 tool_call 都有结果，历史仍然配对
+    assert records["c1"].status is ToolCallStatus.INTERRUPTED
+    assert records["c1"].public_result["error"] == "interrupted"
+    assert records["c1"].public_result["outcome"] == "unknown"
+    assert records["c2"].status is ToolCallStatus.NOT_EXECUTED
+    assert records["c2"].public_result["error"] == "not_executed"
+    entries = turn_messages_to_record_entries(error.partial.turn_messages)
     assert [role for role, _ in entries] == ["assistant", "tool", "tool"]
     assert len(calls) == 1  # 没有为了「重试」再调用模型
 
@@ -489,9 +497,7 @@ def test_a_sync_tool_cut_off_by_the_deadline_is_abandoned_not_waited_for(monkeyp
 def test_the_deadline_also_covers_visible_content_delivery(monkeypatch):
     fake, _ = script(Response(Message("很长的一段话", None)))
 
-    class StuckHandler:
-        sent_contents: list[str] = []
-
+    class StuckHandler(RecordingHandler):
         async def __call__(self, content):
             await asyncio.sleep(30)
 
@@ -517,12 +523,7 @@ def test_media_whose_delivery_is_cut_off_keeps_its_result_and_is_not_sent_again(
     )
     executed = []
 
-    class StuckMediaHandler:
-        sent_contents: list[str] = []
-
-        async def __call__(self, content):
-            return content
-
+    class StuckMediaHandler(RecordingHandler):
         async def send_tool_media(self, tool_name, result):
             await asyncio.sleep(30)
 
@@ -549,16 +550,16 @@ def test_media_whose_delivery_is_cut_off_keeps_its_result_and_is_not_sent_again(
 
     assert error.phase == "delivery"
     assert executed == ["generate_image"]
-    results = {log["tool_call_id"]: log for log in error.tool_logs if log["type"] == "tool_result"}
-    assert set(results) == {"c1", "c2"}
+    records = {record.tool_call_id: record for record in error.partial.tool_calls}
+    assert set(records) == {"c1", "c2"}
     # 生成成功的结果留在历史里，下一轮知道媒体已经生成；投递阶段也不会再发一次。
-    assert results["c1"]["result"]["status"] == "generated"
-    assert "may or may not have arrived" in results["c1"]["result"]["message"]
-    assert results["c1"]["internal_result"]["status"] == "generated"
-    assert media_delivery_attempted(results["c1"])
-    assert _collect_generated_images(error.tool_logs) == []
-    assert results["c2"]["result"]["error"] == "not_executed"
-    assert [role for role, _ in turn_messages_to_record_entries(error.turn_messages)] == [
+    assert records["c1"].public_result["status"] == "generated"
+    assert "may or may not have arrived" in records["c1"].public_result["message"]
+    assert records["c1"].internal_result["status"] == "generated"
+    assert records["c1"].media_delivery is MediaDeliveryState.UNKNOWN
+    assert records["c1"].media_delivery_attempted
+    assert records["c2"].public_result["error"] == "not_executed"
+    assert [role for role, _ in turn_messages_to_record_entries(error.partial.turn_messages)] == [
         "assistant",
         "tool",
         "tool",
@@ -589,11 +590,11 @@ def test_telegram_events_of_tools_that_finished_survive_a_deadline_later_in_the_
 
     error = run_loop(scenario())
 
-    events = [log["content"] for log in error.tool_logs if log["type"] == "telegram_event"]
+    events = [m["content"] for m in error.partial.turn_messages if m["role"] == "user"]
     assert events == ['<event type="bot_event">ok</event>']
-    results = {log["tool_call_id"]: log["result"] for log in error.tool_logs if log["type"] == "tool_result"}
-    assert results["c1"] == {"success": True}
-    assert results["c2"]["error"] == "interrupted"
+    records = {record.tool_call_id: record for record in error.partial.tool_calls}
+    assert records["c1"].public_result == {"success": True}
+    assert records["c2"].public_result["error"] == "interrupted"
 
 
 # -- router：回退、截止时间与关停提示 -------------------------------------------------------------
@@ -619,7 +620,7 @@ def test_a_failed_provider_falls_back_to_the_next_one_through_the_async_stack(mo
 
     response = run_loop(router.get_ai_response([{"role": "user", "content": "hi"}], user_id=1))
 
-    assert response == ("来自 gemini", [])
+    assert response == LoopResult("来自 gemini")
     assert [(c.provider, c.model) for c in calls] == [("openai", "openai-model"), ("gemini", "gemini-model")]
 
 
@@ -641,7 +642,7 @@ def test_a_hung_provider_ends_the_whole_turn_at_the_deadline_with_a_notice(monke
     elapsed, response = run_loop(scenario())
 
     assert elapsed < 1.5
-    assert response == (router.TURN_DEADLINE_ERROR_MESSAGE, [])
+    assert response == LoopResult(router.TURN_DEADLINE_ERROR_MESSAGE, status=LoopStatus.DEADLINE_EXCEEDED)
     assert response.runtime_error == "turn_deadline_exceeded"
     assert [c.provider for c in calls] == ["openai"]  # 没有再换下一个 provider
     assert metrics.snapshot().counter("turn.deadline_hits", reason="deadline", phase="model") == 1
@@ -655,7 +656,7 @@ def test_an_expired_deadline_never_calls_a_provider_or_blames_one(monkeypatch, t
         router.get_ai_response([{"role": "user", "content": "hi"}], user_id=1, deadline=Deadline(0.0))
     )
 
-    assert response == (router.TURN_DEADLINE_ERROR_MESSAGE, [])
+    assert response == LoopResult(router.TURN_DEADLINE_ERROR_MESSAGE, status=LoopStatus.DEADLINE_EXCEEDED)
     assert calls == []
     # 从没被调用过的 provider 不会因为时间用完而被记一次失败。
     assert router.CHAT_CIRCUIT.failure_count("openai") == 0
@@ -685,7 +686,7 @@ def test_an_expired_turn_gets_its_notice_even_when_every_provider_is_skipped(
         router.get_ai_response([{"role": "user", "content": "hi"}], user_id=1, deadline=deadline)
     )
 
-    assert response == (notice, [])
+    assert (response.text, response.tool_calls) == (notice, ())
     assert calls == []
     assert metrics.snapshot().counter("turn.deadline_hits", reason=reason, phase="fallback") == 1
 
@@ -705,7 +706,7 @@ def test_the_first_provider_that_runs_into_the_deadline_leaves_no_time_for_the_f
         router.get_ai_response([{"role": "user", "content": "hi"}], user_id=1, deadline=Deadline(0.1))
     )
 
-    assert response[0] == router.TURN_DEADLINE_ERROR_MESSAGE
+    assert response.text == router.TURN_DEADLINE_ERROR_MESSAGE
     assert len(calls) == 1
     assert router.CHAT_CIRCUIT.failure_count("openai") == 1  # 正在等待的 provider 这次算超时
     assert router.CHAT_CIRCUIT.failure_count("gemini") == 0
@@ -720,23 +721,22 @@ def test_a_deadline_during_tools_returns_the_paired_tool_logs_and_does_not_retry
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake)
     monkeypatch.setitem(tool_runner.AI_TOOL_HANDLERS, "google_search", hanging_search)
 
-    text, tool_logs = run_loop(
+    response = run_loop(
         router.get_ai_response([{"role": "user", "content": "hi"}], user_id=1, deadline=Deadline(0.1))
     )
 
-    assert text == router.TURN_DEADLINE_ERROR_MESSAGE
-    assert [log["type"] for log in tool_logs] == ["assistant_tool_call", "tool_result"]
-    assert tool_logs[1]["result"]["error"] == "interrupted"
+    assert response.text == router.TURN_DEADLINE_ERROR_MESSAGE
+    assert [record.status for record in response.tool_calls] == [ToolCallStatus.INTERRUPTED]
+    assert response.tool_calls[0].public_result["error"] == "interrupted"
     assert len(calls) == 1
 
 
 @pytest.mark.slow
 def test_a_deadline_after_visible_content_still_tells_the_user(monkeypatch, two_providers):
-    class Handler:
-        sent_contents = ["已经发出的一段"]
-
-        async def __call__(self, content):
-            return content
+    class Handler(RecordingHandler):
+        def __init__(self):
+            super().__init__()
+            self.sent_contents = ["已经发出的一段"]
 
     async def hang():
         await asyncio.sleep(30)
@@ -744,14 +744,14 @@ def test_a_deadline_after_visible_content_still_tells_the_user(monkeypatch, two_
     fake, _ = script(hang)
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake)
 
-    text, _ = run_loop(
+    text = run_loop(
         router.get_ai_response(
             [{"role": "user", "content": "hi"}],
             user_id=1,
             visible_content_handler=Handler(),
             deadline=Deadline(0.1),
         )
-    )
+    ).text
 
     assert text == router.TURN_DEADLINE_ERROR_MESSAGE
 
@@ -779,7 +779,7 @@ def test_shutdown_uses_its_own_notice_and_does_not_count_against_the_provider(mo
 
     response = run_loop(scenario())
 
-    assert response[0] == router.TURN_SHUTDOWN_ERROR_MESSAGE
+    assert response.text == router.TURN_SHUTDOWN_ERROR_MESSAGE
     assert response.runtime_error == "turn_interrupted_by_shutdown"
     assert router.CHAT_CIRCUIT.failure_count("openai") == 0
 
@@ -788,7 +788,8 @@ def test_no_deadline_means_the_old_behaviour(monkeypatch, two_providers):
     fake, _ = script(Response(Message("plain")))
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake)
 
-    assert run_loop(router.get_ai_response([{"role": "user", "content": "hi"}], user_id=1)) == ("plain", [])
+    response = run_loop(router.get_ai_response([{"role": "user", "content": "hi"}], user_id=1))
+    assert response == LoopResult("plain")
 
 
 # -- E 的租约契约：原生 async 之后仍然成立 -----------------------------------------------------------

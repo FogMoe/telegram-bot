@@ -40,7 +40,7 @@ from fogmoe_telegram_bot.features.ai.turn_pipeline import (
     PreparedModelTurn,
     execute_post_input_turn,
     prepare_model_turn,
-    tool_log_type_labels,
+    tool_call_labels,
 )
 from fogmoe_telegram_bot.features.ai.user_state import build_user_state_prompt
 
@@ -721,16 +721,16 @@ async def _process_schedule_task_locked(
             await send_generated_media(
                 bot=context.bot,
                 chat_id=user_id,
-                tool_logs=prepared.tool_logs,
+                tool_calls=prepared.tool_calls,
                 logger=logger,
             )
         )
         if not sent_messages and not prepared.text.strip():
             logger.info(
-                "Scheduled AI produced empty response; no Telegram message sent: user_id=%s schedule_id=%s tool_log_types=%s",
+                "Scheduled AI produced empty response; no Telegram message sent: user_id=%s schedule_id=%s tool_calls=%s",
                 user_id,
                 schedule_id,
-                tool_log_type_labels(prepared.tool_logs),
+                tool_call_labels(prepared.tool_calls),
             )
 
     await execute_post_input_turn(

@@ -10,11 +10,25 @@ from fogmoe_telegram_bot.features.ai.context_budget import ContextBudgetExceeded
 from fogmoe_telegram_bot.features.ai.errors import SafetyBlockError
 from fogmoe_telegram_bot.features.ai.tools.context import get_tool_request_context
 from fogmoe_telegram_bot.features.ai.types import (
+    JobAbortedError,
     LoopResult,
+    LoopStatus,
+    MediaDeliveryState,
     PartialAIResponseError,
+    ToolCallRecord,
+    ToolCallStatus,
     TurnDeadlineError,
-    delivered_to_user,
 )
+
+
+def _record(tool_name, **kwargs):
+    return ToolCallRecord(
+        tool_name=tool_name,
+        tool_call_id=f"call_{tool_name}",
+        arguments={},
+        status=ToolCallStatus.COMPLETED,
+        **kwargs,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -58,7 +72,7 @@ def use_chat_services(monkeypatch, services):
 def chat_loop(monkeypatch):
     """替换主聊天的工具循环：记录每次调用，按 `behaviour` 返回或抛错。"""
     calls = []
-    behaviour = SimpleNamespace(handler=lambda provider, model: ("ok", []))
+    behaviour = SimpleNamespace(handler=lambda provider, model: LoopResult("ok"))
 
     async def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
         calls.append(
@@ -102,13 +116,13 @@ def test_get_ai_response_retries_image_messages_as_text(monkeypatch):
         calls.append(messages)
         if len(calls) == 1:
             return None, RuntimeError("provider failed")
-        return ("text fallback response", []), None
+        return LoopResult("text fallback response"), None
 
     monkeypatch.setattr(router, "_try_ai_services", fake_try_ai_services)
 
     response = asyncio.run(router.get_ai_response(image_messages, user_id=123))
 
-    assert response == ("text fallback response", [])
+    assert response == LoopResult("text fallback response")
     assert calls == [
         image_messages,
         [{"role": "user", "content": "describe this image"}],
@@ -116,23 +130,30 @@ def test_get_ai_response_retries_image_messages_as_text(monkeypatch):
 
 
 def test_delivered_to_user_counts_visible_text_and_sent_media():
-    assert not delivered_to_user([{"type": "tool_result", "tool_name": "google_search"}])
-    assert not delivered_to_user([{"type": "assistant_visible", "content": "  "}])
-    assert delivered_to_user([{"type": "assistant_visible", "content": "我查一下"}])
-    assert delivered_to_user(
-        [{"type": "tool_result", "tool_name": "generate_image", "media_sent": True}]
-    )
+    assert not LoopResult("", tool_calls=(_record("google_search"),)).delivered_to_user
+    assert not LoopResult("", delivered_contents=("  ",)).delivered_to_user
+    assert LoopResult("", delivered_contents=("我查一下",)).delivered_to_user
+    for state in (MediaDeliveryState.SENT, MediaDeliveryState.UNKNOWN):
+        sent_media = _record("generate_image", media_delivery=state)
+        assert LoopResult("", tool_calls=(sent_media,)).delivered_to_user
+    pending_media = _record("generate_image", media_delivery=MediaDeliveryState.PENDING)
+    assert not LoopResult("", tool_calls=(pending_media,)).delivered_to_user
 
 
 def test_a_failure_after_media_was_sent_needs_no_error_notice(monkeypatch):
-    tool_logs = [{"type": "tool_result", "tool_name": "generate_image", "media_sent": True}]
+    sent_media = _record("generate_image", media_delivery=MediaDeliveryState.SENT)
 
     def failing_service(messages, user_id, tool_context=None, visible_content_handler=None):
-        raise PartialAIResponseError("follow-up failed", tool_logs)
+        raise PartialAIResponseError("follow-up failed", LoopResult("", tool_calls=(sent_media,)))
 
     use_chat_services(monkeypatch, {"gemini": failing_service})
 
-    assert asyncio.run(router.get_ai_response([], user_id=123)) == ("", tool_logs)
+    response = asyncio.run(router.get_ai_response([], user_id=123))
+    assert response == LoopResult(
+        "",
+        status=LoopStatus.PARTIAL_FAILURE,
+        tool_calls=(sent_media,),
+    )
 
 
 def test_a_failure_after_tools_never_reruns_them(settings_override, monkeypatch):
@@ -167,15 +188,17 @@ def test_a_failure_after_tools_never_reruns_them(settings_override, monkeypatch)
         lambda **kwargs: tool_runs.append(kwargs) or {"status": "updated"},
     )
 
-    text, tool_logs = asyncio.run(
+    response = asyncio.run(
         router.get_ai_response([{"role": "user", "content": "remember"}], user_id=123)
     )
 
-    assert text == router.PARTIAL_AI_RESPONSE_ERROR_MESSAGE
+    assert response.text == router.PARTIAL_AI_RESPONSE_ERROR_MESSAGE
     assert tool_runs == [{"impression": "likes tea"}]
     # 同一个模型调用了两次（工具前、工具后），备用模型与下一个 provider 都没有被调用。
     assert model_calls == [("gemini", "primary"), ("gemini", "primary")]
-    assert [log["type"] for log in tool_logs] == ["assistant_tool_call", "tool_result"]
+    assert [(record.tool_name, record.status) for record in response.tool_calls] == [
+        ("update_impression", ToolCallStatus.COMPLETED)
+    ]
 
 
 def test_text_only_chat_provider_uses_vision_text_fallback_messages(monkeypatch):
@@ -235,7 +258,7 @@ def test_text_only_chat_provider_uses_vision_text_fallback_messages(monkeypatch)
         )
     )
 
-    assert response == ("ok", [])
+    assert response == LoopResult("ok")
     assert calls == [text_fallback_messages]
 
 
@@ -268,7 +291,7 @@ def test_vision_capable_chat_provider_keeps_multimodal_messages(monkeypatch):
 
     response = asyncio.run(router.get_ai_response(image_messages, user_id=123))
 
-    assert response == ("ok", [])
+    assert response == LoopResult("ok")
     assert calls == [image_messages]
 
 
@@ -314,7 +337,7 @@ def test_open_provider_circuit_skips_to_next_service(monkeypatch):
 
     response = asyncio.run(router.get_ai_response([], user_id=123))
 
-    assert response == ("ok", [])
+    assert response == LoopResult("ok")
     assert calls == ["siliconflow"]
 
 
@@ -327,7 +350,7 @@ def test_a_failed_provider_counts_against_its_circuit_and_falls_back(monkeypatch
 
     use_chat_services(monkeypatch, {"openai": failing_service, "gemini": next_service})
 
-    assert asyncio.run(router.get_ai_response([], user_id=123)) == ("ok", [])
+    assert asyncio.run(router.get_ai_response([], user_id=123)) == LoopResult("ok")
     assert router.CHAT_CIRCUIT.failure_count("openai") == 1
     assert router.CHAT_CIRCUIT.failure_count("gemini") == 0
 
@@ -344,7 +367,7 @@ def test_partial_timeout_logs_warning_without_traceback(monkeypatch, caplog):
         except TimeoutError as exc:
             raise PartialAIResponseError(
                 "chat completion timed out",
-                [{"type": "tool_result", "tool_name": "advisor"}],
+                LoopResult("", tool_calls=(_record("advisor"),)),
             ) from exc
 
     use_chat_services(monkeypatch, {"gemini": timed_out_service})
@@ -357,7 +380,7 @@ def test_partial_timeout_logs_warning_without_traceback(monkeypatch, caplog):
         for record in caplog.records
         if "timed out after partial AI response" in record.getMessage()
     ]
-    assert response[0] == router.PARTIAL_AI_RESPONSE_ERROR_MESSAGE
+    assert response.text == router.PARTIAL_AI_RESPONSE_ERROR_MESSAGE
     assert len(timeout_records) == 1
     assert timeout_records[0].exc_info is None
 
@@ -391,18 +414,18 @@ def test_context_budget_error_stops_provider_fallback(monkeypatch):
     response = asyncio.run(router.get_ai_response([], user_id=123))
 
     assert calls == ["openai"]
-    assert response[0] == router.CONTEXT_BUDGET_ERROR_MESSAGE
-    assert "当前对话内容太多" in response[0]
-    assert "精简" not in response[0]
-    assert "Token" not in response[0]
-    assert "150,001" not in response[0]
-    assert response[1] == []
+    assert response.text == router.CONTEXT_BUDGET_ERROR_MESSAGE
+    assert "当前对话内容太多" in response.text
+    assert "精简" not in response.text
+    assert "Token" not in response.text
+    assert "150,001" not in response.text
+    assert response.tool_calls == ()
     assert response.runtime_error == "context_budget_exceeded"
     assert router.CHAT_CIRCUIT.failure_count("openai") == 0
 
 
-def test_context_budget_error_after_tool_result_preserves_tool_logs(monkeypatch):
-    tool_logs = [{"type": "tool_result", "tool_name": "lookup", "result": "ok"}]
+def test_context_budget_error_after_tool_result_preserves_tool_calls(monkeypatch):
+    tool_calls = (_record("lookup", public_result="ok"),)
 
     def oversized_service(
         messages,
@@ -413,14 +436,14 @@ def test_context_budget_error_after_tool_result_preserves_tool_logs(monkeypatch)
         try:
             raise ContextBudgetExceededError(150_001, 150_000)
         except ContextBudgetExceededError as exc:
-            raise PartialAIResponseError(str(exc), tool_logs) from exc
+            raise PartialAIResponseError(str(exc), LoopResult("", tool_calls=tool_calls)) from exc
 
     use_chat_services(monkeypatch, {"openai": oversized_service})
 
     response = asyncio.run(router.get_ai_response([], user_id=123))
 
     assert response.runtime_error == "context_budget_exceeded"
-    assert response[1] == tool_logs
+    assert response.tool_calls == tool_calls
 
 
 def test_safety_block_falls_through_to_next_service_for_gemini(monkeypatch):
@@ -436,28 +459,61 @@ def test_safety_block_falls_through_to_next_service_for_gemini(monkeypatch):
 
     use_chat_services(monkeypatch, {"gemini": blocked_service, "openai": next_service})
 
-    assert asyncio.run(router.get_ai_response([], user_id=123)) == ("ok", [])
+    assert asyncio.run(router.get_ai_response([], user_id=123)) == LoopResult("ok")
     assert calls == ["gemini", "openai"]
     # 安全拦截不是 provider 故障，不计入熔断。
     assert router.CHAT_CIRCUIT.failure_count("gemini") == 0
 
 
-def test_safety_block_from_other_providers_is_not_swallowed(monkeypatch):
+def test_safety_block_from_other_providers_stops_the_chain_as_a_status(monkeypatch):
+    calls = []
+
     def blocked_service(messages, user_id, tool_context=None, visible_content_handler=None):
+        calls.append("openai")
         raise SafetyBlockError("blocked by safety")
 
-    use_chat_services(monkeypatch, {"openai": blocked_service})
+    def next_service(messages, user_id, tool_context=None, visible_content_handler=None):
+        calls.append("gemini")
+        return LoopResult("unexpected")
 
-    with pytest.raises(SafetyBlockError):
-        asyncio.run(router.get_ai_response([], user_id=123))
+    use_chat_services(monkeypatch, {"openai": blocked_service, "gemini": next_service})
+
+    response = asyncio.run(router.get_ai_response([], user_id=123))
+
+    # 没有声明安全拦截可以换下一个 provider：回退链停下，以状态而不是异常交给入口。
+    assert calls == ["openai"]
+    assert response.status is LoopStatus.SAFETY_BLOCKED
+    assert response.text == router.AI_SERVICE_ERROR_MESSAGE
+    assert response.runtime_error == "ai_safety_blocked"
+    assert router.CHAT_CIRCUIT.failure_count("openai") == 0
+
+
+def test_an_aborted_background_turn_becomes_a_status_without_fallback(monkeypatch):
+    calls = []
+
+    def aborted_service(messages, user_id, tool_context=None, visible_content_handler=None):
+        calls.append("openai")
+        raise JobAbortedError("background job was aborted")
+
+    def next_service(messages, user_id, tool_context=None, visible_content_handler=None):
+        calls.append("gemini")
+        return LoopResult("unexpected")
+
+    use_chat_services(monkeypatch, {"openai": aborted_service, "gemini": next_service})
+
+    response = asyncio.run(router.get_ai_response([], user_id=123))
+
+    assert calls == ["openai"]
+    assert response == LoopResult("", status=LoopStatus.ABORTED)
+    assert router.CHAT_CIRCUIT.failure_count("openai") == 0
 
 
 def test_unknown_provider_in_chat_order_is_skipped(monkeypatch, chat_loop):
     monkeypatch.setattr(config, "AI_SERVICE_ORDER", ["typo-provider", "openai"])
     monkeypatch.setattr(config, "OPENAI_CHAT_MODEL", "openai-chat")
-    chat_loop.behaviour.handler = lambda provider, model: (f"{provider}:{model}", [])
+    chat_loop.behaviour.handler = lambda provider, model: LoopResult(f"{provider}:{model}")
 
-    assert asyncio.run(router.get_ai_response([], user_id=123)) == ("openai:openai-chat", [])
+    assert asyncio.run(router.get_ai_response([], user_id=123)) == LoopResult("openai:openai-chat")
     assert [call["provider"] for call in chat_loop.calls] == ["openai"]
 
 
@@ -477,7 +533,7 @@ def test_chat_order_comes_from_the_active_settings(monkeypatch):
         AZURE_OPENAI_CHAT_MODEL="azure-chat",
         OPENAI_CHAT_MODEL="openai-chat",
     ):
-        assert asyncio.run(router.get_ai_response([], user_id=123)) == ("ok", [])
+        assert asyncio.run(router.get_ai_response([], user_id=123)) == LoopResult("ok")
 
     assert seen == ["azure", "openai"]
 
@@ -489,7 +545,7 @@ def test_each_provider_runs_the_tool_loop_with_its_declared_chat_model(settings_
 
     response = asyncio.run(router.get_ai_response(messages, 123, tool_context=context))
 
-    assert response == ("ok", [])
+    assert response == LoopResult("ok")
     (call,) = chat_loop.calls
     assert call["provider"] == "fogmoe"
     assert call["model"] == "gpt-5.6-luna"
@@ -572,7 +628,7 @@ def test_other_providers_hide_no_tools(settings_override, chat_loop):
 def test_a_provider_without_a_chat_model_is_skipped(settings_override, chat_loop):
     settings_override(AI_CHAT_ORDER="openai,gemini", GEMINI_CHAT_MODEL="gemini-chat")
 
-    assert asyncio.run(router.get_ai_response([], 1)) == ("ok", [])
+    assert asyncio.run(router.get_ai_response([], 1)) == LoopResult("ok")
     assert [call["provider"] for call in chat_loop.calls] == ["gemini"]
 
 
@@ -586,11 +642,11 @@ def test_gemini_retries_with_its_fallback_model(settings_override, chat_loop):
     def behave(provider, model):
         if model == "primary":
             raise RuntimeError("primary down")
-        return f"from {model}", []
+        return LoopResult(f"from {model}")
 
     chat_loop.behaviour.handler = behave
 
-    assert asyncio.run(router.get_ai_response([], 1)) == ("from fallback", [])
+    assert asyncio.run(router.get_ai_response([], 1)) == LoopResult("from fallback")
     assert [call["model"] for call in chat_loop.calls] == ["primary", "fallback"]
     # 换了模型就成功了：这个 provider 不计熔断失败。
     assert router.CHAT_CIRCUIT.failure_count("gemini") == 0
@@ -611,10 +667,10 @@ def test_gemini_uses_the_fallback_when_the_primary_model_is_not_configured(
     [
         (ContextBudgetExceededError(150_001, 150_000), router.CONTEXT_BUDGET_ERROR_MESSAGE),
         (
-            PartialAIResponseError("after tools", [{"type": "tool_result"}]),
+            PartialAIResponseError("after tools", LoopResult("", tool_calls=(_record("lookup"),))),
             router.PARTIAL_AI_RESPONSE_ERROR_MESSAGE,
         ),
-        (TurnDeadlineError("deadline", "tool", []), router.TURN_DEADLINE_ERROR_MESSAGE),
+        (TurnDeadlineError("deadline", "tool", LoopResult("")), router.TURN_DEADLINE_ERROR_MESSAGE),
     ],
 )
 def test_context_partial_and_deadline_errors_skip_the_fallback_model(
@@ -632,7 +688,7 @@ def test_context_partial_and_deadline_errors_skip_the_fallback_model(
 
     chat_loop.behaviour.handler = behave
 
-    text, _ = asyncio.run(router.get_ai_response([], 1))
+    text = asyncio.run(router.get_ai_response([], 1)).text
 
     assert text == expected_text
     assert [(call["provider"], call["model"]) for call in chat_loop.calls] == [("gemini", "primary")]
@@ -655,7 +711,7 @@ def test_gemini_safety_text_falls_through_without_tripping_the_circuit(settings_
 
     chat_loop.behaviour.handler = behave
 
-    assert asyncio.run(router.get_ai_response([], 1)) == ("from openai", [])
+    assert asyncio.run(router.get_ai_response([], 1)) == LoopResult("from openai")
     assert router.CHAT_CIRCUIT.failure_count("gemini") == 0
 
 
@@ -669,7 +725,7 @@ def test_other_providers_do_not_translate_safety_text(settings_override, chat_lo
 
     chat_loop.behaviour.handler = behave
 
-    assert asyncio.run(router.get_ai_response([], 1)) == ("from gemini", [])
+    assert asyncio.run(router.get_ai_response([], 1)) == LoopResult("from gemini")
     # 没有声明安全拦截的 provider：这是一次普通失败。
     assert router.CHAT_CIRCUIT.failure_count("openai") == 1
 
@@ -684,5 +740,5 @@ def test_a_sandbox_cleanup_failure_does_not_rerun_a_finished_turn(
 
     monkeypatch.setattr(router, "cleanup_linux_sandbox_async", broken_cleanup)
 
-    assert asyncio.run(router.get_ai_response([], 1)) == ("ok", [])
+    assert asyncio.run(router.get_ai_response([], 1)) == LoopResult("ok")
     assert [call["provider"] for call in chat_loop.calls] == ["openai"]

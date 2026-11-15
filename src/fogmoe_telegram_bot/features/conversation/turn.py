@@ -40,7 +40,7 @@ from fogmoe_telegram_bot.features.ai.turn_pipeline import (
     PreparedModelTurn,
     execute_post_input_turn,
     prepare_model_turn,
-    tool_log_type_labels,
+    tool_call_labels,
 )
 
 from . import billing
@@ -657,15 +657,15 @@ class ConversationTurn:
             await services.send_generated_media(
                 bot=request.bot,
                 chat_id=chat_id,
-                tool_logs=reply.tool_logs,
+                tool_calls=reply.tool_calls,
             )
         )
         if not sent_messages and not reply.text.strip():
             logger.info(
-                "AI produced empty response; no Telegram message sent: user_id=%s conversation_id=%s tool_log_types=%s",
+                "AI produced empty response; no Telegram message sent: user_id=%s conversation_id=%s tool_calls=%s",
                 request.sender.user_id,
                 request.conversation_id,
-                tool_log_type_labels(reply.tool_logs),
+                tool_call_labels(reply.tool_calls),
             )
         if request.chat.is_group:
             for sent_message in sent_messages:

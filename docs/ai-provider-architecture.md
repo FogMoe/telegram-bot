@@ -109,10 +109,16 @@ provider 特有的协议要求由什么承载。权威定义是代码，本页�
 每次 LiteLLM 调用完成时，`litellm_client` 写一行日志，记下 provider、模型与输入、命中缓存、输出的 token 数；工具循环结束时再写一行本次循环的合计。
 
 执行结果转成固定的提示文案：截止时间到期返回 `TURN_DEADLINE_ERROR_MESSAGE`（进程停止时是 `TURN_SHUTDOWN_ERROR_MESSAGE`）
-与已有的工具日志；上下文超限返回 `CONTEXT_BUDGET_ERROR_MESSAGE`；执行过工具之后的失败返回
-`PARTIAL_AI_RESPONSE_ERROR_MESSAGE` 与工具日志，用户已经看到可见内容或生成的媒体时（`delivered_to_user`）
-不再附加提示。「是否已有副作用」只由工具循环的日志判断（`has_side_effects`）：工具循环把这之后的任何异常
-都包成 `PartialAIResponseError`，所以不会换模型或 provider 把已经执行过的工具再跑一遍。
+与到期为止的循环结果；上下文超限返回 `CONTEXT_BUDGET_ERROR_MESSAGE`；执行过工具之后的失败返回
+`PARTIAL_AI_RESPONSE_ERROR_MESSAGE` 与到失败为止的循环结果（异常的 `partial`），用户已经看到可见内容或生成的媒体时
+（`LoopResult.delivered_to_user`）不再附加提示。「是否已有副作用」只由工具循环的状态判断（`LoopState.has_side_effects`：
+开始处理第一次工具调用之前就登记，或已经发出过可见内容）：工具循环把这之后的任何异常都包成 `PartialAIResponseError`，
+所以不会换模型或 provider 把已经执行过的工具再跑一遍。
+
+回退执行器把安全拦截原样上抛的情况（provider 没有声明 `safety_blocks_fall_through`，且没有备用模型可换），
+router 返回 `LoopStatus.SAFETY_BLOCKED` 与 `AI_SERVICE_ERROR_MESSAGE`，不再换下一个 provider，也不计熔断。
+后台任务被撤销（`JobAbortedError`）时返回 `LoopStatus.ABORTED`：不换 provider、不计熔断，收尾流水线随后跳过
+写历史、投递与收尾。
 
 所有 provider 失败后，如果消息含图片，用纯文本历史把整个顺序再走一遍；仍然失败返回
 `AI_SERVICE_ERROR_MESSAGE`。截止时间到期时不再走这一遍。这些固定文案都带着对应的 `LoopStatus`（`LoopResult.runtime_error`），

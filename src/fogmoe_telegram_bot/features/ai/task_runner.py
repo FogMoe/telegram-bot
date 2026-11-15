@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fogmoe_telegram_bot.core import ai_providers
-from fogmoe_telegram_bot.core.deadline import Deadline
+from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline
 
 from .errors import SafetyBlockError, find_context_budget_error
 from .litellm_client import create_chat_completion
@@ -39,7 +39,7 @@ from .provider_resolver import (
     get_provider_order_for_task,
     missing_capability_for_task,
 )
-from .types import PartialAIResponseError, TurnDeadlineError
+from .types import LoopResult, LoopStatus, PartialAIResponseError, TurnDeadlineError
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +136,9 @@ def _raise_if_deadline_expired(task: str, deadline: Deadline | None) -> None:
             task,
             deadline.expiry_reason,
         )
-        raise TurnDeadlineError(deadline.expiry_reason, "fallback", [])
+        reason = deadline.expiry_reason
+        status = LoopStatus.SHUTDOWN if reason == REASON_SHUTDOWN else LoopStatus.DEADLINE_EXCEEDED
+        raise TurnDeadlineError(reason, "fallback", LoopResult(text="", status=status))
 
 
 def _as_safety_block(spec: ai_providers.ProviderSpec, exc: Exception) -> SafetyBlockError | None:

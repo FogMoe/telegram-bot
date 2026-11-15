@@ -81,7 +81,7 @@ app → core
 |---|---|
 | `handlers.py` | Telegram 入口：批处理窗口与会话锁、群聊触发与冷却判断、把 `Update` 映射成 `TurnRequest`；不含业务规则 |
 | `turn.py` | 一轮对话的业务操作 `ConversationTurn`：扣费、历史、媒体、模型、投递的阶段，见「一轮对话」 |
-| `turn_types.py` | 一轮对话的类型化边界：`TurnRequest`、`TurnResult`、`TurnTimings`、`ModelRequest` / `ModelResponse`、`ConversationSettings` |
+| `turn_types.py` | 一轮对话的类型化边界：`TurnRequest`、`TurnResult`、`TurnTimings`、`ModelRequest`、`ConversationSettings` |
 | `turn_services.py` | 一轮对话依赖的外部能力（`TurnServices`）与生产实现 `default_services()` |
 | `lifecycle.py` | `post_init` 与 bot 身份缓存 |
 | `triggers.py` | 群聊里是否唤起 AI 的判断 |
@@ -119,7 +119,7 @@ app → core
 - `model` 阶段不持有数据库事务；工具需要时自己开事务（走 [balance-service.md](balance-service.md) 的余额服务）。
 - `delivery` 阶段只做 Telegram 发送与群聊历史记录。
 
-模型执行只有一个调用点：`TurnServices.run_model`，输入输出是 `ModelRequest` / `ModelResponse`。
+模型执行只有一个调用点：`TurnServices.run_model`，输入是 `ModelRequest`，输出是工具循环的类型化结果 `LoopResult`。
 默认实现转给 `features/ai` 的 `get_ai_response`（路由、provider fallback、工具循环都在它后面），它是原生 async：
 模型调用 `litellm.acompletion`，async 工具直接 `await`，同步工具走有界线程适配器，没有「事件循环 → 线程 → 事件循环」的往返。
 `model` 阶段在它外面设置「不记录 bot 自己发出的消息」的历史作用域，这属于一轮对话的历史语义，不属于模型执行。

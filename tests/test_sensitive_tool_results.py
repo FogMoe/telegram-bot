@@ -113,22 +113,22 @@ def _run_with_failing_tool(monkeypatch, error):
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
     monkeypatch.setitem(tool_runner.AI_TOOL_HANDLERS, "google_search", failing_handler)
 
-    _, tool_logs = asyncio.run(tool_runner.run_tool_loop(
+    result = asyncio.run(tool_runner.run_tool_loop(
         "fogmoe",
         "test_model",
         [{"role": "user", "content": "search cat"}],
         provider_name="FOGMOE",
     ))
-    return tool_logs, seen_messages
+    return result.tool_calls, seen_messages
 
 
 def test_tool_execution_error_keeps_category_but_not_credentials(monkeypatch, caplog):
     error = RuntimeError(f"upstream 429 for https://serpapi.com/search?api_key={SECRET}&q=cat")
 
     with caplog.at_level(logging.DEBUG):
-        tool_logs, seen_messages = _run_with_failing_tool(monkeypatch, error)
+        tool_calls, seen_messages = _run_with_failing_tool(monkeypatch, error)
 
-    result = next(log for log in tool_logs if log["type"] == "tool_result")["result"]
+    result = tool_calls[0].public_result
     assert result["error"].startswith("执行失败: RuntimeError: upstream 429")
     assert "api_key=[redacted]" in result["error"]
     assert "(ref: ERR-" in result["error"]
@@ -143,9 +143,9 @@ def test_tool_argument_error_is_redacted_too(monkeypatch, caplog):
     error = TypeError(f"unexpected keyword password={SECRET}")
 
     with caplog.at_level(logging.DEBUG):
-        tool_logs, _ = _run_with_failing_tool(monkeypatch, error)
+        tool_calls, _ = _run_with_failing_tool(monkeypatch, error)
 
-    result = next(log for log in tool_logs if log["type"] == "tool_result")["result"]
+    result = tool_calls[0].public_result
     assert result["error"].startswith("参数错误: TypeError")
     assert SECRET not in result["error"]
     assert SECRET not in caplog.text

@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 from types import SimpleNamespace
 
 import pytest
@@ -6,12 +7,14 @@ import pytest
 from fogmoe_telegram_bot.core.deadline import Deadline
 from fogmoe_telegram_bot.features.ai import tool_runner
 from fogmoe_telegram_bot.features.ai.tool_history import (
-    tool_logs_completed_clear,
+    completed_clear,
     turn_messages_to_record_entries,
 )
 from fogmoe_telegram_bot.features.ai.types import (
     TOOL_CONTEXT_MESSAGES_KEY,
     LoopStatus,
+    ToolCallRecord,
+    ToolCallStatus,
     TurnDeadlineError,
 )
 
@@ -112,20 +115,24 @@ def test_telegram_events_are_recorded_after_the_tool_result():
     assert entries[-2:] == [("user", "command-event"), ("user", "reply-event")]
 
 
-def test_tool_logs_completed_clear_requires_successful_clear_result():
-    successful_clear = {
-        "type": "tool_result",
-        "tool_name": "execute_telegram_command",
-        "arguments": {"command": "/clear"},
-        "result": {"success": True},
-    }
+def test_completed_clear_requires_successful_clear_result():
+    successful_clear = ToolCallRecord(
+        tool_name="execute_telegram_command",
+        tool_call_id="call_clear",
+        arguments={"command": "/clear"},
+        status=ToolCallStatus.COMPLETED,
+        public_result={"success": True},
+    )
 
-    assert tool_logs_completed_clear([successful_clear]) is True
-    assert tool_logs_completed_clear(
-        [{**successful_clear, "result": {"success": False}}]
+    assert completed_clear([successful_clear]) is True
+    assert completed_clear(
+        [dataclasses.replace(successful_clear, public_result={"success": False})]
     ) is False
-    assert tool_logs_completed_clear(
-        [{**successful_clear, "arguments": {"command": "/me"}}]
+    assert completed_clear(
+        [dataclasses.replace(successful_clear, arguments={"command": "/me"})]
+    ) is False
+    assert completed_clear(
+        [dataclasses.replace(successful_clear, status=ToolCallStatus.INTERRUPTED)]
     ) is False
 
 
@@ -162,8 +169,19 @@ def test_turn_messages_record_visible_text_tool_pairs_and_telegram_events(monkey
     async def fake_completion(*args, **kwargs):
         return responses.pop(0)
 
-    async def fake_visible(text: str) -> str:
-        return text
+    class FakeVisible:
+        def __init__(self):
+            self.sent_messages = []
+            self.sent_contents = []
+
+        async def __call__(self, text: str) -> str:
+            self.sent_contents.append(text)
+            return text
+
+        async def send_tool_media(self, tool_name, result):
+            return []
+
+    fake_visible = FakeVisible()
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_completion)
 
@@ -241,7 +259,7 @@ def test_interrupted_round_turn_messages_stay_paired(monkeypatch):
         )
 
     err = exc_info.value
-    entries = turn_messages_to_record_entries(err.turn_messages)
+    entries = turn_messages_to_record_entries(err.partial.turn_messages)
     assert [role for role, _ in entries] == ["assistant", "tool", "tool"]
     assert [entry["tool_call_id"] for role, entry in entries if role == "tool"] == [
         "call_a",

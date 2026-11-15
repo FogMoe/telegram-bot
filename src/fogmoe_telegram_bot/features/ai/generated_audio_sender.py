@@ -5,22 +5,8 @@ from typing import Any
 from fogmoe_telegram_bot.core.telegram_utils import retry_telegram_send, telegram_error_summary
 
 from .tools.voice_tools import pop_generated_audio_file
-from .types import media_delivery_attempted
 
 MAX_GENERATED_AUDIO_PER_REPLY = 3
-
-
-def _iter_generate_voice_results(tool_logs: list[dict]) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    for tool_log in tool_logs:
-        if tool_log.get("type") != "tool_result":
-            continue
-        if tool_log.get("tool_name") != "generate_voice":
-            continue
-        result = tool_log.get("internal_result") or tool_log.get("result")
-        if isinstance(result, dict):
-            results.append(result)
-    return results
 
 
 def _summarise_generate_voice_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -170,18 +156,9 @@ def _collect_generated_audio_from_result(
     return audios[:limit]
 
 
-def _collect_generated_audio(tool_logs: list[dict]) -> list[dict[str, Any]]:
+def _collect_generated_audio(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     audios: list[dict[str, Any]] = []
-    for tool_log in tool_logs:
-        if media_delivery_attempted(tool_log):
-            continue
-        if tool_log.get("type") != "tool_result":
-            continue
-        if tool_log.get("tool_name") != "generate_voice":
-            continue
-        result = tool_log.get("internal_result") or tool_log.get("result")
-        if not isinstance(result, dict):
-            continue
+    for result in results:
         audios.extend(_collect_generated_audio_from_result(result))
     return audios[:MAX_GENERATED_AUDIO_PER_REPLY]
 
@@ -269,40 +246,26 @@ def _limit_generated_audio_result(
     return limited_result
 
 
-def _unsent_voice_tool_results(tool_logs: list[dict]) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    for result in _iter_generate_voice_results(tool_logs):
-        results.append(result)
-    return results
-
-
-async def send_generated_audio_from_tool_logs(
+async def send_generated_audio_from_tool_results(
     *,
     bot: Any,
     chat_id: int,
-    tool_logs: list[dict],
+    results: list[dict[str, Any]],
     logger: logging.Logger,
 ) -> list[Any]:
-    """Send generated audio referenced by voice generation tool results."""
-    voice_tool_results = _unsent_voice_tool_results(
-        [
-            tool_log
-            for tool_log in tool_logs
-            if not media_delivery_attempted(tool_log)
-        ]
-    )
-    audios = _collect_generated_audio(tool_logs)
+    """Send generated audio referenced by voice tool results that were not sent immediately."""
+    audios = _collect_generated_audio(results)
     if not audios:
-        if voice_tool_results:
+        if results:
             logger.info(
                 "No generated audio to send; generate_voice_results=%s",
-                [_summarise_generate_voice_result(result) for result in voice_tool_results],
+                [_summarise_generate_voice_result(result) for result in results],
             )
         return []
 
     sent_messages: list[Any] = []
     remaining = MAX_GENERATED_AUDIO_PER_REPLY
-    for result in voice_tool_results:
+    for result in results:
         limited_result = _limit_generated_audio_result(result, limit=remaining)
         if limited_result is None:
             continue
@@ -321,6 +284,6 @@ async def send_generated_audio_from_tool_logs(
 
 
 __all__ = [
-    "send_generated_audio_from_tool_logs",
+    "send_generated_audio_from_tool_results",
     "send_generated_audio_from_tool_result",
 ]

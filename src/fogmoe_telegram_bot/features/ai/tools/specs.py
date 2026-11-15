@@ -19,12 +19,12 @@ from typing import Any
 from fogmoe_telegram_bot.core import ai_providers, config
 
 from ..generated_audio_sender import (
-    send_generated_audio_from_tool_logs,
     send_generated_audio_from_tool_result,
+    send_generated_audio_from_tool_results,
 )
 from ..generated_image_sender import (
-    send_generated_images_from_tool_logs,
     send_generated_images_from_tool_result,
+    send_generated_images_from_tool_results,
 )
 from . import advisor_tools, code_tools, http_tools
 from .advisor_tools import advisor_tool
@@ -86,14 +86,18 @@ class SideEffectKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class MediaToolSpec:
-    """生成媒体并发往 Telegram 的工具协议（即时发送、兜底批量发送、公开结果脱敏、日志）。"""
+    """生成媒体并发往 Telegram 的工具协议（即时发送、投递阶段补发、公开结果脱敏、日志）。
+
+    `send_from_result` 在工具执行后立刻发送一次结果；`send_pending` 在投递阶段发送没能即时发出的结果
+    （没有即时发送通道的入口，或即时发送失败）。
+    """
 
     chat_action: str
     delivery_unknown_message: str
     public_result: Callable[[dict[str, Any], bool], dict[str, Any]]
     log_result: Callable[[str, Any], None]
     send_from_result: Callable[..., Awaitable[list[Any]]]
-    send_from_logs: Callable[..., Awaitable[list[Any]]]
+    send_pending: Callable[..., Awaitable[list[Any]]]
     batch_order: int = 100
 
 
@@ -222,7 +226,7 @@ IMAGE_MEDIA_SPEC = MediaToolSpec(
     public_result=_image_public_result,
     log_result=_log_image_tool_result,
     send_from_result=send_generated_images_from_tool_result,
-    send_from_logs=send_generated_images_from_tool_logs,
+    send_pending=send_generated_images_from_tool_results,
     batch_order=20,
 )
 
@@ -236,7 +240,7 @@ VOICE_MEDIA_SPEC = MediaToolSpec(
     public_result=_voice_public_result,
     log_result=_log_voice_tool_result,
     send_from_result=send_generated_audio_from_tool_result,
-    send_from_logs=send_generated_audio_from_tool_logs,
+    send_pending=send_generated_audio_from_tool_results,
     batch_order=10,
 )
 

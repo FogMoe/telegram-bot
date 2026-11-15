@@ -74,6 +74,7 @@ files = [
     "src/fogmoe_telegram_bot/features/ai/task_runner.py",
     "src/fogmoe_telegram_bot/features/ai/tasks/vision.py",
     "src/fogmoe_telegram_bot/features/ai/tool_loop_messages.py",
+    "src/fogmoe_telegram_bot/features/ai/tool_loop_state.py",
     "src/fogmoe_telegram_bot/features/ai/tool_loop_deadline.py",
     "src/fogmoe_telegram_bot/features/ai/tool_loop_delivery.py",
     "src/fogmoe_telegram_bot/features/ai/tool_loop_execution.py",

@@ -32,7 +32,7 @@ from fogmoe_telegram_bot.features.ai import (
     summary,
 )
 from fogmoe_telegram_bot.features.ai.router import AI_SERVICE_ERROR_MESSAGE
-from fogmoe_telegram_bot.features.ai.types import LoopStatus
+from fogmoe_telegram_bot.features.ai.types import LoopStatus, ToolCallRecord, ToolCallStatus
 
 REPLY = "just checking in"
 USER_ID = 1
@@ -236,15 +236,15 @@ class TestStaleWorker:
     def test_a_stale_worker_that_finishes_late_is_rejected(self, env, with_tools):
         """租约到期并被回收后，旧 worker 迟到完成：不投递、不写状态。"""
         if with_tools:
-            env.ai.tool_logs = [
-                {
-                    "type": "tool_result",
-                    "tool_name": "read_doc",
-                    "arguments": {"topic": "memory"},
-                    "result": {"content": "memory details"},
-                    "tool_call_id": "call_1",
-                }
-            ]
+            env.ai.tool_calls = (
+                ToolCallRecord(
+                    tool_name="read_doc",
+                    tool_call_id="call_1",
+                    arguments={"topic": "memory"},
+                    status=ToolCallStatus.COMPLETED,
+                    public_result={"content": "memory details"},
+                ),
+            )
             env.ai.turn_messages = [
                 {
                     "role": "assistant",

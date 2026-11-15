@@ -16,7 +16,7 @@ import json
 import logging
 import re
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from statistics import median
@@ -61,6 +61,7 @@ from fogmoe_telegram_bot.features.ai.turn_pipeline import (
     execute_post_input_turn,
     prepare_model_turn,
 )
+from fogmoe_telegram_bot.features.ai.types import ToolCallRecord
 from fogmoe_telegram_bot.features.ai.user_state import build_user_state_prompt
 
 logger = logging.getLogger(__name__)
@@ -332,7 +333,7 @@ async def _run_recap_agent(
 
     async def attempt(candidate: Candidate) -> str:
         with tool_request_scope(tool_context):
-            content, _ = await run_tool_loop(
+            result = await run_tool_loop(
                 candidate.provider,
                 candidate.model,
                 messages,
@@ -344,7 +345,7 @@ async def _run_recap_agent(
                 tool_handlers=IDLE_RECAP_TOOL_HANDLERS,
                 system_prompt_override=config.IDLE_RECAP_SYSTEM_PROMPT,
             )
-        return content
+        return result.text
 
     return await run_with_fallback("recap", attempt, tools_are_read_only=True)
 
@@ -724,7 +725,7 @@ async def _persist_completed_turn(
 async def _send_followup_outputs(
     user_id: int,
     assistant_message: str,
-    tool_logs: list[dict],
+    tool_calls: Sequence[ToolCallRecord],
     context: ContextTypes.DEFAULT_TYPE,
 ) -> str | None:
     """投递跟进内容；已知的投递失败只记录并返回摘要，不影响本地结果的落库。"""
@@ -752,7 +753,7 @@ async def _send_followup_outputs(
         await send_generated_media(
             bot=context.bot,
             chat_id=user_id,
-            tool_logs=tool_logs,
+            tool_calls=tool_calls,
             logger=logger,
         )
     except Exception as exc:
@@ -983,7 +984,7 @@ async def _run_claim_locked(
 
     async def _before_persist_and_deliver(prepared: PreparedModelTurn) -> bool:
         if not await _claim_is_current(claim):
-            if prepared.tool_logs:
+            if prepared.has_side_effects:
                 # 用户已经回来了，跟进不再发送；已经执行过的工具仍要写进历史。
                 await _persist_completed_turn(
                     claim,
@@ -1025,7 +1026,7 @@ async def _run_claim_locked(
         deliver_output=lambda prepared: _send_followup_outputs(
             claim.user_id,
             prepared.text,
-            prepared.tool_logs,
+            prepared.tool_calls,
             context,
         ),
         finalize_turn=lambda _prepared, delivery_error: _mark_claim_fired(

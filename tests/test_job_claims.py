@@ -271,7 +271,7 @@ class TestAbortSignal:
 
         monkeypatch.setattr(tool_runner, "create_chat_completion", fake_completion)
 
-        message, _ = run(
+        message = run(
             tool_runner.run_tool_loop(
                 "test_provider",
                 "test_model",
@@ -280,7 +280,7 @@ class TestAbortSignal:
             )
         )
 
-        assert message == "done"
+        assert message.text == "done"
 
     def test_visible_content_handler_stops_sending_once_aborted(self):
         sent = []

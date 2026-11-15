@@ -7,7 +7,7 @@ import pytest
 
 from fogmoe_telegram_bot.features.ai import idle_followup
 from fogmoe_telegram_bot.features.ai.tools import get_tool_request_context
-from fogmoe_telegram_bot.features.ai.types import LoopResult
+from fogmoe_telegram_bot.features.ai.types import LoopResult, ToolCallRecord, ToolCallStatus
 
 
 def test_claim_due_followups_skips_registered_users_without_coins(monkeypatch):
@@ -352,15 +352,15 @@ def test_process_claim_keeps_main_ai_tools_enabled(monkeypatch):
         retry_count=0,
     )
     captured = {}
-    tool_logs = [
-        {
-            "type": "tool_result",
-            "tool_name": "read_doc",
-            "arguments": {"topic": "memory"},
-            "result": {"content": "memory details"},
-            "tool_call_id": "call_1",
-        }
-    ]
+    tool_calls = (
+        ToolCallRecord(
+            tool_name="read_doc",
+            tool_call_id="call_1",
+            arguments={"topic": "memory"},
+            status=ToolCallStatus.COMPLETED,
+            public_result={"content": "memory details"},
+        ),
+    )
     turn_messages = [
         {
             "role": "assistant",
@@ -409,7 +409,7 @@ def test_process_claim_keeps_main_ai_tools_enabled(monkeypatch):
 
     async def fake_ai_response(*args, **kwargs):
         captured["tool_context"] = kwargs["tool_context"]
-        return LoopResult("你好", tool_logs, turn_messages=turn_messages)
+        return LoopResult("你好", tool_calls=tool_calls, turn_messages=turn_messages)
 
     async def fake_normalize(text, *, logger):
         return text
@@ -461,7 +461,7 @@ def test_process_claim_keeps_main_ai_tools_enabled(monkeypatch):
     assert "disable_tools" not in captured["tool_context"]
     assert "<memory_suggestion>" in captured["persist_args"][1]
     assert captured["persist_args"][3] == turn_messages
-    assert captured["send_args"][2] == tool_logs
+    assert captured["send_args"][2] == tool_calls
     # 主模型执行之前进入 generating，投递之前进入 delivering，投递之后才终结 claim。
     assert captured["stages"] == ["generating", "delivering"]
     assert captured["fired"] == claim

@@ -11,6 +11,8 @@ from typing import Any
 
 from fogmoe_telegram_bot.core.redaction import redact_text
 
+from .types import ToolCallRecord, ToolCallStatus
+
 
 def _telegram_command_name(arguments: object) -> str | None:
     if not isinstance(arguments, dict):
@@ -22,21 +24,16 @@ def _telegram_command_name(arguments: object) -> str | None:
     return command_token.split("@", maxsplit=1)[0].strip().lower() or None
 
 
-def tool_logs_completed_clear(tool_logs: Sequence[dict[str, Any]]) -> bool:
+def completed_clear(tool_calls: Sequence[ToolCallRecord]) -> bool:
     """返回本轮是否成功通过 Telegram 工具执行了 /clear。"""
-    for tool_log in tool_logs:
-        if not isinstance(tool_log, dict):
-            continue
-        if tool_log.get("type", "tool_result") != "tool_result":
-            continue
-        if tool_log.get("tool_name") != "execute_telegram_command":
-            continue
-        if _telegram_command_name(tool_log.get("arguments")) != "clear":
-            continue
-        result = tool_log.get("result")
-        if isinstance(result, dict) and result.get("success") is True:
-            return True
-    return False
+    return any(
+        record.tool_name == "execute_telegram_command"
+        and record.status is ToolCallStatus.COMPLETED
+        and _telegram_command_name(record.arguments) == "clear"
+        and isinstance(record.public_result, dict)
+        and record.public_result.get("success") is True
+        for record in tool_calls
+    )
 
 
 def _redacted_assistant_message(message: dict[str, Any]) -> dict[str, Any]:

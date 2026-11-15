@@ -1,10 +1,10 @@
 """工具循环的投递：可见内容与生成的媒体立刻发到 Telegram，以及交回模型的工具结果。
 
-- 可见内容：模型在调用工具前后说的话经 `VisibleContentHandler` 立刻发出，日志里记下实际发出的内容。
-- 媒体：`generate_image` / `generate_voice` 生成后立刻发出；投递时整轮截止时间到期，这次结果照常记下并标记
-  「是否送达未知」，投递阶段不再重发。
+- 可见内容：模型在调用工具前后说的话经 `VisibleContentHandler` 立刻发出，状态里记下这次调用实际发出的内容。
+- 媒体：声明了 `media` 的工具（`ToolSpec.media`）生成后立刻发出；投递时整轮截止时间到期，这次结果照常记下并
+  标记「是否送达未知」，投递阶段不再重发。
 - 工具结果分两份：工具返回的内部结果，和交回模型的公开结果（`public_tool_result`）。公开结果去掉附带的
-  Telegram 事件；媒体工具只留状态、错误与一句说明，内部结果记在日志的 `internal_result` 里供投递阶段发送。
+  Telegram 事件；媒体工具只留状态、错误与一句说明，内部结果留在记录的 `internal_result` 里供投递阶段发送。
 """
 
 from __future__ import annotations
@@ -14,15 +14,16 @@ from typing import Any, NamedTuple
 
 from fogmoe_telegram_bot.core.deadline import Deadline, DeadlineExceeded
 
-from .tool_loop_deadline import close_interrupted_round, deadline_guard, tool_result_log
-from .tool_loop_messages import tool_result_json
+from .tool_loop_deadline import close_interrupted_round, deadline_guard
+from .tool_loop_state import LoopState
 from .tools.specs import get_media_tool_spec
 from .types import (
     TOOL_CONTEXT_MESSAGES_KEY,
     LoopResult,
     LoopStatus,
-    ToolLog,
-    VisibleContentSink,
+    MediaDeliveryState,
+    ToolCallStatus,
+    VisibleContentHandler,
 )
 
 
@@ -43,6 +44,21 @@ def public_tool_result(
     return media_spec.public_result(tool_result, media_sent)
 
 
+def media_delivery_after_execution(
+    tool_name: str,
+    internal_result: Any,
+    sent_media_messages: list[Any],
+) -> MediaDeliveryState:
+    """工具执行完、即时发送之后这次结果的媒体投递状态。"""
+    if get_media_tool_spec(tool_name) is None:
+        return MediaDeliveryState.NOT_APPLICABLE
+    if sent_media_messages:
+        return MediaDeliveryState.SENT
+    if isinstance(internal_result, dict) and internal_result.get("status") == "generated":
+        return MediaDeliveryState.PENDING
+    return MediaDeliveryState.NOT_APPLICABLE
+
+
 def context_messages_from_tool_result(tool_result: Any) -> list[dict[str, str]]:
     if not isinstance(tool_result, dict):
         return []
@@ -59,7 +75,7 @@ def context_messages_from_tool_result(tool_result: Any) -> list[dict[str, str]]:
 
 async def send_media_result_immediately(
     *,
-    visible_content_handler: VisibleContentSink | None,
+    visible_content_handler: VisibleContentHandler | None,
     tool_name: str,
     tool_result: Any,
     provider_name: str,
@@ -72,114 +88,66 @@ async def send_media_result_immediately(
     if not isinstance(tool_result, dict) or tool_result.get("status") != "generated":
         return []
 
-    send_tool_media = getattr(visible_content_handler, "send_tool_media", None)
-    if not callable(send_tool_media):
-        return []
-
     try:
         async with deadline_guard(deadline):
-            sent_messages = await send_tool_media(tool_name, tool_result)
+            return await visible_content_handler.send_tool_media(tool_name, tool_result)
     except DeadlineExceeded:
         raise
     except Exception as exc:
         logging.exception("%s failed to send %s result immediately: %s", provider_name, tool_name, exc)
         return []
 
-    if not isinstance(sent_messages, list):
-        return []
-    return sent_messages
-
 
 def close_round_after_media_deadline(
-    tool_logs: list[ToolLog],
+    state: LoopState,
+    record_index: int,
     tool_calls: list[dict[str, Any]],
     call_index: int,
     reason: str,
     round_context_messages: list[dict[str, str]],
     *,
-    function_name: str,
-    function_args: dict[str, Any],
-    tool_call_id: Any,
     internal_tool_result: dict[str, Any],
-    filtered_messages: list[dict[str, Any]] | None = None,
 ) -> None:
     """`call_index` 的工具已经执行完，是投递它生成的媒体时到期。
 
     先记下这次的结果（是否送达未知，投递阶段也不会再发），再给后面没来得及运行的调用补「未执行」。
-    下一轮因此知道媒体已经生成，历史也仍然配对。
+    下一轮因此知道媒体已经生成，历史也仍然配对。只有声明了 `media` 的工具会走到这里。
     """
-    media_spec = get_media_tool_spec(function_name)
-    unknown_message = (
-        media_spec.delivery_unknown_message
-        if media_spec is not None
-        else (
-            "The generated media was created, but the turn was stopped while it was being "
-            "sent to Telegram; it may or may not have arrived. Do not generate it again "
-            "unless the user asks."
-        )
+    record = state.tool_calls[record_index]
+    media_spec = get_media_tool_spec(record.tool_name)
+    if media_spec is None:
+        raise RuntimeError(f"{record.tool_name} is not a media tool")
+    state.finish_tool_call(
+        record_index,
+        status=ToolCallStatus.COMPLETED,
+        public_result={
+            **public_tool_result(record.tool_name, internal_tool_result),
+            "message": media_spec.delivery_unknown_message,
+        },
+        internal_result=internal_tool_result,
+        media_delivery=MediaDeliveryState.UNKNOWN,
     )
-    public_result = {
-        **public_tool_result(function_name, internal_tool_result),
-        "message": unknown_message,
-    }
-    if filtered_messages is not None:
-        filtered_messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "name": function_name,
-                "content": tool_result_json(public_result),
-            }
-        )
-    tool_logs.append(
-        tool_result_log(
-            function_name,
-            function_args,
-            tool_call_id,
-            public_result,
-            internal_tool_result,
-            sent_media_messages=[],
-            media_delivery_unknown=True,
-        )
-    )
-    round_context_messages.extend(
-        context_messages_from_tool_result(internal_tool_result)
-    )
+    round_context_messages.extend(context_messages_from_tool_result(internal_tool_result))
     close_interrupted_round(
-        tool_logs,
+        state,
         tool_calls,
         call_index + 1,
         reason,
         round_context_messages,
-        running=False,
-        filtered_messages=filtered_messages,
     )
 
 
 class VisibleContentResult(NamedTuple):
+    """一次可见发送的结果：`content` 是这次实际发出的文字（没发出任何内容时为空），
+    `completed` 为 False 表示发送中途失败、只发出了 `content` 这一部分。"""
+
     content: str
     completed: bool
 
 
-def _last_visible_content(handler: VisibleContentSink) -> str:
-    visible_events = getattr(handler, "visible_events", None)
-    if callable(visible_events):
-        try:
-            events = visible_events()
-            if isinstance(events, list):
-                for event in reversed(events):
-                    if not isinstance(event, dict):
-                        continue
-                    content = str(event.get("content") or "").strip()
-                    if content:
-                        return content
-        except Exception:
-            logging.exception("Failed to read visible content events")
-
-    contents = getattr(handler, "sent_contents", [])
-    if not isinstance(contents, list):
-        return ""
-    for content in reversed(contents):
+def _content_sent_since(handler: VisibleContentHandler, sent_before: int) -> str:
+    """这次调用期间实际发出的文字（`sent_contents` 里 `sent_before` 之后的部分）。"""
+    for content in reversed(handler.sent_contents[sent_before:]):
         normalized = str(content or "").strip()
         if normalized:
             return normalized
@@ -187,16 +155,17 @@ def _last_visible_content(handler: VisibleContentSink) -> str:
 
 
 async def emit_visible_content(
-    handler: VisibleContentSink,
+    handler: VisibleContentHandler,
     content: str,
     *,
     provider_name: str,
     deadline: Deadline | None = None,
 ) -> VisibleContentResult:
-    """Send visible assistant content through the host app and return what was sent."""
+    """Send visible assistant content through the host app and return what this call sent."""
     if not content.strip():
         return VisibleContentResult("", True)
 
+    sent_before = len(handler.sent_contents)
     try:
         async with deadline_guard(deadline):
             visible_content = await handler(content)
@@ -204,89 +173,33 @@ async def emit_visible_content(
         raise
     except Exception as exc:
         logging.exception("%s visible content handler failed: %s", provider_name, exc)
-        partial_content = _last_visible_content(handler)
+        partial_content = _content_sent_since(handler, sent_before)
         if partial_content:
             return VisibleContentResult(partial_content, False)
         return VisibleContentResult("", True)
 
-    if visible_content is None:
-        partial_content = _last_visible_content(handler)
-        if partial_content:
-            return VisibleContentResult(partial_content, False)
-        return VisibleContentResult("", True)
-    normalized = str(visible_content).strip()
-    if not normalized:
-        partial_content = _last_visible_content(handler)
-        if partial_content:
-            return VisibleContentResult(partial_content, False)
-    return VisibleContentResult(normalized, True)
+    return VisibleContentResult(visible_content.strip(), True)
 
 
 async def return_final_text_response(
+    state: LoopState,
     *,
     content_text: str,
-    tool_logs: list[ToolLog],
-    visible_content_handler: VisibleContentSink | None,
+    visible_content_handler: VisibleContentHandler | None,
     provider_name: str,
     deadline: Deadline | None = None,
     status: LoopStatus = LoopStatus.COMPLETED,
-    filtered_messages: list[dict[str, Any]] | None = None,
-    turn_start: int = 0,
 ) -> LoopResult:
-    def snapshot_messages() -> list[dict[str, Any]]:
-        if filtered_messages is None:
-            return []
-        return list(filtered_messages[turn_start:])
-
-    if content_text.strip():
-        if visible_content_handler:
-            visible_result = await emit_visible_content(
-                visible_content_handler,
-                content_text,
-                provider_name=provider_name,
-                deadline=deadline,
-            )
-            if visible_result.content:
-                tool_logs.append(
-                    {
-                        "type": "assistant_visible",
-                        "content": visible_result.content,
-                    }
-                )
-                if filtered_messages is not None:
-                    filtered_messages.append(
-                        {"role": "assistant", "content": visible_result.content}
-                    )
-                return LoopResult(
-                    text="",
-                    tool_logs=tool_logs,
-                    status=status,
-                    turn_messages=snapshot_messages(),
-                )
-            if not visible_result.completed:
-                return LoopResult(
-                    text="",
-                    tool_logs=tool_logs,
-                    status=status,
-                    turn_messages=snapshot_messages(),
-                )
-            return LoopResult(
-                text=content_text,
-                tool_logs=tool_logs,
-                status=status,
-                turn_messages=snapshot_messages(),
-            )
-        return LoopResult(
-            text=content_text,
-            tool_logs=tool_logs,
-            status=status,
-            turn_messages=snapshot_messages(),
+    if content_text.strip() and visible_content_handler is not None:
+        visible_result = await emit_visible_content(
+            visible_content_handler,
+            content_text,
+            provider_name=provider_name,
+            deadline=deadline,
         )
-    if tool_logs:
+        if visible_result.content:
+            state.record_delivered(visible_result.content, append_message=True)
+            return state.result("", status)
+    elif not content_text.strip() and state.tool_calls:
         logging.warning("%s 工具调用后最终回复为空。", provider_name)
-    return LoopResult(
-        text=content_text,
-        tool_logs=tool_logs,
-        status=status,
-        turn_messages=snapshot_messages(),
-    )
+    return state.result(content_text, status)

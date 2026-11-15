@@ -47,7 +47,7 @@ uv run python scripts/gen_ai_flow_doc.py
 | 了解用户 | `_load_context`、`user_state_prompt`、`format_user_state_prompt` | [ai/user_state.py](../src/fogmoe_telegram_bot/features/ai/user_state.py)、[core/prompt_utils.py](../src/fogmoe_telegram_bot/core/prompt_utils.py) |
 | 看图（历史里只存描述，原图通过 `runtime_replacements` 只给这一次请求） | `_prepare_inputs` | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py) |
 | 记下用户的话 | `_record_input` → `insert_records`、`get_history` | [conversation/turn_services.py](../src/fogmoe_telegram_bot/features/conversation/turn_services.py) |
-| 思考与动手 | `_run_model` → `prepare_model_turn` → `run_model`（`ModelRequest` / `ModelResponse`）；工具上下文 `build_tool_context`，回复整理 `finish_reply` | 见第 3 节；[ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)、[ai/tools/context.py](../src/fogmoe_telegram_bot/features/ai/tools/context.py)、[ai/outbound.py](../src/fogmoe_telegram_bot/features/ai/outbound.py) |
+| 思考与动手 | `_run_model` → `prepare_model_turn` → `run_model`（`ModelRequest` → `LoopResult`）；工具上下文 `build_tool_context`，回复整理 `finish_reply` | 见第 3 节；[ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)、[ai/tools/context.py](../src/fogmoe_telegram_bot/features/ai/tools/context.py)、[ai/outbound.py](../src/fogmoe_telegram_bot/features/ai/outbound.py) |
 | 记下做了什么 | `execute_post_input_turn` → `_record_output`、`turn_messages_to_record_entries`、`reply_record_entries` | [ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)、[ai/tool_history.py](../src/fogmoe_telegram_bot/features/ai/tool_history.py) |
 | 发出回复 | `_deliver`、`_deliver_messages` | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py) |
 | 收尾 | `_finalize`、`USER_ENTRY_POLICY`、`archive_completed_clear`、`flush_events` | [ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)、[conversation/turn_services.py](../src/fogmoe_telegram_bot/features/conversation/turn_services.py) |
@@ -61,14 +61,15 @@ uv run python scripts/gen_ai_flow_doc.py
 | 按顺序换 provider 与备用模型、安全拦截、熔断（主聊天、摘要、回顾与 `run_ai_task` 共用） | `run_with_fallback`、`ProviderCircuit`、`CHAT_CIRCUIT` | [ai/task_runner.py](../src/fogmoe_telegram_bot/features/ai/task_runner.py) |
 | 拼好上下文（人设 + 用户状态） | `compose_system_prompt` | [ai/prompts.py](../src/fogmoe_telegram_bot/features/ai/prompts.py) |
 | 工具循环、边做边说、工具执行后的重试 | `run_tool_loop`、`emit_visible_content`、`_create_chat_completion_with_post_tool_retries`、`resolve_assistant_message` | [ai/tool_runner.py](../src/fogmoe_telegram_bot/features/ai/tool_runner.py)、[ai/tool_loop_delivery.py](../src/fogmoe_telegram_bot/features/ai/tool_loop_delivery.py)、[ai/tool_loop_messages.py](../src/fogmoe_telegram_bot/features/ai/tool_loop_messages.py) |
+| 这一轮的状态：消息序列、每次工具调用的记录（`ToolCallRecord`）、已发出的内容，结束时冻结成 `LoopResult` | `LoopState`、`ToolCallRecord`、`LoopResult` | [ai/tool_loop_state.py](../src/fogmoe_telegram_bot/features/ai/tool_loop_state.py)、[ai/types.py](../src/fogmoe_telegram_bot/features/ai/types.py) |
 | 一次工具调用：参数校验、执行、媒体立刻发出、只把公开部分交回模型、附带的事件 | `_validate_tool_args`、`_call_tool`、`send_media_result_immediately`、`public_tool_result`、`context_messages_from_tool_result` | [ai/tool_loop_execution.py](../src/fogmoe_telegram_bot/features/ai/tool_loop_execution.py)、[ai/tool_loop_delivery.py](../src/fogmoe_telegram_bot/features/ai/tool_loop_delivery.py) |
 | 时间用完时：结果未知、未执行 | `close_interrupted_round`、`TurnDeadlineError` | [ai/tool_loop_deadline.py](../src/fogmoe_telegram_bot/features/ai/tool_loop_deadline.py)、[ai/tool_runner.py](../src/fogmoe_telegram_bot/features/ai/tool_runner.py) |
 | 单次请求上限、按服务的协议整理消息 | `create_chat_completion`、`enforce_messages_context_budget`、`sanitize_messages_for_provider` | [ai/litellm_client.py](../src/fogmoe_telegram_bot/features/ai/litellm_client.py)、[ai/context_budget.py](../src/fogmoe_telegram_bot/features/ai/context_budget.py)、[ai/litellm_message_sanitizer.py](../src/fogmoe_telegram_bot/features/ai/litellm_message_sanitizer.py) |
 | 发到 Telegram | `TelegramVisibleContentHandler` | [ai/telegram_visible_sender.py](../src/fogmoe_telegram_bot/features/ai/telegram_visible_sender.py) |
 
 出问题时的处理规则见 [ai-provider-architecture.md](ai-provider-architecture.md) 的「回退规则」与「主聊天的 fallback」：
-上下文超限 `ContextBudgetExceededError`、执行过工具或发出过可见内容之后失败 `PartialAIResponseError`（由 `has_side_effects` 判断）、
-安全拦截 `SafetyBlockError`。
+上下文超限 `ContextBudgetExceededError`、执行过工具或发出过可见内容之后失败 `PartialAIResponseError`（由 `LoopState.has_side_effects` 判断）、
+安全拦截 `SafetyBlockError`、后台任务撤销 `JobAbortedError`。这些异常到 router 边界才变成 `LoopResult` 的 `LoopStatus`。
 
 ## 4. 工具箱
 
