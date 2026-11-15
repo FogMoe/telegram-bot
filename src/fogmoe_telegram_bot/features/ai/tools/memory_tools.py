@@ -4,7 +4,6 @@ import re
 from fogmoe_telegram_bot.core import config, group_chat_history, mysql_connection
 
 from .context import get_tool_request_context
-from .dispatch import inline_tool
 
 MAX_USER_DIARY_PAGE_CHARS = 10000
 MAX_USER_DIARY_PAGES = 100
@@ -46,7 +45,6 @@ def _diary_page_metadata(
     }
 
 
-@inline_tool
 def get_help_text_tool() -> dict:
     """Return the configured help command list for the bot."""
     return {"help_text": config.HELP_TEXT}

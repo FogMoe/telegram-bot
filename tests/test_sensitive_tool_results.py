@@ -5,6 +5,7 @@ import json
 import logging
 
 import requests
+from tool_fakes import use_tool
 
 from fogmoe_telegram_bot.features.ai import tool_runner
 from fogmoe_telegram_bot.features.ai.tool_history import turn_messages_to_record_entries
@@ -111,7 +112,7 @@ def _run_with_failing_tool(monkeypatch, error):
         raise error
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
-    monkeypatch.setitem(tool_runner.AI_TOOL_HANDLERS, "google_search", failing_handler)
+    use_tool(monkeypatch, "google_search", failing_handler)
 
     result = asyncio.run(tool_runner.run_tool_loop(
         "fogmoe",
@@ -168,8 +169,8 @@ def test_tool_call_logs_do_not_expose_credential_command_arguments(monkeypatch, 
         return {"success": True}
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
-    monkeypatch.setitem(
-        tool_runner.AI_TOOL_HANDLERS,
+    use_tool(
+        monkeypatch,
         "execute_telegram_command",
         fake_execute_telegram_command,
     )

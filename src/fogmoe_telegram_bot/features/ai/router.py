@@ -15,12 +15,13 @@ from typing import Any
 from fogmoe_telegram_bot.core import metrics
 from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline
 
+from .agents import MAIN_AGENT
 from .chat_capabilities import chat_model_for_service, chat_service_supports_vision
 from .errors import SafetyBlockError, find_context_budget_error, is_timeout_error
 from .message_content import messages_have_images, strip_image_content
 from .task_runner import AllProvidersFailedError, Candidate, ProviderCircuit, run_with_fallback
 from .tool_runner import run_tool_loop
-from .tools import cleanup_linux_sandbox_async, resolve_agent_tools, tool_request_scope
+from .tools import cleanup_linux_sandbox_async, tool_request_scope
 from .types import (
     JobAbortedError,
     LoopResult,
@@ -119,7 +120,7 @@ async def _run_chat_candidate(
     visible_content_handler: VisibleContentHandler | None,
     deadline: Deadline | None,
 ) -> LoopResult:
-    """用一个 provider 的一个模型跑一次主聊天的工具循环；provider 之间的差异只来自声明。"""
+    """用一个 provider 的一个模型跑一次主聊天（`MAIN_AGENT`）的工具循环；provider 之间的差异只来自声明。"""
     provider_name = candidate.spec.display_name
     try:
         service_messages = _messages_for_service(
@@ -127,7 +128,6 @@ async def _run_chat_candidate(
             messages,
             text_fallback_messages,
         )
-        tool_definitions = resolve_agent_tools("main", provider=candidate.spec)
         with tool_request_scope(request_context):
             try:
                 return await run_tool_loop(
@@ -135,9 +135,8 @@ async def _run_chat_candidate(
                     candidate.model,
                     list(service_messages),
                     tool_context,
+                    agent=MAIN_AGENT,
                     provider_name=provider_name,
-                    skip_tools=candidate.spec.skip_tools,
-                    tool_definitions=tool_definitions,
                     visible_content_handler=visible_content_handler,
                     deadline=deadline,
                 )
@@ -228,7 +227,7 @@ async def _try_ai_services(
     try:
         # 回退链走到一半时间已经用完：不再尝试后面的模型与 provider（包括要跳过的）。
         response = await run_with_fallback(
-            "chat",
+            MAIN_AGENT.task,
             attempt,
             circuit=CHAT_CIRCUIT,
             deadline=deadline,

@@ -1,7 +1,8 @@
 """所有 AI 工具的单点声明表（`TOOL_SPECS`）。
 
-新增一个工具只需要在 `TOOL_SPECS` 里加一项：参数模型、schema、处理函数、所属 agent、副作用分级、
-是否已配置凭据以及媒体即时投递协议都由这里派生，不再跨多文件重复登记。
+新增一个工具只需要在 `TOOL_SPECS` 里加一项：参数模型、schema、处理函数、执行方式、所属 agent、副作用分级、
+需要的上下文字段、限额、是否已配置凭据以及媒体即时投递协议都由这里派生，不再跨多文件重复登记。
+工具循环按 agent 拿到的是 `ToolSpec` 本身（`resolve_agent_tool_specs`），schema、处理函数与执行方式都从它取。
 
 暴露给模型的工具列表只由配置决定，不按入口或聊天类型裁剪：历史在私聊、群聊和后台轮之间共享，工具调用
 会留在历史里，列表按轮变化会让模型看到自己调用过的工具消失。不适用的场景由 handler 返回错误。
@@ -26,9 +27,18 @@ from ..generated_image_sender import (
     send_generated_images_from_tool_result,
     send_generated_images_from_tool_results,
 )
-from . import advisor_tools, code_tools, http_tools
+from . import (
+    advisor_tools,
+    code_tools,
+    http_tools,
+    image_tools,
+    sandbox_tools,
+    telegram_command_tools,
+    voice_tools,
+)
 from .advisor_tools import advisor_tool
 from .code_tools import execute_python_code_tool
+from .dispatch import ToolExecution
 from .doc_tools import read_doc_tool
 from .http_tools import fetch_url_tool, google_search_tool
 from .image_tools import generate_image_tool
@@ -41,7 +51,6 @@ from .memory_tools import (
     user_diary_tool,
 )
 from .models import (
-    AI_TOOL_ARG_MODELS,
     AdvisorArgs,
     ExecutePythonCodeArgs,
     ExecuteTelegramCommandArgs,
@@ -65,6 +74,7 @@ from .models import (
     UserDiaryArgs,
     parameters_schema,
 )
+from .rate_limit import ToolLimits
 from .sandbox_tools import linux_sandbox_tool
 from .schedule_tools import schedule_ai_message_tool
 from .sticker_tools import list_available_stickers_tool
@@ -287,14 +297,25 @@ def _voice_gen_configured(settings: Any = None) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
-    """单个 AI 工具的完整声明。"""
+    """单个 AI 工具的完整声明。
+
+    - `execution`：处理函数怎样被调用（见 `tools/dispatch.py`），必须与它是否 `async def` 一致；
+    - `agents`：哪些 agent（`AgentSpec.name`）能用；
+    - `requires_context`：处理函数要读的工具上下文字段（`user_id` 每个入口都有，可以不列）。缺了不会被拦在
+      循环里，处理函数自己返回错误；声明只用于文档与核对，不裁剪工具列表；
+    - `limits`：返回每请求、每用户、冷却与并发限额的函数。数值取自工具实际执行检查时用的那份：
+      生图、语音、沙箱是模块常量，advisor 在配置里（可由环境变量覆盖），所以在调用时读。
+    """
 
     name: str
     description: str
     arg_model: type[ToolArguments]
     handler: Callable[..., Any]
+    execution: ToolExecution
     agents: tuple[str, ...]
     side_effect: SideEffectKind = SideEffectKind.READ_ONLY
+    requires_context: tuple[str, ...] = ()
+    limits: Callable[[], ToolLimits] | None = None
     is_configured: Callable[[Any], bool] = _always_configured
     media: MediaToolSpec | None = None
 
@@ -315,6 +336,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         description="Returns a list of available Telegram commands and features for users",
         arg_model=GetHelpTextArgs,
         handler=get_help_text_tool,
+        execution=ToolExecution.INLINE,
         agents=("main",),
     ),
     ToolSpec(
@@ -327,6 +349,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         arg_model=ExecuteTelegramCommandArgs,
         handler=execute_telegram_command_tool,
+        execution=ToolExecution.ASYNC,
+        requires_context=telegram_command_tools.REQUIRED_CONTEXT_FIELDS,
         agents=("main",),
         side_effect=SideEffectKind.COMMAND_DELEGATION,
     ),
@@ -342,6 +366,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         arg_model=ReadDocArgs,
         handler=read_doc_tool,
+        execution=ToolExecution.INLINE,
         agents=("main",),
     ),
     ToolSpec(
@@ -352,6 +377,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         arg_model=ListAvailableStickersArgs,
         handler=list_available_stickers_tool,
+        execution=ToolExecution.THREAD,
         agents=("main",),
     ),
     ToolSpec(
@@ -359,6 +385,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         description="Use Google search engine to obtain the latest information and answers",
         arg_model=GoogleSearchArgs,
         handler=google_search_tool,
+        execution=ToolExecution.THREAD,
         agents=("main",),
         is_configured=_serpapi_configured,
     ),
@@ -374,6 +401,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         arg_model=AdvisorArgs,
         handler=advisor_tool,
+        execution=ToolExecution.ASYNC,
+        limits=advisor_tools.advisor_limits,
         agents=("main",),
         is_configured=_advisor_configured,
     ),
@@ -382,6 +411,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         description="Fetch message history from group chat (group chats only)",
         arg_model=FetchGroupContextArgs,
         handler=fetch_group_context_tool,
+        execution=ToolExecution.ASYNC,
+        requires_context=("group_id",),
         agents=("main",),
     ),
     ToolSpec(
@@ -392,6 +423,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         arg_model=FetchUrlArgs,
         handler=fetch_url_tool,
+        execution=ToolExecution.THREAD,
         agents=("main",),
     ),
     ToolSpec(
@@ -402,6 +434,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         arg_model=ExecutePythonCodeArgs,
         handler=execute_python_code_tool,
+        execution=ToolExecution.THREAD,
         agents=("main",),
         side_effect=SideEffectKind.EXTERNAL_COMPUTE,
         is_configured=_judge0_configured,
@@ -418,6 +451,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         arg_model=LinuxSandboxArgs,
         handler=linux_sandbox_tool,
+        execution=ToolExecution.THREAD,
+        limits=lambda: sandbox_tools.SANDBOX_LIMITS,
         agents=("main",),
         side_effect=SideEffectKind.EXTERNAL_COMPUTE,
         is_configured=_sandbox_configured,
@@ -430,6 +465,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         arg_model=GenerateImageArgs,
         handler=generate_image_tool,
+        execution=ToolExecution.THREAD,
+        limits=lambda: image_tools.IMAGE_LIMITS,
         agents=("main",),
         side_effect=SideEffectKind.TELEGRAM_MEDIA,
         is_configured=_image_gen_configured,
@@ -443,6 +480,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         arg_model=GenerateVoiceArgs,
         handler=generate_voice_tool,
+        execution=ToolExecution.THREAD,
+        limits=lambda: voice_tools.VOICE_LIMITS,
         agents=("main",),
         side_effect=SideEffectKind.TELEGRAM_MEDIA,
         is_configured=_voice_gen_configured,
@@ -457,6 +496,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         arg_model=KindnessGiftArgs,
         handler=kindness_gift_tool,
+        execution=ToolExecution.ASYNC,
         agents=("main",),
         side_effect=SideEffectKind.STATE_MUTATION,
     ),
@@ -470,6 +510,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         arg_model=UpdateImpressionArgs,
         handler=update_impression_tool,
+        execution=ToolExecution.ASYNC,
         agents=("main",),
         side_effect=SideEffectKind.STATE_MUTATION,
     ),
@@ -478,6 +519,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         description="Fetch user's historical conversation summaries (newest on top, max 5 results per request)",
         arg_model=FetchPermanentSummariesArgs,
         handler=fetch_permanent_summaries_tool,
+        execution=ToolExecution.ASYNC,
         agents=("main", "recap"),
     ),
     ToolSpec(
@@ -485,6 +527,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         description="Search user's permanent chat snapshots with a regex pattern",
         arg_model=SearchPermanentRecordsArgs,
         handler=search_permanent_records_tool,
+        execution=ToolExecution.ASYNC,
         agents=("main", "recap"),
     ),
     ToolSpec(
@@ -496,6 +539,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         arg_model=ScheduleAIMessageArgs,
         handler=schedule_ai_message_tool,
+        execution=ToolExecution.ASYNC,
         agents=("main",),
         side_effect=SideEffectKind.STATE_MUTATION,
     ),
@@ -511,6 +555,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         arg_model=UserDiaryArgs,
         handler=user_diary_tool,
+        execution=ToolExecution.ASYNC,
         agents=("main",),
         side_effect=SideEffectKind.STATE_MUTATION,
     ),
@@ -522,6 +567,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         arg_model=ReadDiaryPageArgs,
         handler=read_diary_page_tool,
+        execution=ToolExecution.ASYNC,
         agents=("recap",),
     ),
     ToolSpec(
@@ -533,6 +579,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
         arg_model=SummarySearchPriorContextArgs,
         handler=search_prior_context_tool,
+        execution=ToolExecution.ASYNC,
+        requires_context=("summary_record_id",),
         agents=("summary",),
     ),
 )
@@ -542,9 +590,6 @@ TOOL_SPEC_BY_NAME: Mapping[str, ToolSpec] = MappingProxyType(
 )
 if len(TOOL_SPEC_BY_NAME) != len(TOOL_SPECS):
     raise RuntimeError("Duplicate tool name in TOOL_SPECS")
-
-AI_TOOL_ARG_MODELS.clear()
-AI_TOOL_ARG_MODELS.update({spec.name: spec.arg_model for spec in TOOL_SPECS})
 
 _MEDIA_TOOL_SPECS_ORDERED: tuple[tuple[str, MediaToolSpec], ...] = tuple(
     sorted(
@@ -567,52 +612,43 @@ def iter_media_tool_specs() -> tuple[tuple[str, MediaToolSpec], ...]:
     return _MEDIA_TOOL_SPECS_ORDERED
 
 
-def agent_tool_schemas(agent: str) -> list[dict[str, Any]]:
-    """返回属于 `agent` 的全部静态工具 schema（不做运行时可用性过滤，供文档目录与默认全集使用）。"""
-    return [spec.schema() for spec in TOOL_SPECS if agent in spec.agents]
+def agent_tool_specs(agent: str) -> tuple[ToolSpec, ...]:
+    """属于 `agent` 的全部工具声明（不做运行时可用性过滤，供文档目录与核对使用）。"""
+    return tuple(spec for spec in TOOL_SPECS if agent in spec.agents)
 
 
-def agent_tool_handlers(agent: str) -> dict[str, Callable[..., Any]]:
-    """返回属于 `agent` 的工具处理函数映射。"""
-    return {spec.name: spec.handler for spec in TOOL_SPECS if agent in spec.agents}
-
-
-MAIN_TOOL_HANDLERS: dict[str, Callable[..., Any]] = agent_tool_handlers("main")
-
-
-def resolve_agent_tools(
+def resolve_agent_tool_specs(
     agent: str,
     *,
     provider: ai_providers.ProviderSpec | None = None,
     settings: Any = None,
-) -> list[dict[str, Any]]:
-    """返回 `agent` 暴露给模型的工具 schema：去掉没配置凭据的工具和 provider 声明不支持的工具。
+) -> tuple[ToolSpec, ...]:
+    """`agent` 暴露给模型的工具：去掉没配置凭据的工具和 provider 声明不支持的工具。
 
     配置在进程运行期间不变，所以同一个 provider 拿到的列表每一轮都相同。
     """
     skipped = frozenset(provider.skip_tools) if provider is not None else frozenset()
-    return [
-        spec.schema()
+    return tuple(
+        spec
         for spec in TOOL_SPECS
         if agent in spec.agents
         and spec.name not in skipped
         and spec.is_configured(settings)
-    ]
+    )
 
 
 __all__ = [
     "IMAGE_MEDIA_SPEC",
-    "MAIN_TOOL_HANDLERS",
     "MediaToolSpec",
     "SideEffectKind",
     "TOOL_SPECS",
     "TOOL_SPEC_BY_NAME",
+    "ToolExecution",
     "ToolSpec",
     "VOICE_MEDIA_SPEC",
-    "agent_tool_handlers",
-    "agent_tool_schemas",
+    "agent_tool_specs",
     "get_media_tool_spec",
     "get_tool_spec",
     "iter_media_tool_specs",
-    "resolve_agent_tools",
+    "resolve_agent_tool_specs",
 ]

@@ -1,7 +1,5 @@
 from fogmoe_telegram_bot.core import config
 
-from .dispatch import inline_tool
-
 MAX_DOC_CHARS = 8000
 
 
@@ -33,7 +31,6 @@ def _doc_index() -> list[dict]:
     return entries
 
 
-@inline_tool
 def read_doc_tool(topic: str | None = None, **kwargs) -> dict:
     if not config.INTERNAL_DOCS:
         return {"error": "No internal documents are available"}

@@ -58,7 +58,7 @@ def env(app_database, monkeypatch):
     async def no_media(**kwargs):
         return []
 
-    monkeypatch.setattr(idle_followup, "_generate_recap", fake_recap)
+    monkeypatch.setattr(idle_followup, "generate_recap", fake_recap)
     monkeypatch.setattr(idle_followup.ai_chat, "get_ai_response", ai.get_ai_response)
     monkeypatch.setattr(outbound, "send_ai_reply_with_stickers", telegram.send_reply)
     monkeypatch.setattr(idle_followup, "send_generated_media", no_media)

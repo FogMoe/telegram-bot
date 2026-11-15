@@ -5,7 +5,7 @@
 适用于：
 
 - `src/fogmoe_telegram_bot/resources/prompts/system_prompt.md` 中的工具调用规则；
-- `src/fogmoe_telegram_bot/features/ai/tools/schemas.py` 中的工具描述；
+- `src/fogmoe_telegram_bot/features/ai/tools/specs.py` 中 `TOOL_SPECS` 的工具描述；
 - `src/fogmoe_telegram_bot/features/ai/tools/models.py` 中的参数描述与约束；
 - 由工具调用其他模型时使用的独立 system prompt；
 - 工具 handler 中的运行时校验、限流和错误处理。
@@ -98,7 +98,7 @@
 
 ## 第二层：tool description
 
-位置：`src/fogmoe_telegram_bot/features/ai/tools/schemas.py`
+位置：`src/fogmoe_telegram_bot/features/ai/tools/specs.py` 里每条 `ToolSpec` 的 `description`
 
 tool description 是工具自身的使用说明，必须在脱离主 system prompt 时仍能让模型理解：
 
@@ -264,13 +264,12 @@ Submit one complete reasoning task to a read-only senior advisor. Put the questi
 ## 新增或修改工具的流程
 
 1. 在 `models.py` 定义参数模型、字段说明和结构化约束。
-2. 在 `schemas.py` 编写用途、用法、边界和结果语义。
+2. 在 `specs.py` 的 `TOOL_SPECS` 登记一条 `ToolSpec`：`description` 写用途、用法、边界和结果语义，并声明处理函数、执行方式、开放的 agent、需要的上下文字段与限额。
 3. 在主 `system_prompt.md` 仅增加必要的调用/不调用条件。
-4. 在 `registry.py` 注册 handler。
-5. 在 handler 中执行权限、资源、状态和安全限制。
-6. 如果工具内部调用模型，在 `src/fogmoe_telegram_bot/resources/prompts/` 新增独立 prompt，并由 `config.py` 加载。
-7. 将运维配置记录在对应开发文档中。
-8. 按 `docs/testing-guidelines.md` 添加小而稳定的测试，不访问真实外部服务。
+4. 在 handler 中执行权限、资源、状态和安全限制；限额的数值用模块常量，`ToolSpec.limits` 引用同一份。
+5. 如果工具内部调用模型，在 `src/fogmoe_telegram_bot/resources/prompts/` 新增独立 prompt，并由 `config.py` 加载。
+6. 将运维配置记录在对应开发文档中。
+7. 按 `docs/testing-guidelines.md` 添加小而稳定的测试，不访问真实外部服务。
 
 ## Review 清单
 

@@ -5,6 +5,7 @@ import logging
 import threading
 
 import pytest
+from tool_fakes import use_tool
 
 from fogmoe_telegram_bot.features.ai import job_claims, telegram_visible_sender, tool_runner
 from fogmoe_telegram_bot.features.ai.types import ABORT_EVENT_KEY, JobAbortedError, raise_if_aborted
@@ -242,7 +243,7 @@ class TestAbortSignal:
             return {"organic_results": []}
 
         monkeypatch.setattr(tool_runner, "create_chat_completion", fake_completion)
-        monkeypatch.setitem(tool_runner.AI_TOOL_HANDLERS, "google_search", first_tool_loses_the_claim)
+        use_tool(monkeypatch, "google_search", first_tool_loses_the_claim)
 
         with pytest.raises(JobAbortedError):
             run(

@@ -2,6 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from tool_fakes import use_tool
 
 from fogmoe_telegram_bot.core import ai_providers, config
 from fogmoe_telegram_bot.core.deadline import Deadline
@@ -182,8 +183,8 @@ def test_a_failure_after_tools_never_reruns_them(settings_override, monkeypatch)
         return responses.pop(0)
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_completion)
-    monkeypatch.setitem(
-        tool_runner.AI_TOOL_HANDLERS,
+    use_tool(
+        monkeypatch,
         "update_impression",
         lambda **kwargs: tool_runs.append(kwargs) or {"status": "updated"},
     )
@@ -584,24 +585,16 @@ def test_visible_handler_and_deadline_reach_the_tool_loop(settings_override, cha
     assert chat_loop.calls[0]["kwargs"]["deadline"] is deadline
 
 
-def test_zhipu_resolves_to_zai_and_forwards_declared_skip_tools(
+def test_zhipu_resolves_to_zai_and_the_loop_hides_its_declared_skip_tools(
     monkeypatch, settings_override, chat_loop
 ):
-    settings_override(AI_CHAT_ORDER="zhipu", ZHIPU_CHAT_MODEL="glm-chat")
-
-    asyncio.run(router.get_ai_response([], 1))
-
-    (call,) = chat_loop.calls
-    assert call["provider"] == "zai"
-    assert call["model"] == "glm-chat"
-    assert call["kwargs"]["provider_name"] == "Z.ai"
-    assert tuple(call["kwargs"]["skip_tools"]) == ()
-
     from dataclasses import replace
     from types import MappingProxyType
 
     from fogmoe_telegram_bot.core import ai_providers
+    from fogmoe_telegram_bot.features.ai.agents import MAIN_AGENT
 
+    settings_override(AI_CHAT_ORDER="zhipu", ZHIPU_CHAT_MODEL="glm-chat", SERPAPI_API_KEY="k")
     patched = {
         key: (
             replace(spec, skip_tools=("google_search",))
@@ -614,15 +607,16 @@ def test_zhipu_resolves_to_zai_and_forwards_declared_skip_tools(
 
     asyncio.run(router.get_ai_response([], 1))
 
-    assert tuple(chat_loop.calls[1]["kwargs"]["skip_tools"]) == ("google_search",)
-
-
-def test_other_providers_hide_no_tools(settings_override, chat_loop):
-    settings_override(AI_CHAT_ORDER="openai", OPENAI_CHAT_MODEL="gpt")
-
-    asyncio.run(router.get_ai_response([], 1))
-
-    assert not chat_loop.calls[0]["kwargs"]["skip_tools"]
+    (call,) = chat_loop.calls
+    assert call["provider"] == "zai"
+    assert call["model"] == "glm-chat"
+    assert call["kwargs"]["provider_name"] == "Z.ai"
+    assert call["kwargs"]["agent"] is MAIN_AGENT
+    # 工具循环按 provider 的声明取工具，router 不再另传。
+    loop_tools = {spec.name for spec in MAIN_AGENT.tools(ai_providers.lookup(call["provider"]))}
+    assert "google_search" not in loop_tools
+    other_tools = {spec.name for spec in MAIN_AGENT.tools(ai_providers.lookup("openai"))}
+    assert "google_search" in other_tools
 
 
 def test_a_provider_without_a_chat_model_is_skipped(settings_override, chat_loop):

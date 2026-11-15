@@ -1,8 +1,12 @@
 import asyncio
+import dataclasses
 
 import pytest
+from tool_fakes import fake_tool, use_tool
 
+from fogmoe_telegram_bot.core import ai_providers
 from fogmoe_telegram_bot.features.ai import tool_loop_messages, tool_runner
+from fogmoe_telegram_bot.features.ai.agents import MAIN_AGENT
 from fogmoe_telegram_bot.features.ai.types import (
     TOOL_CONTEXT_MESSAGES_KEY,
     MediaDeliveryState,
@@ -69,7 +73,7 @@ def test_run_tool_loop_forwards_context_hard_limit_ratio(monkeypatch):
         "test_provider",
         "test_model",
         [{"role": "user", "content": "summarize"}],
-        context_hard_limit_ratio=1.5,
+        agent=dataclasses.replace(MAIN_AGENT, context_hard_limit_ratio=1.5),
     ))
     message = result.text
 
@@ -102,8 +106,8 @@ def test_run_tool_loop_uses_fogmoe_tool_calls_from_later_choice(monkeypatch):
         return responses.pop(0)
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
-    monkeypatch.setitem(
-        tool_runner.AI_TOOL_HANDLERS,
+    use_tool(
+        monkeypatch,
         "google_search",
         lambda **kwargs: handler_calls.append(kwargs) or {"organic_results": []},
     )
@@ -170,6 +174,11 @@ def test_run_tool_loop_uses_custom_prompt_and_tool_subset(monkeypatch):
             "parameters": {"type": "object", "properties": {}},
         },
     }
+    recap_agent = dataclasses.replace(
+        MAIN_AGENT,
+        display_name="Recap",
+        system_prompt=lambda _tool_context: "recap system prompt",
+    )
     responses = [
         _Response(
             _Message(
@@ -197,8 +206,8 @@ def test_run_tool_loop_uses_custom_prompt_and_tool_subset(monkeypatch):
         return responses.pop(0)
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
-    monkeypatch.setitem(
-        tool_runner.AI_TOOL_HANDLERS,
+    use_tool(
+        monkeypatch,
         "fetch_permanent_summaries",
         lambda **kwargs: global_handler_calls.append(kwargs) or {"records": []},
     )
@@ -207,15 +216,14 @@ def test_run_tool_loop_uses_custom_prompt_and_tool_subset(monkeypatch):
         "test_provider",
         "test_model",
         [{"role": "user", "content": "review"}],
-        provider_name="Recap",
-        tool_definitions=[tool_definition],
-        tool_handlers={
-            "fetch_permanent_summaries": (
-                lambda **kwargs: custom_handler_calls.append(kwargs)
-                or {"records": []}
+        agent=recap_agent,
+        tools=[
+            fake_tool(
+                "fetch_permanent_summaries",
+                lambda **kwargs: custom_handler_calls.append(kwargs) or {"records": []},
+                description="Fetch summaries",
             )
-        },
-        system_prompt_override="recap system prompt",
+        ],
     ))
     message = result.text
 
@@ -256,8 +264,8 @@ def test_run_tool_loop_rejects_tool_outside_custom_subset(monkeypatch):
         return responses.pop(0)
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
-    monkeypatch.setitem(
-        tool_runner.AI_TOOL_HANDLERS,
+    use_tool(
+        monkeypatch,
         "update_impression",
         lambda **kwargs: handler_calls.append(kwargs) or {"status": "updated"},
     )
@@ -266,9 +274,12 @@ def test_run_tool_loop_rejects_tool_outside_custom_subset(monkeypatch):
         "test_provider",
         "test_model",
         [{"role": "user", "content": "review"}],
-        provider_name="Recap",
-        tool_definitions=[],
-        system_prompt_override="recap system prompt",
+        agent=dataclasses.replace(
+            MAIN_AGENT,
+            display_name="Recap",
+            system_prompt=lambda _tool_context: "recap system prompt",
+        ),
+        tools=[],
     ))
     message = result.text
 
@@ -308,8 +319,8 @@ def test_run_tool_loop_does_not_synthesize_tool_result_reply(monkeypatch):
         "create_chat_completion",
         fake_create_chat_completion,
     )
-    monkeypatch.setitem(
-        tool_runner.AI_TOOL_HANDLERS,
+    use_tool(
+        monkeypatch,
         "google_search",
         lambda **kwargs: {
             "organic_results": [
@@ -368,8 +379,8 @@ def test_run_tool_loop_generates_final_reply_after_tool_limit(monkeypatch):
         "create_chat_completion",
         fake_create_chat_completion,
     )
-    monkeypatch.setitem(
-        tool_runner.AI_TOOL_HANDLERS,
+    use_tool(
+        monkeypatch,
         "google_search",
         lambda **kwargs: {
             "organic_results": [
@@ -387,7 +398,7 @@ def test_run_tool_loop_generates_final_reply_after_tool_limit(monkeypatch):
         "test_model",
         [{"role": "user", "content": "search example"}],
         provider_name="Test",
-        max_iterations=1,
+        agent=dataclasses.replace(MAIN_AGENT, max_iterations=1),
     ))
     message = result.text
 
@@ -443,8 +454,8 @@ def test_run_tool_loop_raises_partial_response_when_followup_times_out(monkeypat
         sleeps.append(delay)
 
     monkeypatch.setattr(tool_runner.asyncio, "sleep", fake_sleep)
-    monkeypatch.setitem(
-        tool_runner.AI_TOOL_HANDLERS,
+    use_tool(
+        monkeypatch,
         "google_search",
         lambda **kwargs: {"organic_results": []},
     )
@@ -506,8 +517,8 @@ def test_run_tool_loop_retries_transient_followup_without_reexecuting_tool(monke
         sleeps.append(delay)
 
     monkeypatch.setattr(tool_runner.asyncio, "sleep", fake_sleep)
-    monkeypatch.setitem(
-        tool_runner.AI_TOOL_HANDLERS,
+    use_tool(
+        monkeypatch,
         "google_search",
         lambda **kwargs: tool_calls.append(kwargs) or {"organic_results": []},
     )
@@ -557,8 +568,8 @@ def test_run_tool_loop_injects_telegram_events_before_final_reply(monkeypatch):
         "create_chat_completion",
         fake_create_chat_completion,
     )
-    monkeypatch.setitem(
-        tool_runner.AI_TOOL_HANDLERS,
+    use_tool(
+        monkeypatch,
         "execute_telegram_command",
         lambda **kwargs: {
             "success": True,
@@ -655,8 +666,8 @@ def test_run_tool_loop_exposes_command_error_for_model_retry(monkeypatch):
         "create_chat_completion",
         fake_create_chat_completion,
     )
-    monkeypatch.setitem(
-        tool_runner.AI_TOOL_HANDLERS,
+    use_tool(
+        monkeypatch,
         "execute_telegram_command",
         fake_execute,
     )
@@ -715,8 +726,8 @@ def test_run_tool_loop_does_not_retry_non_transient_followup_error(monkeypatch):
         sleeps.append(delay)
 
     monkeypatch.setattr(tool_runner.asyncio, "sleep", fake_sleep)
-    monkeypatch.setitem(
-        tool_runner.AI_TOOL_HANDLERS,
+    use_tool(
+        monkeypatch,
         "google_search",
         lambda **kwargs: {"organic_results": []},
     )
@@ -753,8 +764,8 @@ def test_an_error_after_a_tool_round_leaves_the_loop_as_partial(monkeypatch):
         return responses.pop(0)
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
-    monkeypatch.setitem(
-        tool_runner.AI_TOOL_HANDLERS,
+    use_tool(
+        monkeypatch,
         "google_search",
         lambda **kwargs: tool_calls.append(kwargs) or {"organic_results": []},
     )
@@ -832,18 +843,22 @@ def test_skip_tools_hides_schema_and_pairs_error_when_called_anyway(monkeypatch)
         return responses.pop(0)
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
-    monkeypatch.setitem(
-        tool_runner.AI_TOOL_HANDLERS,
+    use_tool(
+        monkeypatch,
         "google_search",
         lambda **kwargs: handler_calls.append(kwargs) or {"organic_results": []},
     )
+    hiding_provider = dataclasses.replace(
+        ai_providers.require("openai"),
+        skip_tools=("google_search",),
+    )
+    monkeypatch.setattr(tool_runner.ai_providers, "lookup", lambda _name: hiding_provider)
 
     result = asyncio.run(tool_runner.run_tool_loop(
-        "test_provider",
+        "openai",
         "test_model",
         [{"role": "user", "content": "search example"}],
         provider_name="Test",
-        skip_tools=["google_search"],
     ))
     message = result.text
 
@@ -918,7 +933,7 @@ def test_generated_tool_call_ids_stay_paired_across_turns(monkeypatch):
             return responses.pop(0)
 
         monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
-        monkeypatch.setitem(tool_runner.AI_TOOL_HANDLERS, "read_doc", lambda **kwargs: {"ok": True})
+        use_tool(monkeypatch, "read_doc", lambda **kwargs: {"ok": True})
         result = asyncio.run(tool_runner.run_tool_loop(
             "test_provider",
             "test_model",
@@ -949,8 +964,8 @@ def test_an_unserializable_tool_result_reaches_the_model_as_text(monkeypatch):
         return responses.pop(0)
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
-    monkeypatch.setitem(
-        tool_runner.AI_TOOL_HANDLERS,
+    use_tool(
+        monkeypatch,
         "google_search",
         lambda **kwargs: tool_calls.append(kwargs) or {"value": Opaque()},
     )
@@ -1007,8 +1022,8 @@ def test_run_tool_loop_sends_generated_voice_immediately(monkeypatch):
         "create_chat_completion",
         fake_create_chat_completion,
     )
-    monkeypatch.setitem(
-        tool_runner.AI_TOOL_HANDLERS,
+    use_tool(
+        monkeypatch,
         "generate_voice",
         lambda **kwargs: {
             "status": "generated",
@@ -1073,7 +1088,7 @@ def test_tool_loop_logs_its_token_totals(monkeypatch, caplog):
         return responses.pop(0)
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
-    monkeypatch.setitem(tool_runner.AI_TOOL_HANDLERS, "read_doc", lambda **kwargs: {"ok": True})
+    use_tool(monkeypatch, "read_doc", lambda **kwargs: {"ok": True})
 
     with caplog.at_level("INFO"):
         asyncio.run(tool_runner.run_tool_loop(
@@ -1127,8 +1142,8 @@ def test_a_later_visible_send_that_sends_nothing_does_not_replay_the_earlier_one
         return responses.pop(0)
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
-    monkeypatch.setitem(
-        tool_runner.AI_TOOL_HANDLERS,
+    use_tool(
+        monkeypatch,
         "google_search",
         lambda **kwargs: handler_calls.append(kwargs) or {"organic_results": []},
     )

@@ -12,8 +12,7 @@ from fogmoe_telegram_bot.features.ai.tools.context import (
     set_tool_request_context,
 )
 from fogmoe_telegram_bot.features.ai.tools.models import AdvisorArgs, parameters_schema
-from fogmoe_telegram_bot.features.ai.tools.registry import AI_TOOL_HANDLERS
-from fogmoe_telegram_bot.features.ai.tools.schemas import OPENAI_TOOLS
+from fogmoe_telegram_bot.features.ai.tools.specs import TOOL_SPEC_BY_NAME, agent_tool_specs
 
 
 def _run(coro):
@@ -58,10 +57,10 @@ def _prepare_advisor(monkeypatch):
 
 def test_advisor_schema_is_registered_and_bounded():
     schema = parameters_schema(AdvisorArgs)
-    tool_names = [tool["function"]["name"] for tool in OPENAI_TOOLS]
+    tool_names = [spec.name for spec in agent_tool_specs("main")]
 
     assert "advisor" in tool_names
-    assert AI_TOOL_HANDLERS["advisor"] is advisor_tools.advisor_tool
+    assert TOOL_SPEC_BY_NAME["advisor"].handler is advisor_tools.advisor_tool
     assert schema["required"] == ["task"]
     assert schema["properties"]["task"]["maxLength"] == 6000
     assert schema["properties"]["case_facts"]["maxLength"] == 12000

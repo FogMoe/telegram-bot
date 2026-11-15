@@ -326,10 +326,6 @@ class UserDiaryArgs(ToolArguments):
     )
 
 
-# 由 `tools/specs.py` 在包加载时按 `TOOL_SPECS` 单点填充，避免新增工具时重复登记。
-AI_TOOL_ARG_MODELS: dict[str, type[ToolArguments]] = {}
-
-
 def _clean_json_schema(value: Any, *, preserve_title_key: bool = False) -> Any:
     if isinstance(value, list):
         return [_clean_json_schema(item) for item in value]
@@ -367,17 +363,7 @@ def parameters_schema(model: type[ToolArguments]) -> dict[str, Any]:
     return schema
 
 
-def validate_tool_arguments(
-    tool_name: str,
-    arguments: Any,
-) -> ToolArguments:
-    model = AI_TOOL_ARG_MODELS[tool_name]
-    return model.model_validate(arguments)
-
-
 __all__ = [
-    "AI_TOOL_ARG_MODELS",
     "ToolArguments",
     "parameters_schema",
-    "validate_tool_arguments",
 ]

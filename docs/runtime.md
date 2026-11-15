@@ -169,7 +169,7 @@ PTB handler（concurrent_updates 有界）
 | `generate_image`、`generate_voice` | `requests`，响应体较大，最长 `IMAGE_GEN_TIMEOUT` | 二进制响应与多步校验逻辑与 `requests.Response` 耦合，改写面大 |
 | `linux_sandbox`（E2B） | e2b 同步 SDK，沙箱句柄保存在请求上下文里，结束时 `kill()` 也是阻塞调用 | 沙箱生命周期绑定在请求上下文上；清理走 `cleanup_linux_sandbox_async`（适配器线程） |
 | `list_available_stickers` | `urllib` | 本地缓存加偶发的 Telegram 请求 |
-| `get_help_text`、`read_doc` | 纯内存 | 标记为内联（`@inline_tool`），直接在事件循环里调用，不进线程 |
+| `get_help_text`、`read_doc` | 纯内存 | 声明为内联（`ToolExecution.INLINE`），直接在事件循环里调用，不进线程 |
 
 这些工具持有的 `requests.Session`（每线程一个）通过 `core/http_sessions.py` 登记，停止时统一关闭。
 
@@ -181,8 +181,9 @@ PTB handler（concurrent_updates 有界）
 
 `tests/test_runtime_boundaries.py` 的清单（`ALLOWED_*`）记录了上述例外，新增例外必须在那里写明理由。
 
-**新增工具时怎么选：** 访问数据库或调用别的 async 能力的，写成 `async def`；只能同步的 SDK，写成普通函数（自动进 `tools()`）；
-只有纯内存、微秒级、不做任何 I/O 的才允许 `@inline_tool`。不要在 `async def` 里直接调用 `requests`、`time.sleep` 或同步 SDK。
+**新增工具时怎么选：** 访问数据库或调用别的 async 能力的，写成 `async def`，声明 `ToolExecution.ASYNC`；只能同步的 SDK，写成普通函数，
+声明 `ToolExecution.THREAD`（进 `tools()`）；只有纯内存、微秒级、不做任何 I/O 的才允许声明 `ToolExecution.INLINE`。
+声明与处理函数是否 `async def` 不一致时 `tests/test_tool_specs.py` 会失败。不要在 `async def` 里直接调用 `requests`、`time.sleep` 或同步 SDK。
 
 ## 取消与关停
 

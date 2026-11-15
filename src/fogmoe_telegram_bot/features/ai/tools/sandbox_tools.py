@@ -7,7 +7,7 @@ from fogmoe_telegram_bot.core import blocking, config
 from fogmoe_telegram_bot.core.redaction import describe_exception
 
 from .context import get_tool_request_context
-from .rate_limit import UserSessionGate
+from .rate_limit import ToolLimits, UserSessionGate
 
 DEFAULT_CWD = "/home/user"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 15
@@ -19,6 +19,11 @@ MAX_SANDBOX_LIFETIME_SECONDS = 300
 USER_SANDBOX_CREATE_COOLDOWN_SECONDS = 300
 # 全站同时运行的沙箱数上限：给 E2B 费用和账号并发额度封顶，超出的请求直接拿到 busy，不排队。
 MAX_CONCURRENT_SANDBOXES = 4
+SANDBOX_LIMITS = ToolLimits(
+    per_request=MAX_CALLS_PER_REQUEST,
+    cooldown_seconds=USER_SANDBOX_CREATE_COOLDOWN_SECONDS,
+    max_concurrent=MAX_CONCURRENT_SANDBOXES,
+)
 
 _SANDBOX_CONTEXT_KEY = "_linux_sandbox"
 _SANDBOX_CALL_COUNT_KEY = "_linux_sandbox_call_count"

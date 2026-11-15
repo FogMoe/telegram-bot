@@ -3,6 +3,7 @@ import dataclasses
 from types import SimpleNamespace
 
 import pytest
+from tool_fakes import fake_tool
 
 from fogmoe_telegram_bot.core.deadline import Deadline
 from fogmoe_telegram_bot.features.ai import tool_runner
@@ -191,18 +192,15 @@ def test_turn_messages_record_visible_text_tool_pairs_and_telegram_events(monkey
             "gpt-4o",
             [{"role": "user", "content": "看下我的资料"}],
             visible_content_handler=fake_visible,
-            tool_definitions=[
-                {
-                    "type": "function",
-                    "function": {"name": "execute_telegram_command", "parameters": {}},
-                }
+            tools=[
+                fake_tool(
+                    "execute_telegram_command",
+                    lambda command: {
+                        "success": True,
+                        TOOL_CONTEXT_MESSAGES_KEY: ["<metadata event=\"command\" />"],
+                    },
+                )
             ],
-            tool_handlers={
-                "execute_telegram_command": lambda command: {
-                    "success": True,
-                    TOOL_CONTEXT_MESSAGES_KEY: ["<metadata event=\"command\" />"],
-                }
-            },
         )
     )
 
@@ -249,11 +247,10 @@ def test_interrupted_round_turn_messages_stay_paired(monkeypatch):
                 "openai",
                 "gpt-4o",
                 [{"role": "user", "content": "run"}],
-                tool_definitions=[
-                    {"type": "function", "function": {"name": "slow_tool", "parameters": {}}},
-                    {"type": "function", "function": {"name": "fast_tool", "parameters": {}}},
+                tools=[
+                    fake_tool("slow_tool", slow_tool),
+                    fake_tool("fast_tool", lambda: {"ok": True}),
                 ],
-                tool_handlers={"slow_tool": slow_tool, "fast_tool": lambda: {"ok": True}},
                 deadline=Deadline(0.05),
             )
         )

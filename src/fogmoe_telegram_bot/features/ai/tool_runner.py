@@ -1,6 +1,7 @@
 """工具循环：问模型 → 解析 tool_calls → 执行工具 → 回填结果 → 下一轮，直到模型给出不带工具调用的回复。
 
-这里只放循环骨架与模型调用（含工具执行后的重试）。细节在同目录的模块里：
+这里放循环骨架与模型调用（含工具执行后的重试），以及按 agent 回退运行一次循环的 `run_agent`。
+agent 的声明（工具、系统提示词、循环参数）在 `agents.py`。细节在同目录的模块里：
 
 - `tool_loop_state.py`：这一轮的消息序列、每次工具调用的记录与已发出的内容，结束时冻结成 `LoopResult`；
 - `tool_loop_messages.py`：模型返回的 assistant 消息与 tool_calls 转成普通 dict，以及 provider 的协议兼容；
@@ -13,15 +14,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Sequence
 from typing import Any
 
-from fogmoe_telegram_bot.core import config
+from fogmoe_telegram_bot.core import ai_providers, config
 from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline, DeadlineExceeded
 
+from .agents import MAIN_AGENT, AgentSpec
 from .errors import is_retryable_completion_error
 from .litellm_client import create_chat_completion, response_token_counts
-from .prompts import compose_system_prompt
+from .task_runner import Candidate, run_with_fallback
 from .tool_loop_deadline import close_interrupted_round, deadline_guard
 from .tool_loop_delivery import (
     close_round_after_media_deadline,
@@ -39,7 +41,8 @@ from .tool_loop_messages import (
     resolve_assistant_message,
 )
 from .tool_loop_state import LoopState
-from .tools import AI_TOOL_HANDLERS, OPENAI_TOOLS
+from .tools import ToolSpec
+from .tools.context import tool_request_scope
 from .types import (
     LoopResult,
     LoopStatus,
@@ -107,50 +110,25 @@ async def run_tool_loop(
     messages: list[dict[str, Any]],
     tool_context: dict[str, object] | None = None,
     *,
-    provider_name: str = "AI",
-    tool_choice: str | dict[str, object] = "auto",
-    context_hard_limit_ratio: float | None = None,
-    max_iterations: int = 10,
-    completion_timeout: int | None = None,
-    skip_tools: Iterable[str] | None = None,
-    completion_kwargs: dict[str, Any] | None = None,
+    agent: AgentSpec = MAIN_AGENT,
+    provider_name: str | None = None,
     visible_content_handler: VisibleContentHandler | None = None,
-    tool_definitions: list[dict[str, Any]] | None = None,
-    tool_handlers: Mapping[str, Callable[..., Any]] | None = None,
-    system_prompt_override: str | None = None,
     deadline: Deadline | None = None,
+    tools: Sequence[ToolSpec] | None = None,
 ) -> LoopResult:
-    """Run a tool loop, returning a typed `LoopResult`.
+    """用 `provider` 的 `model` 为 `agent` 跑一次工具循环，返回类型化的 `LoopResult`。
 
+    工具默认是 `agent.tools(provider 的声明)`；`provider_name` 是日志前缀，默认用 `agent.display_name`。
     原生 async：模型调用 `await`，async 工具直接 `await`，同步工具走有界线程适配器。
     `deadline` 到期时取消正在等待的步骤，抛 `TurnDeadlineError`（带着到期为止的结果）。
     开始执行工具或发出过可见内容之后（`LoopState.has_side_effects`），其他异常一律包成
     `PartialAIResponseError`（带着到失败为止的结果）离开循环：调用方不能再换模型或 provider 从头重跑。
     """
-    skip_set = {name for name in (skip_tools or ()) if name}
-    raw_tools = OPENAI_TOOLS if tool_definitions is None else list(tool_definitions)
-    tools = [
-        tool
-        for tool in raw_tools
-        if not (
-            isinstance(tool, dict)
-            and (tool.get("function") or {}).get("name") in skip_set
-        )
-    ]
-    handlers = AI_TOOL_HANDLERS if tool_handlers is None else dict(tool_handlers)
-    available_tool_names = {
-        str((tool.get("function") or {}).get("name"))
-        for tool in tools
-        if isinstance(tool, dict) and (tool.get("function") or {}).get("name")
-    }
-    system_message = {
-        "role": "system",
-        "content": (
-            compose_system_prompt(tool_context)
-            if system_prompt_override is None
-            else system_prompt_override
-        ),
-    }
+    provider_name = provider_name or agent.display_name
+    tool_specs = agent.tools(ai_providers.lookup(provider)) if tools is None else tuple(tools)
+    tools_by_name = {spec.name: spec for spec in tool_specs}
+    tool_schemas = [spec.schema() for spec in tool_specs]
+    system_message = {"role": "system", "content": agent.system_prompt(tool_context)}
 
     filtered_messages = [
         msg for msg in messages if msg.get("content") is not None or msg.get("tool_calls")
@@ -163,8 +141,8 @@ async def run_tool_loop(
     token_totals = [0, 0, 0]
     request_timeout: float | None = (
         config.AI_CHAT_COMPLETION_TIMEOUT_SECONDS
-        if completion_timeout is None
-        else completion_timeout
+        if agent.completion_timeout is None
+        else agent.completion_timeout
     )
 
     async def complete(
@@ -175,8 +153,8 @@ async def run_tool_loop(
         """一次模型调用：整轮截止时间到期就取消，单次超时收紧到剩余时间之内。"""
         call_timeout = request_timeout if deadline is None else deadline.clip(request_timeout)
         request_kwargs = {
-            **(completion_kwargs or {}),
-            "context_hard_limit_ratio": context_hard_limit_ratio,
+            **agent.completion_kwargs,
+            "context_hard_limit_ratio": agent.context_hard_limit_ratio,
             "timeout": call_timeout,
         }
         nonlocal ai_calls
@@ -199,12 +177,12 @@ async def run_tool_loop(
     # 到期时正在等待的步骤，决定提示和是否把这次计为 provider 失败。
     phase = "model"
     try:
-        for iteration in range(max_iterations):
+        for iteration in range(agent.max_iterations):
             raise_if_aborted(tool_context)
             phase = "model"
             if deadline is not None:
                 deadline.raise_if_expired()
-            response = await complete(tools=tools, tool_choice=tool_choice)
+            response = await complete(tools=tool_schemas, tool_choice="auto")
 
             assistant_message, raw_tool_calls = resolve_assistant_message(
                 response,
@@ -278,11 +256,10 @@ async def run_tool_loop(
                 # 只有真正运行处理函数时才会在这里到期；校验失败、未开放、未知工具都直接返回错误结果。
                 phase = "tool"
                 try:
-                    execution = await execute_tool_call(
+                    outcome = await execute_tool_call(
                         function_name,
                         arguments,
-                        handlers=handlers,
-                        available_tool_names=available_tool_names,
+                        tools=tools_by_name,
                         provider_name=provider_name,
                         deadline=deadline,
                     )
@@ -302,7 +279,7 @@ async def run_tool_loop(
                     sent_media_messages = await send_media_result_immediately(
                         visible_content_handler=visible_content_handler,
                         tool_name=function_name,
-                        tool_result=execution.result,
+                        tool_result=outcome.result,
                         provider_name=provider_name,
                         deadline=deadline,
                     )
@@ -314,32 +291,32 @@ async def run_tool_loop(
                         call_index,
                         exc.reason,
                         round_context_messages,
-                        internal_tool_result=execution.result,
+                        internal_tool_result=outcome.result,
                     )
                     raise
 
                 state.finish_tool_call(
                     record_index,
-                    status=execution.status,
+                    status=outcome.status,
                     public_result=public_tool_result(
                         function_name,
-                        execution.result,
+                        outcome.result,
                         media_sent=bool(sent_media_messages),
                     ),
-                    internal_result=execution.result,
+                    internal_result=outcome.result,
                     media_delivery=media_delivery_after_execution(
                         function_name,
-                        execution.result,
+                        outcome.result,
                         sent_media_messages,
                     ),
                 )
                 round_context_messages.extend(
-                    context_messages_from_tool_result(execution.result)
+                    context_messages_from_tool_result(outcome.result)
                 )
 
             state.add_context_messages(round_context_messages)
 
-        logging.warning("%s 工具调用次数超限（%s轮）", provider_name, max_iterations)
+        logging.warning("%s 工具调用次数超限（%s轮）", provider_name, agent.max_iterations)
         phase = "model"
         if deadline is not None:
             deadline.raise_if_expired()
@@ -387,3 +364,36 @@ async def run_tool_loop(
             *token_totals,
             sum(1 for record in state.tool_calls if record.status is not ToolCallStatus.NOT_EXECUTED),
         )
+
+
+async def run_agent(
+    agent: AgentSpec,
+    messages: list[dict[str, Any]],
+    tool_context: dict[str, object],
+) -> tuple[LoopResult, Candidate]:
+    """按 `agent.task` 的 provider 与模型顺序跑一次工具循环，返回第一次成功的结果与它用的模型。
+
+    每次尝试在一份新的工具请求上下文里运行（`tool_request_scope`）。工具都是只读的 agent，执行过工具之后的
+    失败也换下一个模型重跑（`AgentSpec.tools_are_read_only`）；声明了 `empty_reply_is_failure` 的 agent
+    空回复也算这次尝试失败。全部失败时抛 `AllProvidersFailedError`。
+    后台 agent 用它；主聊天的回退另有熔断与看图降级，在 router 里。
+    """
+
+    async def attempt(candidate: Candidate) -> tuple[LoopResult, Candidate]:
+        with tool_request_scope(tool_context):
+            result = await run_tool_loop(
+                candidate.provider,
+                candidate.model,
+                messages,
+                tool_context,
+                agent=agent,
+            )
+        if agent.empty_reply_is_failure and not result.text.strip():
+            raise ValueError(f"{agent.display_name} model returned empty content")
+        return result, candidate
+
+    return await run_with_fallback(
+        agent.task,
+        attempt,
+        tools_are_read_only=agent.tools_are_read_only,
+    )

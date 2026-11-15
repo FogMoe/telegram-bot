@@ -4,17 +4,19 @@
 """
 
 import asyncio
+import dataclasses
 import threading
 import time
 from types import SimpleNamespace
 
 import pytest
+from tool_fakes import use_tool
 
-from fogmoe_telegram_bot.core import blocking, metrics
+from fogmoe_telegram_bot.core import ai_providers, blocking, metrics
 from fogmoe_telegram_bot.core.deadline import REASON_DEADLINE, REASON_SHUTDOWN, Deadline
 from fogmoe_telegram_bot.features.ai import job_claims, router, tool_runner
 from fogmoe_telegram_bot.features.ai.tool_history import turn_messages_to_record_entries
-from fogmoe_telegram_bot.features.ai.tools.dispatch import inline_tool
+from fogmoe_telegram_bot.features.ai.tools.dispatch import ToolExecution
 from fogmoe_telegram_bot.features.ai.types import (
     ABORT_EVENT_KEY,
     TOOL_CONTEXT_MESSAGES_KEY,
@@ -121,7 +123,7 @@ def isolated_runtime():
 def loop_with(monkeypatch, fake, handlers, **kwargs):
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake)
     for name, handler in handlers.items():
-        monkeypatch.setitem(tool_runner.AI_TOOL_HANDLERS, name, handler)
+        use_tool(monkeypatch, name, handler)
     return tool_runner.run_tool_loop(
         "openai",
         "test-model",
@@ -257,14 +259,15 @@ def test_an_inline_tool_runs_on_the_event_loop_without_a_thread_hop(monkeypatch)
     fake, _ = script(Response(Message("", [call("c1", "get_help_text", "{}")])), Response(Message("ok")))
     seen = {}
 
-    @inline_tool
     def help_text(**kwargs):
         seen["thread"] = threading.get_ident()
         return {"help_text": "..."}
 
+    use_tool(monkeypatch, "get_help_text", help_text, execution=ToolExecution.INLINE)
+
     async def scenario():
         seen["loop"] = threading.get_ident()
-        return await loop_with(monkeypatch, fake, {"get_help_text": help_text})
+        return await loop_with(monkeypatch, fake, {})
 
     run_loop(scenario())
 
@@ -389,7 +392,13 @@ def test_skipped_tools_are_not_executed(monkeypatch):
         executed.append(True)
         return {}
 
-    run_loop(loop_with(monkeypatch, fake, {"google_search": search}, skip_tools={"google_search"}))
+    hiding_provider = dataclasses.replace(
+        ai_providers.require("openai"),
+        skip_tools=("google_search",),
+    )
+    monkeypatch.setattr(tool_runner.ai_providers, "lookup", lambda _name: hiding_provider)
+
+    run_loop(loop_with(monkeypatch, fake, {"google_search": search}))
 
     assert executed == []
 
@@ -719,7 +728,7 @@ def test_a_deadline_during_tools_returns_the_paired_tool_logs_and_does_not_retry
 
     fake, calls = script(Response(Message("", [call("c1")])), Response(Message("never")))
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake)
-    monkeypatch.setitem(tool_runner.AI_TOOL_HANDLERS, "google_search", hanging_search)
+    use_tool(monkeypatch, "google_search", hanging_search)
 
     response = run_loop(
         router.get_ai_response([{"role": "user", "content": "hi"}], user_id=1, deadline=Deadline(0.1))

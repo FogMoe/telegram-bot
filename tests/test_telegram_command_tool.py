@@ -18,7 +18,7 @@ from fogmoe_telegram_bot.features.ai.tools.models import (
     ExecuteTelegramCommandArgs,
     parameters_schema,
 )
-from fogmoe_telegram_bot.features.ai.tools.schemas import OPENAI_TOOLS
+from fogmoe_telegram_bot.features.ai.tools.specs import agent_tool_specs
 from fogmoe_telegram_bot.features.ai.types import TOOL_CONTEXT_MESSAGES_KEY
 from fogmoe_telegram_bot.features.economy.operations.coins import give_op_key
 
@@ -56,7 +56,7 @@ def _request_context():
 
 def test_execute_telegram_command_schema_accepts_one_complete_command():
     schema = parameters_schema(ExecuteTelegramCommandArgs)
-    tool_names = [tool["function"]["name"] for tool in OPENAI_TOOLS]
+    tool_names = [spec.name for spec in agent_tool_specs("main")]
 
     assert set(schema["properties"]) == {"command"}
     assert "enum" not in schema["properties"]["command"]

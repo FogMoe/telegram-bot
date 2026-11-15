@@ -13,7 +13,6 @@ from .memory_tools import (
     search_permanent_records_tool,
     user_diary_tool,
 )
-from .registry import AI_TOOL_ARG_MODELS, AI_TOOL_HANDLERS, OPENAI_TOOLS
 from .sandbox_tools import cleanup_linux_sandbox, cleanup_linux_sandbox_async, linux_sandbox_tool
 from .schedule_tools import schedule_ai_message_tool
 from .specs import (
@@ -21,13 +20,13 @@ from .specs import (
     TOOL_SPECS,
     MediaToolSpec,
     SideEffectKind,
+    ToolExecution,
     ToolSpec,
-    agent_tool_handlers,
-    agent_tool_schemas,
+    agent_tool_specs,
     get_media_tool_spec,
     get_tool_spec,
     iter_media_tool_specs,
-    resolve_agent_tools,
+    resolve_agent_tool_specs,
 )
 from .sticker_tools import list_available_stickers_tool
 from .telegram_command_tools import execute_telegram_command_tool
@@ -35,20 +34,17 @@ from .user_tools import kindness_gift_tool, update_impression_tool
 from .voice_tools import generate_voice_tool
 
 __all__ = [
-    "OPENAI_TOOLS",
-    "AI_TOOL_HANDLERS",
-    "AI_TOOL_ARG_MODELS",
     "TOOL_SPECS",
     "TOOL_SPEC_BY_NAME",
+    "ToolExecution",
     "ToolSpec",
     "MediaToolSpec",
     "SideEffectKind",
-    "agent_tool_schemas",
-    "agent_tool_handlers",
+    "agent_tool_specs",
     "get_tool_spec",
     "get_media_tool_spec",
     "iter_media_tool_specs",
-    "resolve_agent_tools",
+    "resolve_agent_tool_specs",
     "build_tool_context",
     "set_tool_request_context",
     "clear_tool_request_context",

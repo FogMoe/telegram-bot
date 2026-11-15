@@ -1,15 +1,14 @@
 """工具循环里的一次工具执行：解析与校验参数、调用处理函数、记录日志与指标。
 
-处理函数的三种执行方式（async、同步走有界线程适配器、内联）见 `tools/dispatch.py`。工具出错不会让这一轮失败：
+处理函数按 `ToolSpec.execution` 调用（async、同步走有界线程适配器、内联），见 `tools/dispatch.py`。工具出错不会让这一轮失败：
 参数校验失败、工具未开放或未知、处理函数抛异常都变成带 `error` 的结果交回模型。只有整轮截止时间到期
 （`DeadlineExceeded`）向上抛，由工具循环给这一轮补齐结果。
 """
 
-import inspect
 import json
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any, NamedTuple
 
 from pydantic import ValidationError
@@ -20,8 +19,7 @@ from fogmoe_telegram_bot.core.redaction import describe_exception, log_exception
 
 from .tool_loop_deadline import deadline_guard
 from .tool_loop_messages import json_safe
-from .tools import AI_TOOL_ARG_MODELS, get_media_tool_spec
-from .tools.dispatch import is_inline_tool
+from .tools import ToolExecution, ToolSpec, get_media_tool_spec, get_tool_spec
 from .types import ToolCallStatus
 
 logger = logging.getLogger(__name__)
@@ -56,14 +54,14 @@ def _validate_tool_args(
     function_name: str,
     raw_args: Any,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    model = AI_TOOL_ARG_MODELS.get(function_name)
-    if model is None:
+    spec = get_tool_spec(function_name)
+    if spec is None:
         if isinstance(raw_args, dict):
             return raw_args, None
         return {}, None
 
     try:
-        validated = model.model_validate(raw_args)
+        validated = spec.arg_model.model_validate(raw_args)
     except ValidationError as exc:
         return {}, {
             "error": "Tool arguments failed validation",
@@ -97,36 +95,21 @@ def parse_tool_arguments(
     return ToolArguments(raw_function_args, function_args, validation_error)
 
 
-def _handler_is_async(handler: Callable[..., Any]) -> bool:
-    return inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(
-        getattr(handler, "__call__", None)
-    )
-
-
-async def _call_tool(handler: Callable[..., Any], arguments: dict[str, Any]) -> Any:
+async def _call_tool(spec: ToolSpec, arguments: dict[str, Any]) -> Any:
     """async 工具直接 await；同步工具走有界的线程适配器（并发有上限，保留 contextvars）；
-    标记为内联的纯内存工具直接调用。见 `tools/dispatch.py`。"""
-    if _handler_is_async(handler):
-        return await handler(**arguments)
-    if is_inline_tool(handler):
-        result = handler(**arguments)
-        return await result if inspect.isawaitable(result) else result
-    result = await blocking.tools().run(handler, **arguments)
-    if inspect.isawaitable(result):
-        result = await result
-    return result
+    声明为内联的纯内存工具直接调用。见 `tools/dispatch.py`。"""
+    if spec.execution is ToolExecution.ASYNC:
+        return await spec.handler(**arguments)
+    if spec.execution is ToolExecution.INLINE:
+        return spec.handler(**arguments)
+    return await blocking.tools().run(spec.handler, **arguments)
 
 
-class ToolExecution(NamedTuple):
+class ToolOutcome(NamedTuple):
     """一次工具调用的内部结果，以及处理函数运行过（`COMPLETED`）还是调用被拒绝（`REJECTED`）。"""
 
     result: Any
     status: ToolCallStatus
-
-
-def _tool_label(function_name: str, handlers: Mapping[str, Any]) -> str:
-    """指标标签只用注册过的工具名，模型编造的名字统一记为 unknown。"""
-    return function_name if function_name in handlers else "unknown"
 
 
 def _record_tool_metrics(label: str, started: float, result: Any) -> None:
@@ -140,20 +123,23 @@ async def execute_tool_call(
     function_name: str,
     arguments: ToolArguments,
     *,
-    handlers: Mapping[str, Callable[..., Any]],
-    available_tool_names: set[str],
+    tools: Mapping[str, ToolSpec],
     provider_name: str,
     deadline: Deadline | None = None,
-) -> ToolExecution:
-    """执行一个工具调用，返回工具的内部结果。截止时间到期时记一次 interrupted 指标后向上抛。"""
+) -> ToolOutcome:
+    """执行一个工具调用，返回工具的内部结果。截止时间到期时记一次 interrupted 指标后向上抛。
+
+    `tools` 是这个 agent 在这个 provider 上开放的工具；不在其中的调用（模型编造的名字，或注册过、
+    但对这次请求隐藏的工具）返回「未开放」错误，不运行处理函数。
+    """
     function_args = arguments.validated
     validation_error = arguments.validation_error
-    handler = handlers.get(function_name)
+    spec = tools.get(function_name)
     status = ToolCallStatus.REJECTED
     if not function_name:
         logging.warning("%s 返回的工具调用缺少函数名: args=%s", provider_name, arguments.raw)
         internal_tool_result: Any = {"error": "Tool call is missing function name"}
-    elif function_name not in available_tool_names:
+    elif spec is None:
         logging.warning(
             "%s 拒绝未开放的工具调用: %s",
             provider_name,
@@ -173,15 +159,16 @@ async def execute_tool_call(
             validation_error.get("details"),
         )
         internal_tool_result = validation_error
-    elif handler:
+    else:
         status = ToolCallStatus.COMPLETED
         tool_started = time.perf_counter()
-        tool_label = _tool_label(function_name, handlers)
+        # 指标标签只用开放的工具名，模型编造的名字在上面就被拒绝了。
+        tool_label = function_name
         try:
             if deadline is not None:
                 deadline.raise_if_expired()
             async with deadline_guard(deadline):
-                internal_tool_result = await _call_tool(handler, function_args)
+                internal_tool_result = await _call_tool(spec, function_args)
             if isinstance(internal_tool_result, dict) and internal_tool_result.get("error"):
                 logging.warning(
                     "%s 工具返回错误: %s, args=%s, error=%s",
@@ -219,11 +206,8 @@ async def execute_tool_call(
                 "error": f"执行失败: {describe_exception(exc)} (ref: {error_ref})"
             }
         _record_tool_metrics(tool_label, tool_started, internal_tool_result)
-    else:
-        logging.warning("%s 未知工具: %s", provider_name, function_name)
-        internal_tool_result = {"error": f"未知工具: {function_name}"}
 
     media_spec = get_media_tool_spec(function_name)
     if media_spec is not None:
         media_spec.log_result(provider_name, internal_tool_result)
-    return ToolExecution(internal_tool_result, status)
+    return ToolOutcome(internal_tool_result, status)

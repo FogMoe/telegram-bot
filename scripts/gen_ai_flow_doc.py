@@ -15,11 +15,12 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import inspect
 import os
 import re
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -97,7 +98,7 @@ class LimitRow:
 def limit_rows() -> list[LimitRow]:
     from fogmoe_telegram_bot.core import chat_records
     from fogmoe_telegram_bot.core.config import AppSettings
-    from fogmoe_telegram_bot.features.ai import litellm_client, summary, tool_runner
+    from fogmoe_telegram_bot.features.ai import agents, litellm_client, summary, tool_runner
 
     def setting(name: str, purpose: str) -> LimitRow:
         return LimitRow(
@@ -115,6 +116,10 @@ def limit_rows() -> list[LimitRow]:
             func.__module__,
             purpose,
         )
+
+    def field_default(key: str, cls: type, name: str, purpose: str) -> LimitRow:
+        default = next(item.default for item in dataclasses.fields(cls) if item.name == name)
+        return LimitRow(key, f"{cls.__name__}({name})", default, cls.__module__, purpose)
 
     token_limit = AppSettings.model_fields["CHAT_TOKEN_LIMIT"].default
     hard_ratio = AppSettings.model_fields["CHAT_CONTEXT_HARD_LIMIT_RATIO"].default
@@ -152,11 +157,11 @@ def limit_rows() -> list[LimitRow]:
             "CHAT_CONTEXT_SAFETY_TOKENS",
             "估算请求大小时额外预留的 token",
         ),
-        param(
+        field_default(
             "MAX_TOOL_ITERATIONS",
-            tool_runner.run_tool_loop,
+            agents.AgentSpec,
             "max_iterations",
-            "工具循环最多几轮；用完后不带工具再要一次最终回复",
+            "工具循环最多几轮（主聊天与回顾用默认值）；用完后不带工具再要一次最终回复",
         ),
         constant(
             tool_runner,
@@ -209,72 +214,91 @@ def render_limits() -> str:
 # -- 工具目录 -------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class CatalogTool:
-    name: str
-    function: Mapping[str, Any]
-    handler: Callable[..., Any]
-    agents: tuple[str, ...]  # AGENT_LABELS 的键，按 agent 顺序
-
-
 AGENT_LABELS = {"main": "主聊天", "recap": "空闲回顾", "summary": "摘要"}
+EXECUTION_LABELS = {"async": "async", "thread": "线程", "inline": "内联"}
 
 
-def _agents() -> list[tuple[str, list[dict[str, Any]], Mapping[str, Callable[..., Any]]]]:
-    """每个 agent 能看到的工具 schema 与处理函数；同一个工具可能出现在多个 agent 里。"""
-    from fogmoe_telegram_bot.features.ai import idle_followup, summary
-    from fogmoe_telegram_bot.features.ai.tools.registry import AI_TOOL_HANDLERS, OPENAI_TOOLS
+def _agents() -> list[Any]:
+    """所有 `AgentSpec`，顺序与 `AGENT_LABELS` 一致。"""
+    from fogmoe_telegram_bot.features.ai.agents import MAIN_AGENT
+    from fogmoe_telegram_bot.features.ai.recap import RECAP_AGENT
+    from fogmoe_telegram_bot.features.ai.summary import SUMMARY_AGENT
 
-    return [
-        ("main", OPENAI_TOOLS, AI_TOOL_HANDLERS),
-        ("recap", idle_followup.IDLE_RECAP_TOOLS, idle_followup.IDLE_RECAP_TOOL_HANDLERS),
-        ("summary", summary.SUMMARY_TOOLS, summary.SUMMARY_TOOL_HANDLERS),
-    ]
+    agents = [MAIN_AGENT, RECAP_AGENT, SUMMARY_AGENT]
+    if [agent.name for agent in agents] != list(AGENT_LABELS):
+        raise ValueError("AGENT_LABELS drifted from the declared agents")
+    return agents
 
 
-def tool_catalog() -> list[CatalogTool]:
-    """所有 agent 的工具，直接从 `TOOL_SPECS` 单点声明生成并校验各 agent 导出一致。"""
-    from fogmoe_telegram_bot.features.ai.tools.specs import TOOL_SPECS
+def _seconds(value: float) -> str:
+    value = int(value)
+    return f"{value // 60} 分钟" if value % 60 == 0 else f"{value} 秒"
 
-    agent_exports = dict((agent, (tools, agent_handlers)) for agent, tools, agent_handlers in _agents())
-    catalog: list[CatalogTool] = []
-    for spec in TOOL_SPECS:
-        schema = spec.schema()
-        function = schema["function"]
-        for agent in spec.agents:
-            tools, agent_handlers = agent_exports[agent]
-            exported = next((item for item in tools if item["function"]["name"] == spec.name), None)
-            if exported is None or exported["function"] != function or agent_handlers.get(spec.name) is not spec.handler:
-                raise ValueError(f"tool {spec.name!r} export for agent {agent!r} drifted from TOOL_SPECS")
-        catalog.append(CatalogTool(spec.name, function, spec.handler, spec.agents))
-    return catalog
+
+def _limits_text(spec: Any) -> str:
+    """限额与前提：每请求、每用户、冷却、并发与需要的上下文字段。"""
+    parts: list[str] = []
+    limits = spec.limits() if spec.limits is not None else None
+    if limits is not None:
+        if limits.per_request is not None:
+            parts.append(f"每请求 {limits.per_request} 次")
+        if limits.per_user is not None:
+            parts.append(
+                f"每用户 {_seconds(limits.per_user.window_seconds)} {limits.per_user.max_calls} 次"
+            )
+        if limits.cooldown_seconds is not None:
+            parts.append(f"关闭后冷却 {_seconds(limits.cooldown_seconds)}")
+        if limits.max_concurrent is not None:
+            parts.append(f"全局并发 {limits.max_concurrent}")
+    fields = [field for field in spec.requires_context if field != "user_id"]
+    if fields:
+        parts.append("需要 " + "、".join(f"`{field}`" for field in fields))
+    return "；".join(parts) or "—"
 
 
 def render_tools() -> str:
+    from fogmoe_telegram_bot.core import config
+    from fogmoe_telegram_bot.features.ai.tools.specs import TOOL_SPECS, agent_tool_specs
+
+    # advisor 的限额在配置里：按默认值生成，不受本机环境变量影响。
+    with config.override_settings():
+        return _render_tools(TOOL_SPECS, agent_tool_specs)
+
+
+def _render_tools(tool_specs: Any, agent_tool_specs: Callable[[str], Any]) -> str:
     rows = []
-    for tool in tool_catalog():
-        parameters = tool.function.get("parameters") or {}
+    for spec in tool_specs:
+        function = spec.schema()["function"]
+        parameters = function.get("parameters") or {}
         required = set(parameters.get("required") or [])
         params = ", ".join(
             f"`{param}`" if param in required else f"`{param}?`"
             for param in (parameters.get("properties") or {})
         )
-        module_name = tool.handler.__module__.rsplit(".", 1)[-1]
+        module_name = spec.handler.__module__.rsplit(".", 1)[-1]
         rows.append(
             [
-                f"`{tool.name}`",
-                "、".join(AGENT_LABELS[agent] for agent in tool.agents),
+                f"`{spec.name}`",
+                "、".join(AGENT_LABELS[agent] for agent in AGENT_LABELS if agent in spec.agents),
                 params or "—",
-                f"`{module_name}.{tool.handler.__name__}`",
-                _cell(tool.function.get("description") or ""),
+                f"`{module_name}.{spec.handler.__name__}`",
+                EXECUTION_LABELS[spec.execution.value],
+                _limits_text(spec),
+                _cell(function.get("description") or ""),
             ]
         )
 
     counts = "，".join(
-        f"{AGENT_LABELS[agent]} {len(tools)} 个" for agent, tools, _ in _agents()
+        f"{AGENT_LABELS[agent.name]} {len(agent_tool_specs(agent.name))} 个" for agent in _agents()
     )
-    header = f"共 {len(rows)} 个工具：{counts}。参数后面带 `?` 的是可选参数。\n\n"
-    return header + _table(["工具", "谁能调用", "参数", "处理函数", "描述（模型看到的原文）"], rows)
+    header = (
+        f"共 {len(rows)} 个工具：{counts}。参数后面带 `?` 的是可选参数；"
+        "`user_id` 每个入口都有，不列在「限额与前提」里。\n\n"
+    )
+    return header + _table(
+        ["工具", "谁能调用", "参数", "处理函数", "执行", "限额与前提", "描述（模型看到的原文）"],
+        rows,
+    )
 
 
 GENERATORS: dict[str, Callable[[], str]] = {
@@ -306,10 +330,10 @@ def render(text: str) -> str:
 
 
 def html_values() -> dict[str, Any]:
-    from fogmoe_telegram_bot.features.ai.tools.registry import OPENAI_TOOLS
+    from fogmoe_telegram_bot.features.ai.tools.specs import agent_tool_specs
 
     values: dict[str, Any] = {row.key: row.value for row in limit_rows()}
-    values["MAIN_TOOL_COUNT"] = len(OPENAI_TOOLS)
+    values["MAIN_TOOL_COUNT"] = len(agent_tool_specs("main"))
     return values
 
 

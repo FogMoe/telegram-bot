@@ -4,10 +4,10 @@
 
 ## 目录结构
 
-- `specs.py`：所有 AI 工具的唯一声明表（`TOOL_SPECS`、`ToolSpec`、`MediaToolSpec`）与暴露给模型的工具列表（`resolve_agent_tools`）
-- `models.py`：工具参数模型与 JSON Schema 生成（`AI_TOOL_ARG_MODELS` 由 `specs.py` 登记）
-- `schemas.py` / `registry.py`：兼容导出层，从 `specs.py` 派生 `OPENAI_TOOLS`、`AI_TOOL_HANDLERS` 与子 agent 工具集
-- `rate_limit.py`：工具共用的滑动窗口限流、非阻塞全局并发门闸与用户会话冷却门闸
+- `specs.py`：所有 AI 工具的唯一声明表（`TOOL_SPECS`、`ToolSpec`、`MediaToolSpec`）与各 agent 暴露给模型的工具（`resolve_agent_tool_specs`）
+- `dispatch.py`：工具的执行方式（`ToolExecution`：async、线程适配器、内联）
+- `models.py`：工具参数模型与 JSON Schema 生成
+- `rate_limit.py`：工具共用的滑动窗口限流、非阻塞全局并发门闸与用户会话冷却门闸，以及限额声明（`ToolLimits`）
 - `context.py`：每次请求的上下文存储（用户/群组/消息元信息）
 - `telegram_command_tools.py`：代用户执行 Telegram 命令（禁止代执行的少数命令在 `../telegram_command_policy.py`）
 - `advisor_tools.py`：只读高级推理顾问工具（无工具权限，不自动携带聊天历史）
@@ -31,13 +31,13 @@
 
 1) 在合适模块里实现工具函数（必要时新建模块；配置在调用时从 `core.config` 读取，限流复用 `rate_limit.py`）。
 2) 在 `models.py` 定义 Pydantic 参数模型。
-3) 在 `specs.py` 的 `TOOL_SPECS` 中登记一条 `ToolSpec`（即时向 Telegram 发送媒体的工具用 `MediaToolSpec`），声明 `arg_model`、`handler`、开放的 `agents`、配置检查 `is_configured` 与副作用类型 `side_effect`。工具列表不按入口或聊天类型裁剪，工具在某个场景不适用时由处理函数返回错误。`AI_TOOL_ARG_MODELS`、`OPENAI_TOOLS`、`AI_TOOL_HANDLERS`、各子 agent 工具集与文档工具目录都会自动从 `TOOL_SPECS` 推导。
+3) 在 `specs.py` 的 `TOOL_SPECS` 中登记一条 `ToolSpec`（即时向 Telegram 发送媒体的工具用 `MediaToolSpec`），声明 `arg_model`、`handler`、执行方式 `execution`、开放的 `agents`、需要的上下文字段 `requires_context`、限额 `limits`、配置检查 `is_configured` 与副作用类型 `side_effect`。工具列表不按入口或聊天类型裁剪，工具在某个场景不适用时由处理函数返回错误。各 agent 的工具（`AgentSpec.tools`）、参数校验与文档工具目录都从 `TOOL_SPECS` 推导。
 4) 只有在其他模块需要直接调用时，才在 `__init__.py` 里导出。
 5) 在 [`docs/ai-conversation-flow.html`](../../../../docs/ai-conversation-flow.html) 的「工具箱」里给新工具补一句说明，再运行 `uv run python scripts/gen_ai_flow_doc.py` 更新工具目录与数字（`tests/test_ai_flow_doc.py` 会检查两者）。
 
 ## 注意事项
 
-- 工具处理函数可以是 async 函数、同步函数（走有界线程适配器）或用 `@inline_tool` 标记的内联函数，区分规则见 `dispatch.py`，由工具循环的 `../tool_loop_execution.py` 调用；都返回可 JSON 序列化的 dict。
+- 工具处理函数可以是 async 函数、同步函数（走有界线程适配器）或声明为内联的同步函数，按 `ToolSpec.execution` 由工具循环的 `../tool_loop_execution.py` 调用，选择规则见 `dispatch.py`；都返回可 JSON 序列化的 dict。
 - 依赖聊天/用户上下文的工具务必通过 `context.get_tool_request_context()` 读取。
 - 尽量避免长耗时网络调用，超时设置要保守。
 

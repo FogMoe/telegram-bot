@@ -385,7 +385,7 @@ def test_idle_followup_stale_claim_after_tools_persists_only_tool_history(monkey
     )
     monkeypatch.setattr(
         idle_followup,
-        "_generate_recap",
+        "generate_recap",
         lambda *_a: asyncio.sleep(
             0,
             result={

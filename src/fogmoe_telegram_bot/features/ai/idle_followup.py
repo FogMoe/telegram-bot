@@ -22,10 +22,9 @@ from datetime import UTC, datetime, timedelta
 from statistics import median
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from telegram.ext import ContextTypes
 
-from fogmoe_telegram_bot.core import config, mysql_connection, process_user
+from fogmoe_telegram_bot.core import mysql_connection, process_user
 from fogmoe_telegram_bot.core.prompt_utils import format_metadata_attrs, xml_escape
 from fogmoe_telegram_bot.features.ai import ai_chat, job_claims
 from fogmoe_telegram_bot.features.ai.conversation_locks import get_conversation_lock
@@ -35,25 +34,16 @@ from fogmoe_telegram_bot.features.ai.outbound import (
     send_generated_media,
     send_private_reply,
 )
+from fogmoe_telegram_bot.features.ai.recap import generate_recap, normalize_recap_text
 from fogmoe_telegram_bot.features.ai.sticker_sender import (
     PartialAIReplySendError,
     normalize_sticker_directives,
 )
-from fogmoe_telegram_bot.features.ai.task_runner import Candidate, run_with_fallback
 from fogmoe_telegram_bot.features.ai.tool_history import (
     reply_record_entries,
     turn_messages_to_record_entries,
 )
-from fogmoe_telegram_bot.features.ai.tool_runner import run_tool_loop
-from fogmoe_telegram_bot.features.ai.tools import (
-    OPENAI_TOOLS as OPENAI_TOOLS,
-)
-from fogmoe_telegram_bot.features.ai.tools import (
-    agent_tool_handlers,
-    agent_tool_schemas,
-    build_tool_context,
-    tool_request_scope,
-)
+from fogmoe_telegram_bot.features.ai.tools import build_tool_context
 from fogmoe_telegram_bot.features.ai.turn_pipeline import (
     IDLE_FOLLOWUP_ENTRY_POLICY,
     NoSideEffectsRetryError,
@@ -83,11 +73,6 @@ RECOVERY_BATCH_SIZE = 50
 IDLE_FOLLOWUP_RETRY_MINUTES = 15
 IDLE_FOLLOWUP_MAX_RETRIES = 3
 IDLE_RECAP_MAX_DIALOGUE_MESSAGES = 20
-IDLE_RECAP_RETRY_LIMIT = 2
-IDLE_RECAP_TIMEOUT_SECONDS = 120
-IDLE_RECAP_TOOLS = agent_tool_schemas("recap")
-IDLE_RECAP_TOOL_HANDLERS = agent_tool_handlers("recap")
-IDLE_RECAP_TOOL_NAMES = frozenset(IDLE_RECAP_TOOL_HANDLERS)
 
 INTERRUPTED_ERROR = (
     "Interrupted during {stage}; the outcome is unknown, so the follow-up was not retried "
@@ -102,22 +87,6 @@ _ATTEMPTS_REFUND = "GREATEST(claim_attempts - 1, 0)"  # 关停时尚未开始：
 _idle_followup_job_lock = asyncio.Lock()
 _MESSAGE_TAG_RE = re.compile(r"<message>(.*?)</message>", re.DOTALL)
 _MEDIA_DESCRIPTION_RE = re.compile(r"<description>(.*?)</description>", re.DOTALL)
-
-
-class IdleRecapMemorySuggestion(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    impression: str = Field(max_length=2000)
-    diary: str = Field(max_length=2000)
-
-
-class IdleRecapOutput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    recap: str = Field(max_length=2000)
-    open_loops: str = Field(max_length=2000)
-    suggested_follow_up: str = Field(max_length=2000)
-    memory_suggestion: IdleRecapMemorySuggestion
 
 
 @dataclass(frozen=True)
@@ -244,122 +213,8 @@ def _extract_recent_dialogue(messages: list[dict]) -> list[dict[str, str]]:
     return dialogue[-IDLE_RECAP_MAX_DIALOGUE_MESSAGES:]
 
 
-def _normalize_recap_text(value: object) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip()
-
-
-def _parse_recap_response(value: object) -> dict[str, Any]:
-    text = str(value or "").strip()
-    if not text:
-        raise ValueError("idle recap response was empty")
-    try:
-        parsed = IdleRecapOutput.model_validate_json(text)
-    except ValidationError as exc:
-        raise ValueError("idle recap response failed the required JSON schema") from exc
-
-    result: dict[str, Any] = {
-        "recap": _normalize_recap_text(parsed.recap),
-        "open_loops": _normalize_recap_text(parsed.open_loops),
-        "suggested_follow_up": _normalize_recap_text(parsed.suggested_follow_up),
-        "memory_suggestion": {
-            "impression": _normalize_recap_text(parsed.memory_suggestion.impression),
-            "diary": _normalize_recap_text(parsed.memory_suggestion.diary),
-        },
-    }
-
-    memory_suggestion = result["memory_suggestion"]
-    if not any(
-        [
-            result["recap"],
-            result["open_loops"],
-            result["suggested_follow_up"],
-            memory_suggestion["impression"],
-            memory_suggestion["diary"],
-        ]
-    ):
-        raise ValueError("idle recap response contains no usable content")
-    return result
-
-
-async def _generate_recap_with_retries(
-    user_id: int,
-    dialogue: list[dict[str, str]],
-    memory_context: dict[str, Any],
-) -> dict[str, Any]:
-    transcript = json.dumps(dialogue, ensure_ascii=False)
-    stored_memory = json.dumps(memory_context, ensure_ascii=False)
-    prompt = (
-        "根据下面近期对话生成一次短期回顾。"
-        "现有长期记忆只用于判断候选内容是否已经记录。\n\n"
-        f"近期对话：{transcript}\n\n"
-        f"现有长期记忆：{stored_memory}"
-    )
-    messages = [{"role": "user", "content": prompt}]
-    response_format = {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "idle_recap",
-            "strict": True,
-            "schema": IdleRecapOutput.model_json_schema(),
-        },
-    }
-
-    last_error: Exception | None = None
-    for attempt in range(1, IDLE_RECAP_RETRY_LIMIT + 1):
-        try:
-            content = await _run_recap_agent(messages, user_id, response_format)
-            return _parse_recap_response(content)
-        except Exception as exc:
-            last_error = exc
-            logger.warning(
-                "Idle recap generation attempt %s/%s failed: %s",
-                attempt,
-                IDLE_RECAP_RETRY_LIMIT,
-                exc,
-            )
-    raise RuntimeError("Idle recap generation failed after retries") from last_error
-
-
-async def _run_recap_agent(
-    messages: list[dict[str, Any]],
-    user_id: int,
-    response_format: dict[str, Any],
-) -> str:
-    tool_context: dict[str, object] = {"user_id": user_id}
-    completion_kwargs = {
-        "response_format": response_format,
-        "drop_params": False,
-    }
-
-    async def attempt(candidate: Candidate) -> str:
-        with tool_request_scope(tool_context):
-            result = await run_tool_loop(
-                candidate.provider,
-                candidate.model,
-                messages,
-                tool_context,
-                provider_name="Idle recap",
-                completion_timeout=IDLE_RECAP_TIMEOUT_SECONDS,
-                completion_kwargs=completion_kwargs,
-                tool_definitions=IDLE_RECAP_TOOLS,
-                tool_handlers=IDLE_RECAP_TOOL_HANDLERS,
-                system_prompt_override=config.IDLE_RECAP_SYSTEM_PROMPT,
-            )
-        return result.text
-
-    return await run_with_fallback("recap", attempt, tools_are_read_only=True)
-
-
-async def _generate_recap(
-    user_id: int,
-    dialogue: list[dict[str, str]],
-    memory_context: dict[str, Any],
-) -> dict[str, Any]:
-    return await _generate_recap_with_retries(user_id, dialogue, memory_context)
-
-
 async def _load_recap_memory_context(user_id: int) -> dict[str, Any]:
-    impression = _normalize_recap_text(
+    impression = normalize_recap_text(
         await process_user.async_get_user_impression(user_id)
     )
     rows = await mysql_connection.fetch_all(
@@ -370,8 +225,8 @@ async def _load_recap_memory_context(user_id: int) -> dict[str, Any]:
     diary_index = [
         {
             "page": int(row[0]),
-            "title": _normalize_recap_text(row[1]),
-            "summary": _normalize_recap_text(row[2]),
+            "title": normalize_recap_text(row[1]),
+            "summary": normalize_recap_text(row[2]),
         }
         for row in rows
     ]
@@ -406,8 +261,8 @@ def _format_idle_recap_event(
         )
     memory_suggestion = recap.get("memory_suggestion")
     if isinstance(memory_suggestion, dict):
-        impression = _normalize_recap_text(memory_suggestion.get("impression"))
-        diary = _normalize_recap_text(memory_suggestion.get("diary"))
+        impression = normalize_recap_text(memory_suggestion.get("impression"))
+        diary = normalize_recap_text(memory_suggestion.get("diary"))
         if impression or diary:
             lines.append("  <memory_suggestion>")
             if impression:
@@ -960,7 +815,7 @@ async def _run_claim_locked(
 
     # 回顾生成只用只读工具，崩溃后重跑没有副作用，所以仍处于 claimed 阶段。
     memory_context = await _load_recap_memory_context(claim.user_id)
-    recap = await _generate_recap(claim.user_id, dialogue, memory_context)
+    recap = await generate_recap(claim.user_id, dialogue, memory_context)
     if not await _claim_is_current(claim):
         return
 
