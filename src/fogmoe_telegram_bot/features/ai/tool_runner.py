@@ -13,8 +13,8 @@ agent 的声明（工具、系统提示词、循环参数）在 `agents.py`。�
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
-from collections.abc import Sequence
 from typing import Any
 
 from fogmoe_telegram_bot.core import ai_providers, config
@@ -41,7 +41,6 @@ from .tool_loop_messages import (
     resolve_assistant_message,
 )
 from .tool_loop_state import LoopState
-from .tools import ToolSpec
 from .tools.context import tool_request_scope
 from .types import (
     LoopResult,
@@ -114,18 +113,17 @@ async def run_tool_loop(
     provider_name: str | None = None,
     visible_content_handler: VisibleContentHandler | None = None,
     deadline: Deadline | None = None,
-    tools: Sequence[ToolSpec] | None = None,
 ) -> LoopResult:
     """用 `provider` 的 `model` 为 `agent` 跑一次工具循环，返回类型化的 `LoopResult`。
 
-    工具默认是 `agent.tools(provider 的声明)`；`provider_name` 是日志前缀，默认用 `agent.display_name`。
+    工具是 `agent.tools(provider 的声明)`；`provider_name` 是日志前缀，默认用 `agent.display_name`。
     原生 async：模型调用 `await`，async 工具直接 `await`，同步工具走有界线程适配器。
     `deadline` 到期时取消正在等待的步骤，抛 `TurnDeadlineError`（带着到期为止的结果）。
     开始执行工具或发出过可见内容之后（`LoopState.has_side_effects`），其他异常一律包成
     `PartialAIResponseError`（带着到失败为止的结果）离开循环：调用方不能再换模型或 provider 从头重跑。
     """
     provider_name = provider_name or agent.display_name
-    tool_specs = agent.tools(ai_providers.lookup(provider)) if tools is None else tuple(tools)
+    tool_specs = agent.tools(ai_providers.lookup(provider))
     tools_by_name = {spec.name: spec for spec in tool_specs}
     tool_schemas = [spec.schema() for spec in tool_specs]
     system_message = {"role": "system", "content": agent.system_prompt(tool_context)}
@@ -152,8 +150,9 @@ async def run_tool_loop(
     ) -> Any:
         """一次模型调用：整轮截止时间到期就取消，单次超时收紧到剩余时间之内。"""
         call_timeout = request_timeout if deadline is None else deadline.clip(request_timeout)
+        # agent 的参数是进程级的一份（例如回顾的 JSON schema），每次调用交一份副本，下游改了也不影响下一次。
         request_kwargs = {
-            **agent.completion_kwargs,
+            **copy.deepcopy(dict(agent.completion_kwargs)),
             "context_hard_limit_ratio": agent.context_hard_limit_ratio,
             "timeout": call_timeout,
         }

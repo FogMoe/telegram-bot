@@ -1,8 +1,9 @@
 import asyncio
 import dataclasses
+import json
 
 import pytest
-from tool_fakes import fake_tool, use_tool
+from tool_fakes import TEST_AGENT, register_tool, use_tool
 
 from fogmoe_telegram_bot.core import ai_providers
 from fogmoe_telegram_bot.features.ai import tool_loop_messages, tool_runner
@@ -166,16 +167,8 @@ def test_fogmoe_fallback_keeps_choice_zero_tool_calls():
 
 
 def test_run_tool_loop_uses_custom_prompt_and_tool_subset(monkeypatch):
-    tool_definition = {
-        "type": "function",
-        "function": {
-            "name": "fetch_permanent_summaries",
-            "description": "Fetch summaries",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    }
     recap_agent = dataclasses.replace(
-        MAIN_AGENT,
+        TEST_AGENT,
         display_name="Recap",
         system_prompt=lambda _tool_context: "recap system prompt",
     )
@@ -198,7 +191,6 @@ def test_run_tool_loop_uses_custom_prompt_and_tool_subset(monkeypatch):
         _Response(_Message("done", None)),
     ]
     calls = []
-    global_handler_calls = []
     custom_handler_calls = []
 
     async def fake_create_chat_completion(*args, **kwargs):
@@ -206,10 +198,11 @@ def test_run_tool_loop_uses_custom_prompt_and_tool_subset(monkeypatch):
         return responses.pop(0)
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_create_chat_completion)
-    use_tool(
+    register_tool(
         monkeypatch,
         "fetch_permanent_summaries",
-        lambda **kwargs: global_handler_calls.append(kwargs) or {"records": []},
+        lambda **kwargs: custom_handler_calls.append(kwargs) or {"records": []},
+        description="Fetch summaries",
     )
 
     result = asyncio.run(tool_runner.run_tool_loop(
@@ -217,24 +210,19 @@ def test_run_tool_loop_uses_custom_prompt_and_tool_subset(monkeypatch):
         "test_model",
         [{"role": "user", "content": "review"}],
         agent=recap_agent,
-        tools=[
-            fake_tool(
-                "fetch_permanent_summaries",
-                lambda **kwargs: custom_handler_calls.append(kwargs) or {"records": []},
-                description="Fetch summaries",
-            )
-        ],
     ))
     message = result.text
 
     assert message == "done"
-    assert calls[0]["tools"] == [tool_definition]
+    assert [tool["function"]["name"] for tool in calls[0]["tools"]] == [
+        "fetch_permanent_summaries"
+    ]
+    assert calls[0]["tools"][0]["function"]["description"] == "Fetch summaries"
     assert calls[0]["messages"][0] == {
         "role": "system",
         "content": "recap system prompt",
     }
     assert custom_handler_calls == [{}]
-    assert global_handler_calls == []
 
 
 def test_run_tool_loop_rejects_tool_outside_custom_subset(monkeypatch):
@@ -274,12 +262,7 @@ def test_run_tool_loop_rejects_tool_outside_custom_subset(monkeypatch):
         "test_provider",
         "test_model",
         [{"role": "user", "content": "review"}],
-        agent=dataclasses.replace(
-            MAIN_AGENT,
-            display_name="Recap",
-            system_prompt=lambda _tool_context: "recap system prompt",
-        ),
-        tools=[],
+        agent=dataclasses.replace(TEST_AGENT, display_name="Recap"),
     ))
     message = result.text
 
@@ -1165,3 +1148,28 @@ def test_a_later_visible_send_that_sends_nothing_does_not_replay_the_earlier_one
         for message in result.turn_messages
         if message["role"] == "assistant" and not message.get("tool_calls")
     ] == []
+
+
+def test_each_model_call_gets_its_own_copy_of_the_agent_completion_kwargs(monkeypatch):
+    responses = [
+        _Response(_Message("", [_search_call("call_1")])),
+        _Response(_Message("done", None)),
+    ]
+    seen_formats = []
+
+    async def mutating_completion(*args, **kwargs):
+        seen_formats.append(json.dumps(kwargs["response_format"], sort_keys=True))
+        kwargs["response_format"]["json_schema"].pop("schema")  # 像下游转换那样原地改
+        return responses.pop(0)
+
+    monkeypatch.setattr(tool_runner, "create_chat_completion", mutating_completion)
+    use_tool(monkeypatch, "google_search", lambda **kwargs: {"organic_results": []})
+    agent = dataclasses.replace(
+        MAIN_AGENT,
+        completion_kwargs={"response_format": {"json_schema": {"schema": {"type": "object"}}}},
+    )
+
+    asyncio.run(tool_runner.run_tool_loop("openai", "m", [{"role": "user", "content": "x"}], agent=agent))
+
+    assert len(seen_formats) == 2 and seen_formats[0] == seen_formats[1]
+    assert agent.completion_kwargs["response_format"]["json_schema"]["schema"] == {"type": "object"}

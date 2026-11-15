@@ -3,7 +3,7 @@ import dataclasses
 from types import SimpleNamespace
 
 import pytest
-from tool_fakes import fake_tool
+from tool_fakes import TEST_AGENT, register_tool
 
 from fogmoe_telegram_bot.core.deadline import Deadline
 from fogmoe_telegram_bot.features.ai import tool_runner
@@ -185,22 +185,22 @@ def test_turn_messages_record_visible_text_tool_pairs_and_telegram_events(monkey
     fake_visible = FakeVisible()
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_completion)
+    register_tool(
+        monkeypatch,
+        "execute_telegram_command",
+        lambda command: {
+            "success": True,
+            TOOL_CONTEXT_MESSAGES_KEY: ["<metadata event=\"command\" />"],
+        },
+    )
 
     result = asyncio.run(
         tool_runner.run_tool_loop(
             "openai",
             "gpt-4o",
             [{"role": "user", "content": "看下我的资料"}],
+            agent=TEST_AGENT,
             visible_content_handler=fake_visible,
-            tools=[
-                fake_tool(
-                    "execute_telegram_command",
-                    lambda command: {
-                        "success": True,
-                        TOOL_CONTEXT_MESSAGES_KEY: ["<metadata event=\"command\" />"],
-                    },
-                )
-            ],
         )
     )
 
@@ -240,6 +240,8 @@ def test_interrupted_round_turn_messages_stay_paired(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_completion)
+    register_tool(monkeypatch, "slow_tool", slow_tool)
+    register_tool(monkeypatch, "fast_tool", lambda: {"ok": True})
 
     with pytest.raises(TurnDeadlineError) as exc_info:
         asyncio.run(
@@ -247,10 +249,7 @@ def test_interrupted_round_turn_messages_stay_paired(monkeypatch):
                 "openai",
                 "gpt-4o",
                 [{"role": "user", "content": "run"}],
-                tools=[
-                    fake_tool("slow_tool", slow_tool),
-                    fake_tool("fast_tool", lambda: {"ok": True}),
-                ],
+                agent=TEST_AGENT,
                 deadline=Deadline(0.05),
             )
         )

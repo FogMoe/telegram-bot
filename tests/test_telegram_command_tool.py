@@ -406,3 +406,23 @@ def test_an_edited_message_starts_new_delegated_operations():
 
 def test_commands_typed_by_the_user_keep_the_plain_message_identity():
     assert give_op_key(123, 88) == "give:123:88"
+
+
+@pytest.mark.parametrize("missing", telegram_command_tools.REQUIRED_CONTEXT_FIELDS)
+def test_a_context_without_the_declared_chat_fields_refuses_to_delegate(monkeypatch, missing):
+    """定时任务与空闲跟进的上下文没有聊天字段：代执行返回错误，处理函数不被调用。"""
+    calls = []
+    monkeypatch.setattr(
+        telegram_command_tools,
+        "registered_telegram_commands",
+        lambda: {"me"},
+    )
+    monkeypatch.setattr(telegram_command_tools, "execute_telegram_command", _recording_execute(calls))
+    context = {key: value for key, value in _request_context().items() if key != missing}
+    set_tool_request_context(context)
+
+    result = asyncio.run(telegram_command_tools.execute_telegram_command_tool("/me"))
+
+    assert result["error"]["code"] == "execution_failed"
+    assert "runtime context" in result["error"]["message"]
+    assert calls == []

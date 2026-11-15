@@ -288,3 +288,26 @@ def test_non_chat_tasks_do_not_share_interactive_chat_circuit(
         assert seen_tasks == [("openai", "gpt-translate")]
     finally:
         router.CHAT_CIRCUIT.reset()
+
+
+def test_tools_return_an_error_without_their_declared_context_fields():
+    """声明的上下文字段缺了，处理函数自己返回错误（不在循环里拦）；代执行命令的同类检查在它自己的测试里。"""
+    from fogmoe_telegram_bot.features.ai.tools.context import tool_request_scope
+
+    full_context = {
+        "user_id": 1,
+        "is_group": True,
+        "group_id": -100,
+        "chat_id": -100,
+        "message_id": 5,
+        "summary_record_id": 9,
+    }
+    arguments = {"fetch_group_context": {}, "search_prior_context": {"query": "x"}}
+    for name, args in arguments.items():
+        spec = TOOL_SPEC_BY_NAME[name]
+        assert spec.requires_context, name
+        for field in spec.requires_context:
+            context = {key: value for key, value in full_context.items() if key != field}
+            with tool_request_scope(context):
+                result = asyncio.run(spec.handler(**args))
+            assert "error" in result, (name, field)
