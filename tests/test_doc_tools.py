@@ -1,7 +1,6 @@
 from fogmoe_telegram_bot.core import config
 from fogmoe_telegram_bot.features.ai.tools.doc_tools import read_doc_tool
-from fogmoe_telegram_bot.features.ai.tools.registry import AI_TOOL_HANDLERS
-from fogmoe_telegram_bot.features.ai.tools.schemas import OPENAI_TOOLS
+from fogmoe_telegram_bot.features.ai.tools.specs import TOOL_SPEC_BY_NAME, agent_tool_specs
 
 
 def test_read_doc_lists_every_document_without_a_topic(monkeypatch):
@@ -76,7 +75,5 @@ def test_read_doc_truncates_long_documents(monkeypatch):
 
 
 def test_read_doc_is_registered_as_a_tool():
-    assert AI_TOOL_HANDLERS["read_doc"] is read_doc_tool
-    names = {tool["function"]["name"] for tool in OPENAI_TOOLS}
-    assert "read_doc" in names
-    assert names == set(AI_TOOL_HANDLERS)
+    assert TOOL_SPEC_BY_NAME["read_doc"].handler is read_doc_tool
+    assert "read_doc" in {spec.name for spec in agent_tool_specs("main")}

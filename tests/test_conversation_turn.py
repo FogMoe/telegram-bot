@@ -10,14 +10,18 @@ import pytest
 from fogmoe_telegram_bot.core import metrics, telegram_history
 from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline
 from fogmoe_telegram_bot.features.ai import router, user_state
-from fogmoe_telegram_bot.features.ai.types import LoopStatus
+from fogmoe_telegram_bot.features.ai.types import (
+    LoopResult,
+    LoopStatus,
+    ToolCallRecord,
+    ToolCallStatus,
+)
 from fogmoe_telegram_bot.features.conversation import billing, turn
 from fogmoe_telegram_bot.features.conversation.turn_services import TurnServices
 from fogmoe_telegram_bot.features.conversation.turn_types import (
     ChatRef,
     ConversationSettings,
     IncomingMessage,
-    ModelResponse,
     SenderRef,
     Stage,
     StageTimer,
@@ -135,7 +139,7 @@ class World:
         self.charge_result = CHARGED
         self.history: list[dict] = [{"role": "user", "content": "<history/>"}]
         self.insert_results: list[tuple] = []
-        self.model_response = ModelResponse(text="你好呀", tool_logs=[])
+        self.model_response = LoopResult(text="你好呀")
         self.visible_sent: list = []
         self.model_requests: list = []
         self.suppressed_during_model: list[bool] = []
@@ -220,7 +224,7 @@ def make_services(world: World, **overrides) -> TurnServices:
         return [message]
 
     async def send_generated_media(**kwargs):
-        world.events.append(("generated_media", kwargs["tool_logs"]))
+        world.events.append(("generated_media", kwargs["tool_calls"]))
         return []
 
     async def log_group_message(message, chat_id):
@@ -480,7 +484,7 @@ class TestCompletedTurn:
 
     def test_an_empty_model_reply_sends_and_records_nothing(self):
         world = World()
-        world.model_response = ModelResponse(text="  ", tool_logs=[])
+        world.model_response = LoopResult(text="  ")
 
         result = run_turn(make_request(text_message()), make_services(world))
 
@@ -490,9 +494,8 @@ class TestCompletedTurn:
 
     def test_an_error_notice_is_delivered_but_never_written_as_an_assistant_record(self):
         world = World()
-        world.model_response = ModelResponse(
+        world.model_response = LoopResult(
             text=router.AI_SERVICE_ERROR_MESSAGE,
-            tool_logs=[],
             status=LoopStatus.ALL_PROVIDERS_FAILED,
         )
 
@@ -504,12 +507,9 @@ class TestCompletedTurn:
 
     def test_tool_results_are_recorded_before_the_assistant_reply(self):
         world = World()
-        world.model_response = ModelResponse(
+        world.model_response = LoopResult(
             text="查好了",
-            tool_logs=[
-                {"type": "telegram_event", "content": "<event/>"},
-                {"type": "assistant_visible", "content": "稍等"},
-            ],
+            delivered_contents=("稍等",),
             turn_messages=[
                 {"role": "user", "content": "<event/>"},
                 {"role": "assistant", "content": "稍等"},
@@ -522,21 +522,21 @@ class TestCompletedTurn:
         tool_write = [e for e in world.calls("insert_records") if e[3] == {"allow_zero_balance": True}]
         assert tool_write[-1][2] == [("user", "<event/>"), ("assistant", "稍等")]
         assert names.index("insert_record") > names.index("run_model")
-        assert world.calls("generated_media")[0][1] is world.model_response.tool_logs
+        assert world.calls("generated_media")[0][1] is world.model_response.tool_calls
 
     def test_a_completed_clear_archives_the_turn_instead_of_recording_it(self):
         world = World()
-        world.model_response = ModelResponse(
+        world.model_response = LoopResult(
             text="已清空",
-            tool_logs=[
-                {
-                    "type": "tool_result",
-                    "tool_name": "execute_telegram_command",
-                    "arguments": {"command": "/clear"},
-                    "result": {"success": True},
-                    "tool_call_id": "call-1",
-                }
-            ],
+            tool_calls=(
+                ToolCallRecord(
+                    tool_name="execute_telegram_command",
+                    tool_call_id="call-1",
+                    arguments={"command": "/clear"},
+                    status=ToolCallStatus.COMPLETED,
+                    public_result={"success": True},
+                ),
+            ),
         )
 
         run_turn(make_request(text_message()), make_services(world))
@@ -579,9 +579,8 @@ class TestCompletedTurn:
         assert [event[1:] for event in logged] == [(900, 100)]
 
         world = World()
-        world.model_response = ModelResponse(
+        world.model_response = LoopResult(
             text=router.AI_SERVICE_ERROR_MESSAGE,
-            tool_logs=[],
             status=LoopStatus.ALL_PROVIDERS_FAILED,
         )
         run_turn(make_request(text_message(), chat_type="group"), make_services(world))
@@ -791,7 +790,7 @@ def test_the_model_stage_is_one_replaceable_call_returning_typed_data():
 
     async def replacement(request):
         calls.append(request)
-        return ModelResponse(text="换了一个模型", tool_logs=[])
+        return LoopResult(text="换了一个模型")
 
     run_turn(make_request(text_message()), make_services(world, run_model=replacement))
 

@@ -5,22 +5,8 @@ from typing import Any
 from fogmoe_telegram_bot.core.telegram_utils import retry_telegram_send, telegram_error_summary
 
 from .tools.image_tools import pop_generated_image_file
-from .types import media_delivery_attempted
 
 MAX_GENERATED_IMAGES_PER_REPLY = 10
-
-
-def _iter_generate_image_results(tool_logs: list[dict]) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    for tool_log in tool_logs:
-        if tool_log.get("type") != "tool_result":
-            continue
-        if tool_log.get("tool_name") != "generate_image":
-            continue
-        result = tool_log.get("internal_result") or tool_log.get("result")
-        if isinstance(result, dict):
-            results.append(result)
-    return results
 
 
 def _summarise_generate_image_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -139,18 +125,9 @@ def _collect_generated_images_from_result(
     return images[:limit]
 
 
-def _collect_generated_images(tool_logs: list[dict]) -> list[dict[str, Any]]:
+def _collect_generated_images(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     images: list[dict[str, Any]] = []
-    for tool_log in tool_logs:
-        if media_delivery_attempted(tool_log):
-            continue
-        if tool_log.get("type") != "tool_result":
-            continue
-        if tool_log.get("tool_name") != "generate_image":
-            continue
-        result = tool_log.get("internal_result") or tool_log.get("result")
-        if not isinstance(result, dict):
-            continue
+    for result in results:
         images.extend(_collect_generated_images_from_result(result))
     return images[:MAX_GENERATED_IMAGES_PER_REPLY]
 
@@ -238,40 +215,26 @@ def _limit_generated_image_result(
     return limited_result
 
 
-def _unsent_image_tool_results(tool_logs: list[dict]) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    for result in _iter_generate_image_results(tool_logs):
-        results.append(result)
-    return results
-
-
-async def send_generated_images_from_tool_logs(
+async def send_generated_images_from_tool_results(
     *,
     bot: Any,
     chat_id: int,
-    tool_logs: list[dict],
+    results: list[dict[str, Any]],
     logger: logging.Logger,
 ) -> list[Any]:
-    """Send generated images referenced by image generation tool results."""
-    image_tool_results = _unsent_image_tool_results(
-        [
-            tool_log
-            for tool_log in tool_logs
-            if not media_delivery_attempted(tool_log)
-        ]
-    )
-    images = _collect_generated_images(tool_logs)
+    """Send generated images referenced by image tool results that were not sent immediately."""
+    images = _collect_generated_images(results)
     if not images:
-        if image_tool_results:
+        if results:
             logger.info(
                 "No generated images to send; generate_image_results=%s",
-                [_summarise_generate_image_result(result) for result in image_tool_results],
+                [_summarise_generate_image_result(result) for result in results],
             )
         return []
 
     sent_messages: list[Any] = []
     remaining = MAX_GENERATED_IMAGES_PER_REPLY
-    for result in image_tool_results:
+    for result in results:
         limited_result = _limit_generated_image_result(result, limit=remaining)
         if limited_result is None:
             continue
@@ -290,6 +253,6 @@ async def send_generated_images_from_tool_logs(
 
 
 __all__ = [
-    "send_generated_images_from_tool_logs",
+    "send_generated_images_from_tool_results",
     "send_generated_images_from_tool_result",
 ]

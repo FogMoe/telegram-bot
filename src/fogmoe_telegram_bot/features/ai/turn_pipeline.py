@@ -7,6 +7,9 @@
 
 入口之间的合理差异通过 `EntryPolicy` 显式声明，避免在三处复制同一套抑制历史、整理回复、
 推导工具记录、处理运行时错误和零余额边界的逻辑。
+
+模型阶段以 `LoopStatus.ABORTED` 结束（后台任务已被撤销）时，之后的阶段一律跳过：不写历史、不投递、
+不收尾，也不按运行时错误安排重试。
 """
 
 from __future__ import annotations
@@ -20,15 +23,15 @@ from typing import Any, Protocol
 from fogmoe_telegram_bot.core.telegram_history import suppress_telegram_history
 from fogmoe_telegram_bot.features.ai.outbound import finish_reply
 from fogmoe_telegram_bot.features.ai.tool_history import (
+    completed_clear,
     reply_record_entries,
-    tool_logs_completed_clear,
     turn_messages_to_record_entries,
 )
 from fogmoe_telegram_bot.features.ai.types import (
+    LoopResult,
     LoopStatus,
-    ToolLog,
-    VisibleContentSink,
-    has_side_effects,
+    ToolCallRecord,
+    VisibleContentHandler,
 )
 
 
@@ -104,20 +107,6 @@ ENTRY_POLICIES: dict[str, EntryPolicy] = {
 }
 
 
-class ModelStepOutput(Protocol):
-    @property
-    def text(self) -> str: ...
-
-    @property
-    def tool_logs(self) -> list[ToolLog]: ...
-
-    @property
-    def status(self) -> LoopStatus: ...
-
-    @property
-    def turn_messages(self) -> list[dict[str, Any]]: ...
-
-
 StickerNormalizer = Callable[[str], Awaitable[str]]
 
 
@@ -126,12 +115,14 @@ class PreparedModelTurn:
     """`model` 阶段的统一产物：规范化回复、历史条目与流式已发送消息。"""
 
     text: str
-    tool_logs: list[ToolLog]
+    status: LoopStatus
+    tool_calls: tuple[ToolCallRecord, ...]
     turn_messages: list[dict[str, Any]]
     runtime_error: str | None
     tool_record_entries: list[tuple[str, object]]
     reply_entries: list[tuple[str, object]]
     completed_clear: bool
+    has_side_effects: bool
     visible_sent_messages: tuple[Any, ...] = ()
 
 
@@ -155,12 +146,12 @@ class PostInputTurnOutcome[DeliveryResultT]:
 async def prepare_model_turn(
     *,
     policy: EntryPolicy,
-    invoke_model: Callable[[VisibleContentSink | None], Awaitable[ModelStepOutput]],
+    invoke_model: Callable[[VisibleContentHandler | None], Awaitable[LoopResult]],
     normalize_stickers: StickerNormalizer,
     logger: logging.Logger,
     user_id: int | None = None,
     send_typing: Callable[[], Awaitable[Any]] | None = None,
-    make_visible_handler: Callable[[], VisibleContentSink] | None = None,
+    make_visible_handler: Callable[[], VisibleContentHandler] | None = None,
     typing_debug_message: str = "Failed to send typing action before AI request",
 ) -> PreparedModelTurn:
     """执行主模型、规范化回复，并按 `EntryPolicy` 处理运行时错误与历史条目。"""
@@ -179,9 +170,21 @@ async def prepare_model_turn(
     with suppress_telegram_history():
         output = await invoke_model(visible_handler)
 
-    tool_logs = output.tool_logs
-    turn_messages = output.turn_messages
-    visible_sent = tuple(getattr(visible_handler, "sent_messages", ()))
+    visible_sent = tuple(visible_handler.sent_messages) if visible_handler is not None else ()
+    if output.status is LoopStatus.ABORTED:
+        return PreparedModelTurn(
+            text="",
+            status=output.status,
+            tool_calls=output.tool_calls,
+            turn_messages=[],
+            runtime_error=output.runtime_error,
+            tool_record_entries=[],
+            reply_entries=[],
+            completed_clear=False,
+            has_side_effects=output.has_side_effects,
+            visible_sent_messages=visible_sent,
+        )
+
     reply = await finish_reply(
         output.text,
         normalize_stickers=normalize_stickers,
@@ -193,7 +196,7 @@ async def prepare_model_turn(
         reply.runtime_error
         and policy.runtime_error_policy is RuntimeErrorPolicy.RETRY_OR_SUPPRESS
     ):
-        if not has_side_effects(tool_logs):
+        if not output.has_side_effects:
             raise NoSideEffectsRetryError(
                 f"main AI failed during {policy.name}: {reply.runtime_error}"
             )
@@ -208,12 +211,14 @@ async def prepare_model_turn(
 
     return PreparedModelTurn(
         text=effective_text,
-        tool_logs=tool_logs,
-        turn_messages=turn_messages,
+        status=output.status,
+        tool_calls=output.tool_calls,
+        turn_messages=output.turn_messages,
         runtime_error=reply.runtime_error,
-        tool_record_entries=turn_messages_to_record_entries(turn_messages),
+        tool_record_entries=turn_messages_to_record_entries(output.turn_messages),
         reply_entries=reply_record_entries(effective_text, reply.runtime_error),
-        completed_clear=policy.supports_completed_clear and tool_logs_completed_clear(tool_logs),
+        completed_clear=policy.supports_completed_clear and completed_clear(output.tool_calls),
+        has_side_effects=output.has_side_effects,
         visible_sent_messages=visible_sent,
     )
 
@@ -233,7 +238,7 @@ async def execute_post_input_turn[DeliveryResultT](
 
     `before_persist_and_deliver` 用于后台任务的投递前阶段推进或门闸检查（例如定时任务推进到
     `delivering`，或空闲跟进发现用户已回归时只补写工具记录并中止投递）。返回 `False` 时不再进入
-    `history_out`、`delivery` 与 `finalize`。
+    `history_out`、`delivery` 与 `finalize`。模型阶段以 `ABORTED` 结束时连这个检查也不做。
     """
 
     async def _run_stage[T](stage: PostInputStage, step: Callable[[], Awaitable[T]]) -> T:
@@ -242,6 +247,8 @@ async def execute_post_input_turn[DeliveryResultT](
         return await wrap_stage(stage, step)
 
     prepared = await _run_stage(PostInputStage.MODEL, run_model_step)
+    if prepared.status is LoopStatus.ABORTED:
+        return PostInputTurnOutcome(prepared=prepared, delivered=False)
     if before_persist_and_deliver is not None and not await before_persist_and_deliver(prepared):
         return PostInputTurnOutcome(prepared=prepared, delivered=False)
 
@@ -262,19 +269,15 @@ async def execute_post_input_turn[DeliveryResultT](
     )
 
 
-def tool_log_type_labels(tool_logs: Sequence[ToolLog]) -> list[str]:
-    return [
-        str(tool_log.get("type", "tool_result"))
-        for tool_log in tool_logs
-        if isinstance(tool_log, dict)
-    ]
+def tool_call_labels(tool_calls: Sequence[ToolCallRecord]) -> list[str]:
+    """日志里描述这一轮工具调用的标签：`工具名:状态`。"""
+    return [f"{record.tool_name}:{record.status.value}" for record in tool_calls]
 
 
 __all__ = [
     "ENTRY_POLICIES",
     "EntryPolicy",
     "IDLE_FOLLOWUP_ENTRY_POLICY",
-    "ModelStepOutput",
     "NoSideEffectsRetryError",
     "PostInputStage",
     "PostInputTurnOutcome",
@@ -285,5 +288,5 @@ __all__ = [
     "USER_ENTRY_POLICY",
     "execute_post_input_turn",
     "prepare_model_turn",
-    "tool_log_type_labels",
+    "tool_call_labels",
 ]

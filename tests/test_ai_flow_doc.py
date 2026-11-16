@@ -109,7 +109,9 @@ def test_html_toolbox_matches_agent_tools():
         match["name"]: tuple(match["agents"].split())
         for match in _HTML_TOOL_RE.finditer(_html_text())
     }
-    code = {tool.name: tool.agents for tool in _generator().tool_catalog()}
+    from fogmoe_telegram_bot.features.ai.tools.specs import TOOL_SPECS
+
+    code = {spec.name: spec.agents for spec in TOOL_SPECS}
     missing = sorted(set(code) - set(page))
     extra = sorted(set(page) - set(code))
     wrong_agents = sorted(name for name in set(code) & set(page) if code[name] != page[name])

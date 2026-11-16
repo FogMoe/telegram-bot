@@ -4,9 +4,9 @@ import json
 import pytest
 
 from fogmoe_telegram_bot.core import background
-from fogmoe_telegram_bot.features.ai import summary
+from fogmoe_telegram_bot.features.ai import summary, tool_runner
+from fogmoe_telegram_bot.features.ai.tools import agent_tool_specs
 from fogmoe_telegram_bot.features.ai.tools.context import get_tool_request_context
-from fogmoe_telegram_bot.features.ai.tools.schemas import OPENAI_TOOLS
 from fogmoe_telegram_bot.features.ai.types import LoopResult, PartialAIResponseError
 
 
@@ -100,7 +100,7 @@ def test_run_summary_agent_exposes_only_summary_search_tool(monkeypatch, setting
         )
         return LoopResult("generated summary")
 
-    monkeypatch.setattr(summary, "run_tool_loop", fake_run_tool_loop)
+    monkeypatch.setattr(tool_runner, "run_tool_loop", fake_run_tool_loop)
 
     result = asyncio.run(summary._run_summary_agent(
         [{"role": "user", "content": "summarize"}],
@@ -108,10 +108,8 @@ def test_run_summary_agent_exposes_only_summary_search_tool(monkeypatch, setting
         456,
     ))
 
-    tool_names = {
-        tool["function"]["name"]
-        for tool in captured["kwargs"]["tool_definitions"]
-    }
+    agent = captured["kwargs"]["agent"]
+    tool_names = {spec.name for spec in agent.tools()}
     assert result == ("generated summary", "summary-model")
     assert captured["provider"] == "gemini"
     assert captured["active_context"] == {
@@ -119,14 +117,11 @@ def test_run_summary_agent_exposes_only_summary_search_tool(monkeypatch, setting
         "summary_record_id": 456,
     }
     assert tool_names == {"search_prior_context"}
-    assert set(captured["kwargs"]["tool_handlers"]) == tool_names
-    assert "search_prior_context" not in {
-        tool["function"]["name"] for tool in OPENAI_TOOLS
-    }
-    assert "max_tokens" not in captured["kwargs"]
-    assert captured["kwargs"]["context_hard_limit_ratio"] == 1.5
-    assert captured["kwargs"]["max_iterations"] == 4
-    assert "completion_kwargs" not in captured["kwargs"]
+    assert agent is summary.SUMMARY_AGENT
+    assert "search_prior_context" not in {spec.name for spec in agent_tool_specs("main")}
+    assert agent.context_hard_limit_ratio == 1.5
+    assert agent.max_iterations == 4
+    assert dict(agent.completion_kwargs) == {}
     assert get_tool_request_context() == {}
 
 
@@ -143,10 +138,10 @@ def test_run_summary_agent_reruns_its_read_only_tools_on_the_fallback_model(
     async def fake_run_tool_loop(provider, model, messages, tool_context, **kwargs):
         models.append(model)
         if model == "primary":
-            raise PartialAIResponseError("failed after search", [{"type": "tool_result"}])
+            raise PartialAIResponseError("failed after search", LoopResult(""))
         return LoopResult("generated summary")
 
-    monkeypatch.setattr(summary, "run_tool_loop", fake_run_tool_loop)
+    monkeypatch.setattr(tool_runner, "run_tool_loop", fake_run_tool_loop)
 
     result = asyncio.run(summary._run_summary_agent([{"role": "user", "content": "x"}], 1, 2))
 

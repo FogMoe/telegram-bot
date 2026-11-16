@@ -6,20 +6,15 @@ from fogmoe_telegram_bot.features.ai.tools.context import (
     clear_tool_request_context,
     set_tool_request_context,
 )
-from fogmoe_telegram_bot.features.ai.tools.schemas import (
-    OPENAI_TOOLS,
-    SUMMARY_SEARCH_PRIOR_CONTEXT_TOOL,
-)
+from fogmoe_telegram_bot.features.ai.tools.specs import TOOL_SPEC_BY_NAME, agent_tool_specs
 
 
 def test_summary_search_schema_is_not_exposed_to_main_ai():
-    schema = SUMMARY_SEARCH_PRIOR_CONTEXT_TOOL["function"]
+    schema = TOOL_SPEC_BY_NAME["search_prior_context"].schema()["function"]
 
     assert schema["name"] == "search_prior_context"
     assert set(schema["parameters"]["properties"]) == {"query", "limit"}
-    assert "search_prior_context" not in {
-        tool["function"]["name"] for tool in OPENAI_TOOLS
-    }
+    assert "search_prior_context" not in {spec.name for spec in agent_tool_specs("main")}
 
 
 def test_rank_prior_summaries_matches_chinese_without_extra_dependency():

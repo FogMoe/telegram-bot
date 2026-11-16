@@ -151,7 +151,17 @@ class Bench:
             time.sleep(tool_s)  # 像 requests 一样阻塞
             return {"organic_results": []}
 
-        self.tool_runner.AI_TOOL_HANDLERS["google_search"] = blocking_tool
+        from types import MappingProxyType
+
+        from fogmoe_telegram_bot.features.ai.tools import specs
+
+        specs.TOOL_SPECS = tuple(
+            dataclasses.replace(spec, handler=blocking_tool)
+            if spec.name == "google_search"
+            else spec
+            for spec in specs.TOOL_SPECS
+        )
+        specs.TOOL_SPEC_BY_NAME = MappingProxyType({spec.name: spec for spec in specs.TOOL_SPECS})
 
         from fogmoe_telegram_bot.core import command_cooldown
 

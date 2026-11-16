@@ -1,7 +1,10 @@
-"""AI 工具共用的进程内限流、冷却与并发闸门。
+"""AI 工具共用的进程内限流、冷却与并发闸门，以及工具在 `ToolSpec.limits` 里声明的限额。
 
 所有状态只驻留在当前进程内存里（单进程部署，见 docs/architecture.md），并在每次检查时顺手清理过期键，
 避免长期运行后按 `user_id` 无限增长。限流阈值由调用方在每次判定时传入。
+
+限额的数值是各工具模块里的代码常量（advisor 的在配置里）：工具模块用它们构造 `ToolLimits` 交给声明表，
+占座、失败回滚与返回给模型的错误留在工具里，因为各工具「什么算一次」不同（生图只算成功的）。
 """
 
 from __future__ import annotations
@@ -10,7 +13,32 @@ import math
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import NamedTuple, Protocol
+
+
+@dataclass(frozen=True, slots=True)
+class RateWindow:
+    """滑动时间窗：`window_seconds` 内最多 `max_calls` 次。"""
+
+    max_calls: int
+    window_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class ToolLimits:
+    """一个工具的限额声明；没有的项为 None。
+
+    - `per_request`：一次请求（一轮对话里的一次模型尝试）最多调用几次；
+    - `per_user`：每个用户的滑动时间窗；
+    - `cooldown_seconds`：会话型工具关闭后，同一用户再开一个要等多久；
+    - `max_concurrent`：全局同时进行的上限（满了直接返回 busy，不排队）。
+    """
+
+    per_request: int | None = None
+    per_user: RateWindow | None = None
+    cooldown_seconds: float | None = None
+    max_concurrent: int | None = None
 
 
 class Resettable(Protocol):
@@ -204,6 +232,8 @@ class UserSessionGate:
 __all__ = [
     "NonBlockingConcurrencyLimiter",
     "RateLimitReservation",
+    "RateWindow",
+    "ToolLimits",
     "SessionReservation",
     "SlidingWindowRateLimiter",
     "UserSessionGate",

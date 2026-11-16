@@ -30,7 +30,6 @@ from fogmoe_telegram_bot.core.archive_utils import send_permanent_records_archiv
 from fogmoe_telegram_bot.core.telegram_utils import partial_send, safe_send_markdown
 from fogmoe_telegram_bot.features.ai import (
     ai_chat,
-    idle_followup,
     outbound,
     sticker_sender,
     summary,
@@ -38,9 +37,10 @@ from fogmoe_telegram_bot.features.ai import (
 )
 from fogmoe_telegram_bot.features.ai.telegram_visible_sender import TelegramVisibleContentHandler
 from fogmoe_telegram_bot.features.ai.tool_history import reply_record_entries
+from fogmoe_telegram_bot.features.ai.types import LoopResult
 
-from . import billing, history_hooks
-from .turn_types import HistoryInsert, ModelRequest, ModelResponse, UserStateRecord
+from . import billing, history_hooks, idle_followup
+from .turn_types import HistoryInsert, ModelRequest, UserStateRecord
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class TurnServices:
     analyze_image: Callable[[str], Awaitable[str | None]]
 
     # 模型
-    run_model: Callable[[ModelRequest], Awaitable[ModelResponse]]
+    run_model: Callable[[ModelRequest], Awaitable[LoopResult]]
     make_visible_handler: Callable[..., Any]
 
     # 投递
@@ -181,20 +181,14 @@ async def _analyze_image(base64_str: str) -> str | None:
     return await ai_chat.analyze_image(base64_str)
 
 
-async def _run_model(request: ModelRequest) -> ModelResponse:
-    result = await ai_chat.get_ai_response(
+async def _run_model(request: ModelRequest) -> LoopResult:
+    return await ai_chat.get_ai_response(
         request.messages,
         request.user_id,
         tool_context=request.tool_context,
         text_fallback_messages=request.text_fallback_messages,
         visible_content_handler=request.visible_content_handler,
         deadline=request.deadline,
-    )
-    return ModelResponse(
-        text=result.text,
-        tool_logs=result.tool_logs,
-        status=result.status,
-        turn_messages=result.turn_messages,
     )
 
 

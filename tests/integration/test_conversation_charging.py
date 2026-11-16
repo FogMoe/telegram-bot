@@ -21,8 +21,8 @@ from economy_support import (
 from mysql_support import run
 
 from fogmoe_telegram_bot.core import command_cooldown
+from fogmoe_telegram_bot.features.ai.types import LoopResult
 from fogmoe_telegram_bot.features.conversation import batching, billing, handlers, turn_services
-from fogmoe_telegram_bot.features.conversation.turn_types import ModelResponse
 
 
 def turn(message_id, cost, *, chat_id=100, edit_stamp=None, update_id=None):
@@ -160,7 +160,7 @@ def conversation(monkeypatch):
 
     async def fake_run_model(request):
         ai_calls.append((request.user_id, len(request.messages)))
-        return ModelResponse(text="你好呀", tool_logs=[])
+        return LoopResult(text="你好呀")
 
     async def no_op(*args, **kwargs):
         return None

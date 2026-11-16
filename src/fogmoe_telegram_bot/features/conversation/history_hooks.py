@@ -40,8 +40,8 @@ async def private_command_guard(user_id: int):
     发现用户已返回。
     """
 
-    from fogmoe_telegram_bot.features.ai import idle_followup
     from fogmoe_telegram_bot.features.ai.conversation_locks import get_conversation_lock
+    from fogmoe_telegram_bot.features.conversation import idle_followup
 
     await idle_followup.note_incoming_private_message(user_id)
     async with get_conversation_lock(user_id):

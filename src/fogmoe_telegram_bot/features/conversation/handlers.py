@@ -30,8 +30,8 @@ from fogmoe_telegram_bot.core.admission import (
 )
 from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline, DeadlineExceeded
 from fogmoe_telegram_bot.core.telegram_history import normalize_command_name
-from fogmoe_telegram_bot.features.ai import idle_followup
 from fogmoe_telegram_bot.features.ai.conversation_locks import get_conversation_lock
+from fogmoe_telegram_bot.features.conversation import idle_followup
 
 from . import batching, lifecycle, messages, triggers
 from .turn import run_turn

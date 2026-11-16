@@ -14,7 +14,8 @@ from fogmoe_telegram_bot.features.ai.types import TOOL_CONTEXT_MESSAGES_KEY
 from .context import get_tool_request_context
 
 _COMMAND_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
-_REQUIRED_CONTEXT_FIELDS = ("user_id", "chat_id", "chat_type", "message_id")
+# 代执行要以用户身份在当前聊天里执行：只有用户消息这个入口有这些字段，定时任务与空闲跟进没有。
+REQUIRED_CONTEXT_FIELDS = ("user_id", "chat_id", "chat_type", "message_id")
 _REQUEST_CACHE_KEY = "_executed_telegram_commands"
 
 
@@ -84,7 +85,7 @@ async def execute_telegram_command_tool(
     request_context = get_tool_request_context()
     missing_fields = [
         field
-        for field in _REQUIRED_CONTEXT_FIELDS
+        for field in REQUIRED_CONTEXT_FIELDS
         if request_context.get(field) is None
     ]
     if missing_fields:

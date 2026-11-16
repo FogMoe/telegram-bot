@@ -93,10 +93,10 @@ def test_diary_and_schedule_tools_write_to_the_real_database_inside_the_tool_loo
             provider_name="Test",
         )
 
-    message, tool_logs = run(scenario())
+    result = run(scenario())
 
-    assert message == "记下了"
-    results = {log["tool_name"]: log["result"] for log in tool_logs if log["type"] == "tool_result"}
+    assert result.text == "记下了"
+    results = {record.tool_name: record.public_result for record in result.tool_calls}
     assert results["user_diary"]["total_pages"] == 1
     assert results["schedule_ai_message"]["status"] == "scheduled"
 
@@ -144,9 +144,9 @@ def test_reading_tools_return_what_the_writing_tools_stored(app_database, monkey
             provider_name="Test",
         )
 
-    message, tool_logs = run(scenario())
+    result = run(scenario())
 
-    assert message == "看过了"
-    results = [log["result"] for log in tool_logs if log["type"] == "tool_result"]
+    assert result.text == "看过了"
+    results = [record.public_result for record in result.tool_calls]
     assert results[0]["content"] == "第一行\n第二行" and results[0]["total_lines"] == 2
     assert [page["title"] for page in results[1]["pages"]] == ["旧笔记"]

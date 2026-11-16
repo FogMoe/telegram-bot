@@ -58,7 +58,7 @@ provider 特有的协议要求由什么承载。权威定义是代码，本页�
 - **安全拦截**：`translates_safety_blocks` 让 `run_with_fallback` 把「被安全策略拦截」的错误转成 `SafetyBlockError`：
   还有备用模型就换模型；模型用完时，`safety_blocks_fall_through` 让它换下一个 provider（不计熔断），
   没有声明的 provider 直接抛出。执行过工具或发出过可见内容之后的拦截按「工具之后的失败」处理，不再重试。
-- **隐藏工具（`skip_tools`）**：主聊天里对该 provider 不暴露的工具名（`tests/test_ai_provider_registry.py` 校验名字都存在于 `tools/specs.py` 的 `TOOL_SPECS`）。若模型仍在响应里调用了未暴露的工具，工具循环仍返回一一配对的 `tool_not_supported` 结果，保证历史配对不断裂。
+- **隐藏工具（`skip_tools`）**：主聊天里对该 provider 不暴露的工具名（`tests/test_ai_provider_registry.py` 校验名字都存在于 `tools/specs.py` 的 `TOOL_SPECS`）。若模型仍在响应里调用了未暴露的工具，工具循环返回一一配对的「未开放」错误结果（`Tool is not available in this agent`），保证历史配对不断裂。
 - **拆分的 choices（`merges_split_tool_call_choices`）**：某些端点把文本与工具调用拆到不同 choices，
   工具循环保留 choice 0 的文本并读取后续 choice 的工具调用。这是对上游缺陷
   [BerriAI/litellm#35444](https://github.com/BerriAI/litellm/issues/35444) 的临时兼容。
@@ -103,16 +103,22 @@ provider 特有的协议要求由什么承载。权威定义是代码，本页�
 1. 消息含图片而该 provider 不支持视觉（`chat_service_supports_vision`）时，改用纯文本历史
    （`text_fallback_messages`，没有则去掉图片）。
 2. 在一份新的工具请求上下文里（`tool_request_scope`）直接 `await` 工具循环（原生 async，没有线程池），
-   工具列表由 `tools/specs.py` 的 `resolve_agent_tools` 给出（只去掉没配置凭据的工具和 provider 的 `skip_tools`，不随入口或聊天类型变化），结束后清理沙箱（清理失败只记日志，不影响这次的结果）。
+   工具列表由工具循环按 `MAIN_AGENT` 与这个 provider 的声明取（`tools/specs.py` 的 `resolve_agent_tool_specs`：只去掉没配置凭据的工具和 provider 的 `skip_tools`，不随入口或聊天类型变化），结束后清理沙箱（清理失败只记日志，不影响这次的结果）。
    传入的整轮 `Deadline` 一路带到工具循环，等待模型时到期给这个 provider 记一次熔断失败。规则见 [runtime.md](runtime.md)。
 
 每次 LiteLLM 调用完成时，`litellm_client` 写一行日志，记下 provider、模型与输入、命中缓存、输出的 token 数；工具循环结束时再写一行本次循环的合计。
 
 执行结果转成固定的提示文案：截止时间到期返回 `TURN_DEADLINE_ERROR_MESSAGE`（进程停止时是 `TURN_SHUTDOWN_ERROR_MESSAGE`）
-与已有的工具日志；上下文超限返回 `CONTEXT_BUDGET_ERROR_MESSAGE`；执行过工具之后的失败返回
-`PARTIAL_AI_RESPONSE_ERROR_MESSAGE` 与工具日志，用户已经看到可见内容或生成的媒体时（`delivered_to_user`）
-不再附加提示。「是否已有副作用」只由工具循环的日志判断（`has_side_effects`）：工具循环把这之后的任何异常
-都包成 `PartialAIResponseError`，所以不会换模型或 provider 把已经执行过的工具再跑一遍。
+与到期为止的循环结果；上下文超限返回 `CONTEXT_BUDGET_ERROR_MESSAGE`；执行过工具之后的失败返回
+`PARTIAL_AI_RESPONSE_ERROR_MESSAGE` 与到失败为止的循环结果（异常的 `partial`），用户已经看到可见内容或生成的媒体时
+（`LoopResult.delivered_to_user`）不再附加提示。「是否已有副作用」只由工具循环的状态判断（`LoopState.has_side_effects`：
+开始处理第一次工具调用之前就登记，或已经发出过可见内容）：工具循环把这之后的任何异常都包成 `PartialAIResponseError`，
+所以不会换模型或 provider 把已经执行过的工具再跑一遍。
+
+回退执行器把安全拦截原样上抛的情况（provider 没有声明 `safety_blocks_fall_through`，且没有备用模型可换），
+router 返回 `LoopStatus.SAFETY_BLOCKED` 与 `AI_SERVICE_ERROR_MESSAGE`，不再换下一个 provider，也不计熔断。
+后台任务被撤销（`JobAbortedError`）时返回 `LoopStatus.ABORTED`：不换 provider、不计熔断，收尾流水线随后跳过
+写历史、投递与收尾。
 
 所有 provider 失败后，如果消息含图片，用纯文本历史把整个顺序再走一遍；仍然失败返回
 `AI_SERVICE_ERROR_MESSAGE`。截止时间到期时不再走这一遍。这些固定文案都带着对应的 `LoopStatus`（`LoopResult.runtime_error`），

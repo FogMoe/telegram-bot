@@ -1,11 +1,13 @@
 
+from collections.abc import Mapping
+
 from fogmoe_telegram_bot.core import config
 
 SYSTEM_PROMPT = config.SYSTEM_PROMPT
 
 
 def compose_system_prompt(
-    tool_context: dict[str, object] | None,
+    tool_context: Mapping[str, object] | None,
 ) -> str:
     """Return the base system prompt with any dynamic additions."""
     extra_prompt = ""

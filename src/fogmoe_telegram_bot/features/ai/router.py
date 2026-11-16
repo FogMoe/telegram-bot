@@ -2,30 +2,33 @@
 
 provider 与模型的顺序、跳过、熔断和失败分类在 `task_runner.run_with_fallback`；这里只放主聊天特有的部分：
 每次尝试跑一次工具循环（`_run_chat_candidate`），看不了图的服务换成文字历史，以及把截止时间、
-工具之后的失败、上下文超限映射成明确的 `LoopStatus` 与固定提示文案。
+工具之后的失败、上下文超限、安全拦截与后台任务撤销映射成明确的 `LoopStatus` 与固定提示文案。
+循环与回退执行器里这些情况仍以异常传递（不换 provider、不计熔断的规则在那里），到这里才变成结果。
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import Any
 
 from fogmoe_telegram_bot.core import metrics
 from fogmoe_telegram_bot.core.deadline import REASON_SHUTDOWN, Deadline
 
+from .agents import MAIN_AGENT
 from .chat_capabilities import chat_model_for_service, chat_service_supports_vision
-from .errors import find_context_budget_error, is_timeout_error
+from .errors import SafetyBlockError, find_context_budget_error, is_timeout_error
 from .message_content import messages_have_images, strip_image_content
 from .task_runner import AllProvidersFailedError, Candidate, ProviderCircuit, run_with_fallback
 from .tool_runner import run_tool_loop
-from .tools import cleanup_linux_sandbox_async, resolve_agent_tools, tool_request_scope
+from .tools import cleanup_linux_sandbox_async, tool_request_scope
 from .types import (
+    JobAbortedError,
     LoopResult,
     LoopStatus,
     PartialAIResponseError,
     TurnDeadlineError,
-    VisibleContentSink,
-    delivered_to_user,
+    VisibleContentHandler,
 )
 
 AI_PROVIDER_CIRCUIT_FAILURE_THRESHOLD = 3
@@ -114,10 +117,10 @@ async def _run_chat_candidate(
     text_fallback_messages: list[dict[str, Any]] | None,
     tool_context: dict[str, object] | None,
     request_context: dict[str, object],
-    visible_content_handler: VisibleContentSink | None,
+    visible_content_handler: VisibleContentHandler | None,
     deadline: Deadline | None,
 ) -> LoopResult:
-    """用一个 provider 的一个模型跑一次主聊天的工具循环；provider 之间的差异只来自声明。"""
+    """用一个 provider 的一个模型跑一次主聊天（`MAIN_AGENT`）的工具循环；provider 之间的差异只来自声明。"""
     provider_name = candidate.spec.display_name
     try:
         service_messages = _messages_for_service(
@@ -125,7 +128,6 @@ async def _run_chat_candidate(
             messages,
             text_fallback_messages,
         )
-        tool_definitions = resolve_agent_tools("main", provider=candidate.spec)
         with tool_request_scope(request_context):
             try:
                 return await run_tool_loop(
@@ -133,9 +135,8 @@ async def _run_chat_candidate(
                     candidate.model,
                     list(service_messages),
                     tool_context,
+                    agent=MAIN_AGENT,
                     provider_name=provider_name,
-                    skip_tools=candidate.spec.skip_tools,
-                    tool_definitions=tool_definitions,
                     visible_content_handler=visible_content_handler,
                     deadline=deadline,
                 )
@@ -170,45 +171,33 @@ async def _run_chat_candidate(
 
 
 def _deadline_response(exc: TurnDeadlineError) -> LoopResult:
-    """整轮截止时间到期（或进程停止）：保留已有的工具日志与消息，返回对应状态与提示文案。"""
+    """整轮截止时间到期（或进程停止）：保留到期为止的结果，返回对应状态与提示文案。"""
     metrics.counter("turn.deadline_hits", reason=exc.reason, phase=exc.phase).inc()
     is_shutdown = exc.reason == REASON_SHUTDOWN
-    message = TURN_SHUTDOWN_ERROR_MESSAGE if is_shutdown else TURN_DEADLINE_ERROR_MESSAGE
-    status = LoopStatus.SHUTDOWN if is_shutdown else LoopStatus.DEADLINE_EXCEEDED
-    return LoopResult(
-        text=message,
-        tool_logs=exc.tool_logs,
-        status=status,
-        turn_messages=exc.turn_messages,
+    return dataclasses.replace(
+        exc.partial,
+        text=TURN_SHUTDOWN_ERROR_MESSAGE if is_shutdown else TURN_DEADLINE_ERROR_MESSAGE,
+        status=LoopStatus.SHUTDOWN if is_shutdown else LoopStatus.DEADLINE_EXCEEDED,
         error=exc,
     )
 
 
 def _partial_response(exc: PartialAIResponseError) -> LoopResult:
-    """执行过工具或发出过可见内容之后失败：不重试，已有的工具日志与消息照常交回去写历史。"""
+    """执行过工具或发出过可见内容之后失败：不重试，到失败为止的结果照常交回去写历史。"""
     context_error = find_context_budget_error(exc)
     if context_error is not None:
         logging.warning("AI 请求超过上下文硬上限: %s", context_error)
-        return LoopResult(
+        return dataclasses.replace(
+            exc.partial,
             text=CONTEXT_BUDGET_ERROR_MESSAGE,
-            tool_logs=exc.tool_logs,
             status=LoopStatus.CONTEXT_BUDGET_EXCEEDED,
-            turn_messages=exc.turn_messages,
             error=exc,
         )
-    if delivered_to_user(exc.tool_logs):
-        return LoopResult(
-            text="",
-            tool_logs=exc.tool_logs,
-            status=LoopStatus.PARTIAL_FAILURE,
-            turn_messages=exc.turn_messages,
-            error=exc,
-        )
-    return LoopResult(
-        text=PARTIAL_AI_RESPONSE_ERROR_MESSAGE,
-        tool_logs=exc.tool_logs,
+    return dataclasses.replace(
+        exc.partial,
+        # 用户已经收到过内容时不再补错误提示。
+        text="" if exc.partial.delivered_to_user else PARTIAL_AI_RESPONSE_ERROR_MESSAGE,
         status=LoopStatus.PARTIAL_FAILURE,
-        turn_messages=exc.turn_messages,
         error=exc,
     )
 
@@ -217,7 +206,7 @@ async def _try_ai_services(
     messages: list[dict[str, Any]],
     user_id: int,
     tool_context: dict[str, object] | None = None,
-    visible_content_handler: VisibleContentSink | None = None,
+    visible_content_handler: VisibleContentHandler | None = None,
     text_fallback_messages: list[dict[str, Any]] | None = None,
     deadline: Deadline | None = None,
 ) -> tuple[LoopResult | None, Exception | None]:
@@ -238,7 +227,7 @@ async def _try_ai_services(
     try:
         # 回退链走到一半时间已经用完：不再尝试后面的模型与 provider（包括要跳过的）。
         response = await run_with_fallback(
-            "chat",
+            MAIN_AGENT.task,
             attempt,
             circuit=CHAT_CIRCUIT,
             deadline=deadline,
@@ -249,6 +238,13 @@ async def _try_ai_services(
         return _deadline_response(exc), None
     except PartialAIResponseError as exc:
         return _partial_response(exc), None
+    except SafetyBlockError as exc:
+        # 声明了不换下一个 provider 的服务被安全策略拦截，且没有备用模型可换：回退链停在这里。
+        logging.warning("AI 回复被安全策略拦截，不再尝试其他服务: %s", exc)
+        return LoopResult(text=AI_SERVICE_ERROR_MESSAGE, status=LoopStatus.SAFETY_BLOCKED, error=exc), None
+    except JobAbortedError as exc:
+        # 后台任务已被撤销：不换 provider、不计熔断，之后的阶段由入口按 ABORTED 跳过。
+        return LoopResult(text="", status=LoopStatus.ABORTED, error=exc), None
     except Exception as exc:
         context_error = find_context_budget_error(exc)
         if context_error is None:
@@ -257,9 +253,7 @@ async def _try_ai_services(
         return (
             LoopResult(
                 text=CONTEXT_BUDGET_ERROR_MESSAGE,
-                tool_logs=[],
                 status=LoopStatus.CONTEXT_BUDGET_EXCEEDED,
-                turn_messages=[],
                 error=exc,
             ),
             None,
@@ -272,7 +266,7 @@ async def get_ai_response(
     user_id: int,
     tool_context: dict[str, object] | None = None,
     text_fallback_messages: list[dict[str, Any]] | None = None,
-    visible_content_handler: VisibleContentSink | None = None,
+    visible_content_handler: VisibleContentHandler | None = None,
     deadline: Deadline | None = None,
 ) -> LoopResult:
     """统一 AI 响应异步接口，返回类型化 `LoopResult`。"""
@@ -307,8 +301,6 @@ async def get_ai_response(
     logging.error("所有AI服务均调用失败: %s", last_error)
     return LoopResult(
         text=AI_SERVICE_ERROR_MESSAGE,
-        tool_logs=[],
         status=LoopStatus.ALL_PROVIDERS_FAILED,
-        turn_messages=[],
         error=last_error,
     )

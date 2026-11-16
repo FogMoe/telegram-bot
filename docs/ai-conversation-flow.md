@@ -47,7 +47,7 @@ uv run python scripts/gen_ai_flow_doc.py
 | 了解用户 | `_load_context`、`user_state_prompt`、`format_user_state_prompt` | [ai/user_state.py](../src/fogmoe_telegram_bot/features/ai/user_state.py)、[core/prompt_utils.py](../src/fogmoe_telegram_bot/core/prompt_utils.py) |
 | 看图（历史里只存描述，原图通过 `runtime_replacements` 只给这一次请求） | `_prepare_inputs` | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py) |
 | 记下用户的话 | `_record_input` → `insert_records`、`get_history` | [conversation/turn_services.py](../src/fogmoe_telegram_bot/features/conversation/turn_services.py) |
-| 思考与动手 | `_run_model` → `prepare_model_turn` → `run_model`（`ModelRequest` / `ModelResponse`）；工具上下文 `build_tool_context`，回复整理 `finish_reply` | 见第 3 节；[ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)、[ai/tools/context.py](../src/fogmoe_telegram_bot/features/ai/tools/context.py)、[ai/outbound.py](../src/fogmoe_telegram_bot/features/ai/outbound.py) |
+| 思考与动手 | `_run_model` → `prepare_model_turn` → `run_model`（`ModelRequest` → `LoopResult`）；工具上下文 `build_tool_context`，回复整理 `finish_reply` | 见第 3 节；[ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)、[ai/tools/context.py](../src/fogmoe_telegram_bot/features/ai/tools/context.py)、[ai/outbound.py](../src/fogmoe_telegram_bot/features/ai/outbound.py) |
 | 记下做了什么 | `execute_post_input_turn` → `_record_output`、`turn_messages_to_record_entries`、`reply_record_entries` | [ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)、[ai/tool_history.py](../src/fogmoe_telegram_bot/features/ai/tool_history.py) |
 | 发出回复 | `_deliver`、`_deliver_messages` | [conversation/turn.py](../src/fogmoe_telegram_bot/features/conversation/turn.py) |
 | 收尾 | `_finalize`、`USER_ENTRY_POLICY`、`archive_completed_clear`、`flush_events` | [ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)、[conversation/turn_services.py](../src/fogmoe_telegram_bot/features/conversation/turn_services.py) |
@@ -61,50 +61,50 @@ uv run python scripts/gen_ai_flow_doc.py
 | 按顺序换 provider 与备用模型、安全拦截、熔断（主聊天、摘要、回顾与 `run_ai_task` 共用） | `run_with_fallback`、`ProviderCircuit`、`CHAT_CIRCUIT` | [ai/task_runner.py](../src/fogmoe_telegram_bot/features/ai/task_runner.py) |
 | 拼好上下文（人设 + 用户状态） | `compose_system_prompt` | [ai/prompts.py](../src/fogmoe_telegram_bot/features/ai/prompts.py) |
 | 工具循环、边做边说、工具执行后的重试 | `run_tool_loop`、`emit_visible_content`、`_create_chat_completion_with_post_tool_retries`、`resolve_assistant_message` | [ai/tool_runner.py](../src/fogmoe_telegram_bot/features/ai/tool_runner.py)、[ai/tool_loop_delivery.py](../src/fogmoe_telegram_bot/features/ai/tool_loop_delivery.py)、[ai/tool_loop_messages.py](../src/fogmoe_telegram_bot/features/ai/tool_loop_messages.py) |
+| 这一轮的状态：消息序列、每次工具调用的记录（`ToolCallRecord`）、已发出的内容，结束时冻结成 `LoopResult` | `LoopState`、`ToolCallRecord`、`LoopResult` | [ai/tool_loop_state.py](../src/fogmoe_telegram_bot/features/ai/tool_loop_state.py)、[ai/types.py](../src/fogmoe_telegram_bot/features/ai/types.py) |
 | 一次工具调用：参数校验、执行、媒体立刻发出、只把公开部分交回模型、附带的事件 | `_validate_tool_args`、`_call_tool`、`send_media_result_immediately`、`public_tool_result`、`context_messages_from_tool_result` | [ai/tool_loop_execution.py](../src/fogmoe_telegram_bot/features/ai/tool_loop_execution.py)、[ai/tool_loop_delivery.py](../src/fogmoe_telegram_bot/features/ai/tool_loop_delivery.py) |
 | 时间用完时：结果未知、未执行 | `close_interrupted_round`、`TurnDeadlineError` | [ai/tool_loop_deadline.py](../src/fogmoe_telegram_bot/features/ai/tool_loop_deadline.py)、[ai/tool_runner.py](../src/fogmoe_telegram_bot/features/ai/tool_runner.py) |
 | 单次请求上限、按服务的协议整理消息 | `create_chat_completion`、`enforce_messages_context_budget`、`sanitize_messages_for_provider` | [ai/litellm_client.py](../src/fogmoe_telegram_bot/features/ai/litellm_client.py)、[ai/context_budget.py](../src/fogmoe_telegram_bot/features/ai/context_budget.py)、[ai/litellm_message_sanitizer.py](../src/fogmoe_telegram_bot/features/ai/litellm_message_sanitizer.py) |
 | 发到 Telegram | `TelegramVisibleContentHandler` | [ai/telegram_visible_sender.py](../src/fogmoe_telegram_bot/features/ai/telegram_visible_sender.py) |
 
 出问题时的处理规则见 [ai-provider-architecture.md](ai-provider-architecture.md) 的「回退规则」与「主聊天的 fallback」：
-上下文超限 `ContextBudgetExceededError`、执行过工具或发出过可见内容之后失败 `PartialAIResponseError`（由 `has_side_effects` 判断）、
-安全拦截 `SafetyBlockError`。
+上下文超限 `ContextBudgetExceededError`、执行过工具或发出过可见内容之后失败 `PartialAIResponseError`（由 `LoopState.has_side_effects` 判断）、
+安全拦截 `SafetyBlockError`、后台任务撤销 `JobAbortedError`。这些异常到 router 边界才变成 `LoopResult` 的 `LoopStatus`。
 
 ## 4. 工具箱
 
-所有工具在 `TOOL_SPECS`（[ai/tools/specs.py](../src/fogmoe_telegram_bot/features/ai/tools/specs.py)）单一声明。`resolve_agent_tools` 只去掉没配置凭据的工具和 provider 的 `skip_tools`，不按入口或聊天类型裁剪：历史在私聊、群聊和后台轮之间共享，工具列表每一轮都相同，不适用的场景由处理函数返回错误。兼容层导出的主聊天集合是 `OPENAI_TOOLS` 与 `AI_TOOL_HANDLERS`（[ai/tools/schemas.py](../src/fogmoe_telegram_bot/features/ai/tools/schemas.py)、
-[ai/tools/registry.py](../src/fogmoe_telegram_bot/features/ai/tools/registry.py)）；空闲回顾用 `IDLE_RECAP_TOOLS`，
-摘要助手用 `SUMMARY_TOOLS`。参数模型在 `AI_TOOL_ARG_MODELS`，工具读取请求上下文用 `get_tool_request_context`。
+所有工具在 `TOOL_SPECS`（[ai/tools/specs.py](../src/fogmoe_telegram_bot/features/ai/tools/specs.py)）单一声明。工具循环按 agent（`AgentSpec`，[ai/agents.py](../src/fogmoe_telegram_bot/features/ai/agents.py)）取工具：`resolve_agent_tool_specs` 只去掉没配置凭据的工具和 provider 的 `skip_tools`，不按入口或聊天类型裁剪：历史在私聊、群聊和后台轮之间共享，工具列表每一轮都相同，不适用的场景由处理函数返回错误。主聊天、空闲回顾与摘要助手分别是 `MAIN_AGENT`、`RECAP_AGENT`、`SUMMARY_AGENT`，后两个经 `run_agent` 回退运行。
+每个工具在声明里写明执行方式（`ToolExecution`：async、线程、内联）、需要的上下文字段与限额，工具读取请求上下文用 `get_tool_request_context`。
 加工具的步骤见 [ai/tools/README.md](../src/fogmoe_telegram_bot/features/ai/tools/README.md)，描述怎么写见
 [ai-tool-prompt-guidelines.md](ai-tool-prompt-guidelines.md)。
 
 工具目录（自动生成）：
 
 <!-- BEGIN GENERATED: tools -->
-共 20 个工具：主聊天 18 个，空闲回顾 3 个，摘要 1 个。参数后面带 `?` 的是可选参数。
+共 20 个工具：主聊天 18 个，空闲回顾 3 个，摘要 1 个。参数后面带 `?` 的是可选参数；`user_id` 每个入口都有，不列在「限额与前提」里。
 
-| 工具 | 谁能调用 | 参数 | 处理函数 | 描述（模型看到的原文） |
-|---|---|---|---|---|
-| `get_help_text` | 主聊天 | — | `memory_tools.get_help_text_tool` | Returns a list of available Telegram commands and features for users |
-| `execute_telegram_command` | 主聊天 | `command` | `telegram_command_tools.execute_telegram_command_tool` | Run a Telegram command as the current user in the current chat. The normal command handler sends its mechanical reply directly, and its events enter the conversation before the next model response. Returns execution status only. |
-| `read_doc` | 主聊天 | `topic?` | `doc_tools.read_doc_tool` | Read an internal reference document about how this bot's own features work. Omit topic to list every available document with a one-line summary, then call again with a topic to read that one in full. Each fact is documented in exactly one topic and the others defer to it, so follow a cross-reference rather than infer what it omits. Overly long documents are truncated. |
-| `list_available_stickers` | 主聊天 | `pack_name?` | `sticker_tools.list_available_stickers_tool` | List configured Telegram sticker packs, their summaries, and currently available emoji choices. Use this before adding sticker directives to a reply. |
-| `google_search` | 主聊天 | `query`, `detailed?`, `show_full_json?` | `http_tools.google_search_tool` | Use Google search engine to obtain the latest information and answers |
-| `advisor` | 主聊天 | `task`, `case_facts?` | `advisor_tools.advisor_tool` | Submit one complete reasoning task to a read-only senior advisor. Put the question or decision in task. Use case_facts only for facts, evidence, options, and constraints specific to that task. Each call is a single-turn consultation and cannot receive follow-up messages. The advisor cannot use tools or take actions. Its response is advisory material for you to evaluate and synthesize. |
-| `fetch_group_context` | 主聊天 | `window_size?` | `memory_tools.fetch_group_context_tool` | Fetch message history from group chat (group chats only) |
-| `fetch_url` | 主聊天 | `url` | `http_tools.fetch_url_tool` | Fetch a webpage and return extracted main text for up-to-date browsing. Overly long pages are truncated. |
-| `execute_python_code` | 主聊天 | `source_code`, `stdin?` | `code_tools.execute_python_code_tool` | Run Python code remotely and return its output. All results must be printed with print(), otherwise they will not appear in the output. |
-| `linux_sandbox` | 主聊天 | `command`, `cwd?`, `timeout_seconds?` | `sandbox_tools.linux_sandbox_tool` | Execute a non-interactive shell command in an isolated temporary Linux sandbox. The sandbox preserves filesystem state across linux_sandbox calls in the same user request, then closes automatically. It lives at most 5 minutes and accepts at most 10 calls per request. Once it closes, the same user cannot open another sandbox for 5 minutes. |
-| `generate_image` | 主聊天 | `prompt`, `width?`, `height?`, `steps?`, `seed?`, `timeout_seconds?` | `image_tools.generate_image_tool` | Generate exactly one image from a text prompt. The image is sent to Telegram immediately after the call succeeds. |
-| `generate_voice` | 主聊天 | `text` | `voice_tools.generate_voice_tool` | Generate exactly one spoken audio clip from text. The audio is sent to Telegram immediately after the call succeeds. |
-| `kindness_gift` | 主聊天 | `amount?` | `user_tools.kindness_gift_tool` | Gift coins to the user. Each user can receive one gift per 24 hours; calling again inside that window gifts nothing and returns a cooldown status. Omit amount to let the system pick one at random. |
-| `update_impression` | 主聊天 | `impression` | `user_tools.update_impression_tool` | Replace the stored impression of the user. This overwrites the previous impression entirely instead of appending to it, so carry over everything still worth keeping; the current text is visible as &lt;impression&gt; in the user profile. |
-| `fetch_permanent_summaries` | 主聊天、空闲回顾 | `start?`, `end?` | `memory_tools.fetch_permanent_summaries_tool` | Fetch user's historical conversation summaries (newest on top, max 5 results per request) |
-| `search_permanent_records` | 主聊天、空闲回顾 | `pattern`, `limit?`, `oldest_first?` | `memory_tools.search_permanent_records_tool` | Search user's permanent chat snapshots with a regex pattern |
-| `schedule_ai_message` | 主聊天 | `action?`, `timestamp_utc?`, `recurrence_unit?`, `recurrence_interval?`, `trigger_reason?`, `context?`, `instruction?`, `schedule_id?` | `schedule_tools.schedule_ai_message_tool` | Schedule, list, or cancel one-time or recurring private messages for the user. Use recurrence parameters when creating recurring schedules. UTC timestamps only. Max 3 pending tasks, max 12 total (older tasks are overwritten). |
-| `user_diary` | 主聊天 | `action?`, `page?`, `content?`, `title?`, `summary?`, `start_line?`, `end_line?`, `line_numbers?` | `memory_tools.user_diary_tool` | Read or update the internal diary for the current user. For existing pages, start with index to see compact titles and summaries, then read relevant pages. Use patch with start_line/end_line to replace those lines; append adds content at the end. Every content update requires a current summary, and new or previously untitled pages also require a title. When a page exceeds its size limit, the oldest content is truncated. |
-| `read_diary_page` | 空闲回顾 | `page` | `memory_tools.read_diary_page_tool` | Read one existing diary page selected from diary_index. This tool is read-only and cannot create, edit, or delete diary pages. |
-| `search_prior_context` | 摘要 | `query`, `limit?` | `summary_tools.search_prior_context_tool` | Search up to 20 earlier archived summaries with lightweight BM25 ranking and a small recency boost. Use concrete terms from the current snapshot to resolve older references or continuity. |
+| 工具 | 谁能调用 | 参数 | 处理函数 | 执行 | 限额与前提 | 描述（模型看到的原文） |
+|---|---|---|---|---|---|---|
+| `get_help_text` | 主聊天 | — | `memory_tools.get_help_text_tool` | 内联 | — | Returns a list of available Telegram commands and features for users |
+| `execute_telegram_command` | 主聊天 | `command` | `telegram_command_tools.execute_telegram_command_tool` | async | 需要 `chat_id`、`chat_type`、`message_id` | Run a Telegram command as the current user in the current chat. The normal command handler sends its mechanical reply directly, and its events enter the conversation before the next model response. Returns execution status only. |
+| `read_doc` | 主聊天 | `topic?` | `doc_tools.read_doc_tool` | 内联 | — | Read an internal reference document about how this bot's own features work. Omit topic to list every available document with a one-line summary, then call again with a topic to read that one in full. Each fact is documented in exactly one topic and the others defer to it, so follow a cross-reference rather than infer what it omits. Overly long documents are truncated. |
+| `list_available_stickers` | 主聊天 | `pack_name?` | `sticker_tools.list_available_stickers_tool` | 线程 | — | List configured Telegram sticker packs, their summaries, and currently available emoji choices. Use this before adding sticker directives to a reply. |
+| `google_search` | 主聊天 | `query`, `detailed?`, `show_full_json?` | `http_tools.google_search_tool` | 线程 | — | Use Google search engine to obtain the latest information and answers |
+| `advisor` | 主聊天 | `task`, `case_facts?` | `advisor_tools.advisor_tool` | async | 每请求 1 次；每用户 5 分钟 3 次；全局并发 3 | Submit one complete reasoning task to a read-only senior advisor. Put the question or decision in task. Use case_facts only for facts, evidence, options, and constraints specific to that task. Each call is a single-turn consultation and cannot receive follow-up messages. The advisor cannot use tools or take actions. Its response is advisory material for you to evaluate and synthesize. |
+| `fetch_group_context` | 主聊天 | `window_size?` | `memory_tools.fetch_group_context_tool` | async | 需要 `group_id` | Fetch message history from group chat (group chats only) |
+| `fetch_url` | 主聊天 | `url` | `http_tools.fetch_url_tool` | 线程 | — | Fetch a webpage and return extracted main text for up-to-date browsing. Overly long pages are truncated. |
+| `execute_python_code` | 主聊天 | `source_code`, `stdin?` | `code_tools.execute_python_code_tool` | 线程 | — | Run Python code remotely and return its output. All results must be printed with print(), otherwise they will not appear in the output. |
+| `linux_sandbox` | 主聊天 | `command`, `cwd?`, `timeout_seconds?` | `sandbox_tools.linux_sandbox_tool` | 线程 | 每请求 10 次；关闭后冷却 5 分钟；全局并发 4 | Execute a non-interactive shell command in an isolated temporary Linux sandbox. The sandbox preserves filesystem state across linux_sandbox calls in the same user request, then closes automatically. It lives at most 5 minutes and accepts at most 10 calls per request. Once it closes, the same user cannot open another sandbox for 5 minutes. |
+| `generate_image` | 主聊天 | `prompt`, `width?`, `height?`, `steps?`, `seed?`, `timeout_seconds?` | `image_tools.generate_image_tool` | 线程 | 每用户 5 分钟 2 次 | Generate exactly one image from a text prompt. The image is sent to Telegram immediately after the call succeeds. |
+| `generate_voice` | 主聊天 | `text` | `voice_tools.generate_voice_tool` | 线程 | 每用户 5 分钟 3 次 | Generate exactly one spoken audio clip from text. The audio is sent to Telegram immediately after the call succeeds. |
+| `kindness_gift` | 主聊天 | `amount?` | `user_tools.kindness_gift_tool` | async | — | Gift coins to the user. Each user can receive one gift per 24 hours; calling again inside that window gifts nothing and returns a cooldown status. Omit amount to let the system pick one at random. |
+| `update_impression` | 主聊天 | `impression` | `user_tools.update_impression_tool` | async | — | Replace the stored impression of the user. This overwrites the previous impression entirely instead of appending to it, so carry over everything still worth keeping; the current text is visible as &lt;impression&gt; in the user profile. |
+| `fetch_permanent_summaries` | 主聊天、空闲回顾 | `start?`, `end?` | `memory_tools.fetch_permanent_summaries_tool` | async | — | Fetch user's historical conversation summaries (newest on top, max 5 results per request) |
+| `search_permanent_records` | 主聊天、空闲回顾 | `pattern`, `limit?`, `oldest_first?` | `memory_tools.search_permanent_records_tool` | async | — | Search user's permanent chat snapshots with a regex pattern |
+| `schedule_ai_message` | 主聊天 | `action?`, `timestamp_utc?`, `recurrence_unit?`, `recurrence_interval?`, `trigger_reason?`, `context?`, `instruction?`, `schedule_id?` | `schedule_tools.schedule_ai_message_tool` | async | — | Schedule, list, or cancel one-time or recurring private messages for the user. Use recurrence parameters when creating recurring schedules. UTC timestamps only. Max 3 pending tasks, max 12 total (older tasks are overwritten). |
+| `user_diary` | 主聊天 | `action?`, `page?`, `content?`, `title?`, `summary?`, `start_line?`, `end_line?`, `line_numbers?` | `memory_tools.user_diary_tool` | async | — | Read or update the internal diary for the current user. For existing pages, start with index to see compact titles and summaries, then read relevant pages. Use patch with start_line/end_line to replace those lines; append adds content at the end. Every content update requires a current summary, and new or previously untitled pages also require a title. When a page exceeds its size limit, the oldest content is truncated. |
+| `read_diary_page` | 空闲回顾 | `page` | `memory_tools.read_diary_page_tool` | async | — | Read one existing diary page selected from diary_index. This tool is read-only and cannot create, edit, or delete diary pages. |
+| `search_prior_context` | 摘要 | `query`, `limit?` | `summary_tools.search_prior_context_tool` | async | 需要 `summary_record_id` | Search up to 20 earlier archived summaries with lightweight BM25 ranking and a small recency boost. Use concrete terms from the current snapshot to resolve older references or continuity. |
 <!-- END GENERATED: tools -->
 
 ## 5. 模型看到什么
@@ -169,9 +169,9 @@ uv run python scripts/gen_ai_flow_doc.py
 
 | 入口 | 工具 | 文件 |
 |---|---|---|
-| 定时消息 | 主聊天全套（经 `get_ai_response`） | [ai/scheduler.py](../src/fogmoe_telegram_bot/features/ai/scheduler.py) |
-| 空闲回顾：`_run_recap_agent` 写回顾（`idle_recap` 事件），主模型再写跟进消息 | 回顾：`IDLE_RECAP_TOOLS`；跟进：主聊天全套 | [ai/idle_followup.py](../src/fogmoe_telegram_bot/features/ai/idle_followup.py) |
-| 摘要助手 `_run_summary_agent` | `search_prior_context` | [ai/summary.py](../src/fogmoe_telegram_bot/features/ai/summary.py) |
+| 定时消息 | 主聊天全套（经 `get_ai_response`） | [conversation/scheduler.py](../src/fogmoe_telegram_bot/features/conversation/scheduler.py) |
+| 空闲回顾：`RECAP_AGENT` 写回顾（`idle_recap` 事件），主模型再写跟进消息 | 回顾：只读的记忆工具；跟进：主聊天全套 | [ai/recap.py](../src/fogmoe_telegram_bot/features/ai/recap.py)、[conversation/idle_followup.py](../src/fogmoe_telegram_bot/features/conversation/idle_followup.py) |
+| 摘要助手 `SUMMARY_AGENT` | `search_prior_context` | [ai/summary.py](../src/fogmoe_telegram_bot/features/ai/summary.py) |
 
 定时消息和空闲跟进的主模型与一轮对话共用同一套收尾流水线（`execute_post_input_turn` 与 `prepare_model_turn`，策略分别是 `SCHEDULE_ENTRY_POLICY` 和 `IDLE_FOLLOWUP_ENTRY_POLICY`，见 [ai/turn_pipeline.py](../src/fogmoe_telegram_bot/features/ai/turn_pipeline.py)）：用户状态提示词 `build_user_state_prompt`、工具上下文
 `build_tool_context`（没有聊天字段，带撤销信号；工具列表与用户轮次相同，群聊工具与代执行命令在这里调用会返回错误）、回复整理 `finish_reply`；历史经 `write_history` 写入
@@ -192,7 +192,7 @@ claim、租约与崩溃恢复见 [job-recovery.md](job-recovery.md)。
 | `CHAT_CONTEXT_HARD_LIMIT_RATIO` | `1.25` | [core/config.py](../src/fogmoe_telegram_bot/core/config.py) | 单次模型请求的硬上限倍数，见下一行 |
 | `请求硬上限（推导）` | `150000` | [features/ai/litellm_client.py](../src/fogmoe_telegram_bot/features/ai/litellm_client.py) | CHAT_TOKEN_LIMIT × 倍数；消息 + 工具 schema + 最大输出 + 预留超过它就报错，不删也不截断任何内容 |
 | `CHAT_CONTEXT_SAFETY_TOKENS` | `2048` | [core/config.py](../src/fogmoe_telegram_bot/core/config.py) | 估算请求大小时额外预留的 token |
-| `run_tool_loop(max_iterations)` | `10` | [features/ai/tool_runner.py](../src/fogmoe_telegram_bot/features/ai/tool_runner.py) | 工具循环最多几轮；用完后不带工具再要一次最终回复 |
+| `AgentSpec(max_iterations)` | `10` | [features/ai/agents.py](../src/fogmoe_telegram_bot/features/ai/agents.py) | 工具循环最多几轮（主聊天与回顾用默认值）；用完后不带工具再要一次最终回复 |
 | `POST_TOOL_COMPLETION_RETRY_DELAYS_SECONDS` | `(1.0, 3.0)` | [features/ai/tool_runner.py](../src/fogmoe_telegram_bot/features/ai/tool_runner.py) | 执行过工具或发出过可见内容之后，模型调用遇到临时错误时的重试间隔（同一模型，不换 provider） |
 | `_trim_messages_with_tool_context(keep_non_tool)` | `10` | [core/chat_records.py](../src/fogmoe_telegram_bot/core/chat_records.py) | 压缩时保留最近几条非 tool 消息；它们引用的 tool_call 会一并保留，保持配对 |
 | `PERMANENT_RECORDS_KEEP` | `100` | [core/chat_records.py](../src/fogmoe_telegram_bot/core/chat_records.py) | 每个用户保留的归档快照数（user.permanent_records_limit 可单独设置），更早的打包发给用户后删除 |

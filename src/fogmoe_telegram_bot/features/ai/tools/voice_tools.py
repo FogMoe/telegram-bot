@@ -12,7 +12,7 @@ from fogmoe_telegram_bot.core.redaction import describe_exception, log_exception
 
 from .context import get_tool_request_context
 from .filename_utils import prompt_to_filename
-from .rate_limit import SlidingWindowRateLimiter
+from .rate_limit import RateWindow, SlidingWindowRateLimiter, ToolLimits
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,9 @@ GENERATED_AUDIO_FILE_PREFIX = "ai_generated_audio_"
 GENERATED_AUDIO_DIR = config.LOG_DIR / "generated_audio"
 VOICE_RATE_LIMIT_WINDOW_SECONDS = 5 * 60
 VOICE_RATE_LIMIT_MAX_GENERATIONS = 3
+VOICE_LIMITS = ToolLimits(
+    per_user=RateWindow(VOICE_RATE_LIMIT_MAX_GENERATIONS, VOICE_RATE_LIMIT_WINDOW_SECONDS),
+)
 
 _SESSION_LOCAL = threading.local()
 _GENERATED_AUDIO_FILES: dict[str, str] = {}

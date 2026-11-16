@@ -12,17 +12,23 @@ import re
 from fogmoe_telegram_bot.core import background, config, mysql_connection
 from fogmoe_telegram_bot.core.token_estimator import estimate_tokens
 
-from .task_runner import Candidate, run_with_fallback
-from .tool_runner import run_tool_loop
-from .tools import agent_tool_handlers, agent_tool_schemas
-from .tools.context import tool_request_scope
+from .agents import AgentSpec
+from .tool_runner import run_agent
 
 SUMMARY_MAX_TOKENS = 2500
 SUMMARY_CONTEXT_HARD_LIMIT_RATIO = 1.5
 SUMMARY_RETRY_LIMIT = 3
 SUMMARY_TOOL_MAX_ITERATIONS = 4
-SUMMARY_TOOLS = agent_tool_schemas("summary")
-SUMMARY_TOOL_HANDLERS = agent_tool_handlers("summary")
+
+SUMMARY_AGENT = AgentSpec(
+    name="summary",
+    task="summary",
+    display_name="Summary",
+    system_prompt=lambda _tool_context: config.SUMMARY_SYSTEM_PROMPT,
+    max_iterations=SUMMARY_TOOL_MAX_ITERATIONS,
+    context_hard_limit_ratio=SUMMARY_CONTEXT_HARD_LIMIT_RATIO,
+    empty_reply_is_failure=True,
+)
 
 # 同时生成的摘要数（后台排队与历史溢出时的即时生成共用）。
 SUMMARY_CONCURRENCY = 2
@@ -350,31 +356,12 @@ async def _run_summary_agent(
     user_id: int,
     record_id: int,
 ) -> tuple[str, str]:
-    tool_context: dict[str, object] = {
-        "user_id": user_id,
-        "summary_record_id": record_id,
-    }
-
-    async def attempt(candidate: Candidate) -> tuple[str, str]:
-        with tool_request_scope(tool_context):
-            content, _tool_logs = await run_tool_loop(
-                candidate.provider,
-                candidate.model,
-                messages,
-                tool_context,
-                provider_name="Summary",
-                context_hard_limit_ratio=SUMMARY_CONTEXT_HARD_LIMIT_RATIO,
-                max_iterations=SUMMARY_TOOL_MAX_ITERATIONS,
-                tool_definitions=SUMMARY_TOOLS,
-                tool_handlers=SUMMARY_TOOL_HANDLERS,
-                system_prompt_override=config.SUMMARY_SYSTEM_PROMPT,
-            )
-        summary_text = str(content or "").strip()
-        if not summary_text:
-            raise ValueError("summary model returned empty content")
-        return summary_text, candidate.model
-
-    return await run_with_fallback("summary", attempt, tools_are_read_only=True)
+    result, candidate = await run_agent(
+        SUMMARY_AGENT,
+        messages,
+        {"user_id": user_id, "summary_record_id": record_id},
+    )
+    return result.text.strip(), candidate.model
 
 
 async def _generate_summary(

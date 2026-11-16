@@ -5,9 +5,11 @@ import logging
 import threading
 
 import pytest
+from tool_fakes import use_tool
 
-from fogmoe_telegram_bot.features.ai import job_claims, telegram_visible_sender, tool_runner
+from fogmoe_telegram_bot.features.ai import telegram_visible_sender, tool_runner
 from fogmoe_telegram_bot.features.ai.types import ABORT_EVENT_KEY, JobAbortedError, raise_if_aborted
+from fogmoe_telegram_bot.features.conversation import job_claims
 
 
 def run(coro):
@@ -242,7 +244,7 @@ class TestAbortSignal:
             return {"organic_results": []}
 
         monkeypatch.setattr(tool_runner, "create_chat_completion", fake_completion)
-        monkeypatch.setitem(tool_runner.AI_TOOL_HANDLERS, "google_search", first_tool_loses_the_claim)
+        use_tool(monkeypatch, "google_search", first_tool_loses_the_claim)
 
         with pytest.raises(JobAbortedError):
             run(
@@ -271,7 +273,7 @@ class TestAbortSignal:
 
         monkeypatch.setattr(tool_runner, "create_chat_completion", fake_completion)
 
-        message, _ = run(
+        message = run(
             tool_runner.run_tool_loop(
                 "test_provider",
                 "test_model",
@@ -280,7 +282,7 @@ class TestAbortSignal:
             )
         )
 
-        assert message == "done"
+        assert message.text == "done"
 
     def test_visible_content_handler_stops_sending_once_aborted(self):
         sent = []

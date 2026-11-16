@@ -11,14 +11,11 @@ from fogmoe_telegram_bot.core.ai_providers import Capabilities, WireProtocol
 from fogmoe_telegram_bot.features.ai import chat_capabilities, provider_resolver, task_runner
 from fogmoe_telegram_bot.features.ai.litellm_message_sanitizer import sanitize_message_for_provider
 from fogmoe_telegram_bot.features.ai.litellm_provider_config import provider_params
-from fogmoe_telegram_bot.features.ai.tools import AI_TOOL_HANDLERS, OPENAI_TOOLS
+from fogmoe_telegram_bot.features.ai.tools import TOOL_SPEC_BY_NAME
 
 SETTING_NAMES = set(config.AppSettings.model_fields)
 TASK_NAMES = tuple(ai_providers.TASK_SPECS)
-REGISTERED_TOOL_NAMES = {
-    tool["function"]["name"]
-    for tool in OPENAI_TOOLS
-} | set(AI_TOOL_HANDLERS)
+REGISTERED_TOOL_NAMES = set(TOOL_SPEC_BY_NAME)
 
 
 def test_declared_skip_tools_exist_in_registered_tools():

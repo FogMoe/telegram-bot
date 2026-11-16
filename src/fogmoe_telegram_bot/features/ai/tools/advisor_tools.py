@@ -8,7 +8,12 @@ from ..errors import is_timeout_error
 from ..provider_resolver import get_models_for_task, get_provider_order_for_task
 from ..task_runner import run_ai_task
 from .context import get_tool_request_context
-from .rate_limit import NonBlockingConcurrencyLimiter, SlidingWindowRateLimiter
+from .rate_limit import (
+    NonBlockingConcurrencyLimiter,
+    RateWindow,
+    SlidingWindowRateLimiter,
+    ToolLimits,
+)
 
 _CALL_COUNT_CONTEXT_KEY = "_advisor_call_count"
 _ADVISOR_RATE_LIMITER = SlidingWindowRateLimiter(clock=time.monotonic)
@@ -16,6 +21,18 @@ _RATE_LIMITS = _ADVISOR_RATE_LIMITER.buckets
 _ADVISOR_SEMAPHORE = NonBlockingConcurrencyLimiter(
     lambda: config.AI_ADVISOR_MAX_CONCURRENT_REQUESTS
 )
+
+
+def advisor_limits() -> ToolLimits:
+    """advisor 的限额。数值在配置里（可由环境变量覆盖），与下面的检查一样在调用时读。"""
+    return ToolLimits(
+        per_request=config.AI_ADVISOR_MAX_CALLS_PER_REQUEST,
+        per_user=RateWindow(
+            config.AI_ADVISOR_RATE_LIMIT_MAX_CALLS,
+            config.AI_ADVISOR_RATE_LIMIT_WINDOW_SECONDS,
+        ),
+        max_concurrent=config.AI_ADVISOR_MAX_CONCURRENT_REQUESTS,
+    )
 
 
 def _configured_advisor_available(settings: Any = None) -> bool:

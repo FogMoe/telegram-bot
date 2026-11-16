@@ -1,17 +1,21 @@
 import asyncio
+import dataclasses
 from types import SimpleNamespace
 
 import pytest
+from tool_fakes import TEST_AGENT, register_tool
 
 from fogmoe_telegram_bot.core.deadline import Deadline
 from fogmoe_telegram_bot.features.ai import tool_runner
 from fogmoe_telegram_bot.features.ai.tool_history import (
-    tool_logs_completed_clear,
+    completed_clear,
     turn_messages_to_record_entries,
 )
 from fogmoe_telegram_bot.features.ai.types import (
     TOOL_CONTEXT_MESSAGES_KEY,
     LoopStatus,
+    ToolCallRecord,
+    ToolCallStatus,
     TurnDeadlineError,
 )
 
@@ -112,20 +116,24 @@ def test_telegram_events_are_recorded_after_the_tool_result():
     assert entries[-2:] == [("user", "command-event"), ("user", "reply-event")]
 
 
-def test_tool_logs_completed_clear_requires_successful_clear_result():
-    successful_clear = {
-        "type": "tool_result",
-        "tool_name": "execute_telegram_command",
-        "arguments": {"command": "/clear"},
-        "result": {"success": True},
-    }
+def test_completed_clear_requires_successful_clear_result():
+    successful_clear = ToolCallRecord(
+        tool_name="execute_telegram_command",
+        tool_call_id="call_clear",
+        arguments={"command": "/clear"},
+        status=ToolCallStatus.COMPLETED,
+        public_result={"success": True},
+    )
 
-    assert tool_logs_completed_clear([successful_clear]) is True
-    assert tool_logs_completed_clear(
-        [{**successful_clear, "result": {"success": False}}]
+    assert completed_clear([successful_clear]) is True
+    assert completed_clear(
+        [dataclasses.replace(successful_clear, public_result={"success": False})]
     ) is False
-    assert tool_logs_completed_clear(
-        [{**successful_clear, "arguments": {"command": "/me"}}]
+    assert completed_clear(
+        [dataclasses.replace(successful_clear, arguments={"command": "/me"})]
+    ) is False
+    assert completed_clear(
+        [dataclasses.replace(successful_clear, status=ToolCallStatus.INTERRUPTED)]
     ) is False
 
 
@@ -162,29 +170,37 @@ def test_turn_messages_record_visible_text_tool_pairs_and_telegram_events(monkey
     async def fake_completion(*args, **kwargs):
         return responses.pop(0)
 
-    async def fake_visible(text: str) -> str:
-        return text
+    class FakeVisible:
+        def __init__(self):
+            self.sent_messages = []
+            self.sent_contents = []
+
+        async def __call__(self, text: str) -> str:
+            self.sent_contents.append(text)
+            return text
+
+        async def send_tool_media(self, tool_name, result):
+            return []
+
+    fake_visible = FakeVisible()
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_completion)
+    register_tool(
+        monkeypatch,
+        "execute_telegram_command",
+        lambda command: {
+            "success": True,
+            TOOL_CONTEXT_MESSAGES_KEY: ["<metadata event=\"command\" />"],
+        },
+    )
 
     result = asyncio.run(
         tool_runner.run_tool_loop(
             "openai",
             "gpt-4o",
             [{"role": "user", "content": "看下我的资料"}],
+            agent=TEST_AGENT,
             visible_content_handler=fake_visible,
-            tool_definitions=[
-                {
-                    "type": "function",
-                    "function": {"name": "execute_telegram_command", "parameters": {}},
-                }
-            ],
-            tool_handlers={
-                "execute_telegram_command": lambda command: {
-                    "success": True,
-                    TOOL_CONTEXT_MESSAGES_KEY: ["<metadata event=\"command\" />"],
-                }
-            },
         )
     )
 
@@ -224,6 +240,8 @@ def test_interrupted_round_turn_messages_stay_paired(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(tool_runner, "create_chat_completion", fake_completion)
+    register_tool(monkeypatch, "slow_tool", slow_tool)
+    register_tool(monkeypatch, "fast_tool", lambda: {"ok": True})
 
     with pytest.raises(TurnDeadlineError) as exc_info:
         asyncio.run(
@@ -231,17 +249,13 @@ def test_interrupted_round_turn_messages_stay_paired(monkeypatch):
                 "openai",
                 "gpt-4o",
                 [{"role": "user", "content": "run"}],
-                tool_definitions=[
-                    {"type": "function", "function": {"name": "slow_tool", "parameters": {}}},
-                    {"type": "function", "function": {"name": "fast_tool", "parameters": {}}},
-                ],
-                tool_handlers={"slow_tool": slow_tool, "fast_tool": lambda: {"ok": True}},
+                agent=TEST_AGENT,
                 deadline=Deadline(0.05),
             )
         )
 
     err = exc_info.value
-    entries = turn_messages_to_record_entries(err.turn_messages)
+    entries = turn_messages_to_record_entries(err.partial.turn_messages)
     assert [role for role, _ in entries] == ["assistant", "tool", "tool"]
     assert [entry["tool_call_id"] for role, entry in entries if role == "tool"] == [
         "call_a",

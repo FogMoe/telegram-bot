@@ -26,13 +26,15 @@ from mysql_support import execute, run
 
 from fogmoe_telegram_bot.features.ai import (
     conversation_locks,
-    idle_followup,
-    job_claims,
     outbound,
     summary,
 )
 from fogmoe_telegram_bot.features.ai.router import AI_SERVICE_ERROR_MESSAGE
-from fogmoe_telegram_bot.features.ai.types import LoopStatus
+from fogmoe_telegram_bot.features.ai.types import LoopStatus, ToolCallRecord, ToolCallStatus
+from fogmoe_telegram_bot.features.conversation import (
+    idle_followup,
+    job_claims,
+)
 
 REPLY = "just checking in"
 USER_ID = 1
@@ -58,7 +60,7 @@ def env(app_database, monkeypatch):
     async def no_media(**kwargs):
         return []
 
-    monkeypatch.setattr(idle_followup, "_generate_recap", fake_recap)
+    monkeypatch.setattr(idle_followup, "generate_recap", fake_recap)
     monkeypatch.setattr(idle_followup.ai_chat, "get_ai_response", ai.get_ai_response)
     monkeypatch.setattr(outbound, "send_ai_reply_with_stickers", telegram.send_reply)
     monkeypatch.setattr(idle_followup, "send_generated_media", no_media)
@@ -236,15 +238,15 @@ class TestStaleWorker:
     def test_a_stale_worker_that_finishes_late_is_rejected(self, env, with_tools):
         """租约到期并被回收后，旧 worker 迟到完成：不投递、不写状态。"""
         if with_tools:
-            env.ai.tool_logs = [
-                {
-                    "type": "tool_result",
-                    "tool_name": "read_doc",
-                    "arguments": {"topic": "memory"},
-                    "result": {"content": "memory details"},
-                    "tool_call_id": "call_1",
-                }
-            ]
+            env.ai.tool_calls = (
+                ToolCallRecord(
+                    tool_name="read_doc",
+                    tool_call_id="call_1",
+                    arguments={"topic": "memory"},
+                    status=ToolCallStatus.COMPLETED,
+                    public_result={"content": "memory details"},
+                ),
+            )
             env.ai.turn_messages = [
                 {
                     "role": "assistant",

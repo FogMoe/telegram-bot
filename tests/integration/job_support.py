@@ -11,7 +11,7 @@ from typing import Any
 
 from mysql_support import execute, fetch
 
-from fogmoe_telegram_bot.features.ai.types import LoopResult, LoopStatus
+from fogmoe_telegram_bot.features.ai.types import LoopResult, LoopStatus, ToolCallRecord
 
 
 class SimulatedCrash(BaseException):
@@ -56,7 +56,7 @@ class FakeAI:
         self.calls = 0
         self.reply = reply
         self.status = LoopStatus.COMPLETED
-        self.tool_logs: list[dict] = []
+        self.tool_calls: tuple[ToolCallRecord, ...] = ()
         self.turn_messages: list[dict] = []
         self.hook: Any = None
         self.tool_contexts: list[Any] = []
@@ -75,7 +75,7 @@ class FakeAI:
             await self.hook(tool_context)
         return LoopResult(
             self.reply,
-            [dict(log) for log in self.tool_logs],
+            tool_calls=self.tool_calls,
             status=self.status,
             turn_messages=[dict(message) for message in self.turn_messages],
         )

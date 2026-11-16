@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import pytest
 
 from fogmoe_telegram_bot.core import telegram_history
-from fogmoe_telegram_bot.features.ai import idle_followup, scheduler
 from fogmoe_telegram_bot.features.ai.router import (
     AI_SERVICE_ERROR_MESSAGE,
     PARTIAL_AI_RESPONSE_ERROR_MESSAGE,
@@ -26,7 +25,13 @@ from fogmoe_telegram_bot.features.ai.turn_pipeline import (
     execute_post_input_turn,
     prepare_model_turn,
 )
-from fogmoe_telegram_bot.features.ai.types import LoopResult, LoopStatus
+from fogmoe_telegram_bot.features.ai.types import (
+    LoopResult,
+    LoopStatus,
+    ToolCallRecord,
+    ToolCallStatus,
+)
+from fogmoe_telegram_bot.features.conversation import idle_followup, scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +67,6 @@ def test_prepare_model_turn_applies_entry_runtime_error_policies() -> None:
         suppressed_flags.append(telegram_history._CAPTURE_SUPPRESSED.get())
         return LoopResult(
             text=AI_SERVICE_ERROR_MESSAGE,
-            tool_logs=[],
             status=LoopStatus.ALL_PROVIDERS_FAILED,
         )
 
@@ -103,18 +107,18 @@ def test_prepare_model_turn_applies_entry_runtime_error_policies() -> None:
             )
         )
 
-    tool_log = {
-        "type": "tool_result",
-        "tool_name": "user_diary",
-        "arguments": {"action": "read", "page": 1},
-        "result": {"content": "note"},
-        "tool_call_id": "call_1",
-    }
+    tool_record = ToolCallRecord(
+        tool_name="user_diary",
+        tool_call_id="call_1",
+        arguments={"action": "read", "page": 1},
+        status=ToolCallStatus.COMPLETED,
+        public_result={"content": "note"},
+    )
 
     async def failing_after_tool(_visible):
         return LoopResult(
             text=PARTIAL_AI_RESPONSE_ERROR_MESSAGE,
-            tool_logs=[tool_log],
+            tool_calls=(tool_record,),
             status=LoopStatus.PARTIAL_FAILURE,
             turn_messages=[
                 {
@@ -142,16 +146,16 @@ def test_prepare_model_turn_applies_entry_runtime_error_policies() -> None:
 
 
 def test_prepare_model_turn_gates_completed_clear_to_user_entry() -> None:
-    clear_log = {
-        "type": "tool_result",
-        "tool_name": "execute_telegram_command",
-        "arguments": {"command": "/clear"},
-        "result": {"success": True},
-        "tool_call_id": "call_clear",
-    }
+    clear_record = ToolCallRecord(
+        tool_name="execute_telegram_command",
+        tool_call_id="call_clear",
+        arguments={"command": "/clear"},
+        status=ToolCallStatus.COMPLETED,
+        public_result={"success": True},
+    )
 
     async def model_with_clear(_visible):
-        return LoopResult(text="已清空", tool_logs=[clear_log])
+        return LoopResult(text="已清空", tool_calls=(clear_record,))
 
     user_prepared = asyncio.run(
         prepare_model_turn(
@@ -179,7 +183,7 @@ def test_execute_post_input_turn_orders_stages_and_honors_gate() -> None:
     async def model_step():
         return await prepare_model_turn(
             policy=SCHEDULE_ENTRY_POLICY,
-            invoke_model=lambda _visible: asyncio.sleep(0, result=LoopResult(text="hi", tool_logs=[])),
+            invoke_model=lambda _visible: asyncio.sleep(0, result=LoopResult(text="hi")),
             normalize_stickers=_identity_stickers,
             logger=logger,
         )
@@ -284,7 +288,7 @@ def test_scheduler_post_input_pipeline_runs_stages_without_zero_balance_suspend(
 
     async def fake_ai(*args, **kwargs):
         events.append(("ai", kwargs["visible_content_handler"] is not None))
-        return LoopResult(text="喝水时间到", tool_logs=[])
+        return LoopResult(text="喝水时间到")
 
     async def fake_normalize(text, *, logger):
         return text
@@ -341,15 +345,15 @@ def test_idle_followup_stale_claim_after_tools_persists_only_tool_history(monkey
     stages: list[str] = []
     sent: list[tuple] = []
     fired: list[tuple] = []
-    tool_logs = [
-        {
-            "type": "tool_result",
-            "tool_name": "update_impression",
-            "arguments": {"impression": "busy"},
-            "result": {"ok": True},
-            "tool_call_id": "call_imp",
-        }
-    ]
+    tool_calls = (
+        ToolCallRecord(
+            tool_name="update_impression",
+            tool_call_id="call_imp",
+            arguments={"impression": "busy"},
+            status=ToolCallStatus.COMPLETED,
+            public_result={"ok": True},
+        ),
+    )
     turn_messages = [
         {
             "role": "tool",
@@ -381,7 +385,7 @@ def test_idle_followup_stale_claim_after_tools_persists_only_tool_history(monkey
     )
     monkeypatch.setattr(
         idle_followup,
-        "_generate_recap",
+        "generate_recap",
         lambda *_a: asyncio.sleep(
             0,
             result={
@@ -407,7 +411,7 @@ def test_idle_followup_stale_claim_after_tools_persists_only_tool_history(monkey
         "get_ai_response",
         lambda *_a, **_kw: asyncio.sleep(
             0,
-            result=LoopResult(text="不该发出", tool_logs=tool_logs, turn_messages=turn_messages),
+            result=LoopResult(text="不该发出", tool_calls=tool_calls, turn_messages=turn_messages),
         ),
     )
     monkeypatch.setattr(
@@ -441,3 +445,41 @@ def test_idle_followup_stale_claim_after_tools_persists_only_tool_history(monkey
     assert persisted[0][0][3] == turn_messages
     assert sent == []
     assert fired == []
+
+
+def test_an_aborted_model_step_skips_every_later_stage() -> None:
+    """撤销的后台轮次：不重试、不过门闸、不写历史、不投递、不收尾。"""
+    events: list[str] = []
+
+    async def aborted(_visible):
+        return LoopResult(text="", status=LoopStatus.ABORTED)
+
+    async def model_step():
+        return await prepare_model_turn(
+            policy=IDLE_FOLLOWUP_ENTRY_POLICY,
+            invoke_model=aborted,
+            normalize_stickers=_identity_stickers,
+            logger=logger,
+            user_id=1,
+        )
+
+    async def record(name: str) -> bool:
+        events.append(name)
+        return True
+
+    outcome = asyncio.run(
+        execute_post_input_turn(
+            policy=IDLE_FOLLOWUP_ENTRY_POLICY,
+            run_model_step=model_step,
+            before_persist_and_deliver=lambda _prepared: record("gate"),
+            persist_output=lambda _prepared: record("history_out"),
+            deliver_output=lambda _prepared: record("delivery"),
+            finalize_turn=lambda _prepared, _delivered: record("finalize"),
+        )
+    )
+
+    assert events == []
+    assert outcome.delivered is False
+    assert outcome.prepared.status is LoopStatus.ABORTED
+    assert outcome.prepared.tool_record_entries == []
+    assert outcome.prepared.reply_entries == []

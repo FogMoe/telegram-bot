@@ -86,7 +86,7 @@ def test_send_with_retry_falls_back_to_audio_after_voice_timeouts(monkeypatch, t
     ]
 
 
-def test_send_generated_audio_from_tool_logs_enforces_total_limit(monkeypatch, tmp_path):
+def test_send_generated_audio_from_tool_results_enforces_total_limit(monkeypatch, tmp_path):
     audio_ids = ["a1", "a2", "a3", "a4"]
     paths = {}
     for audio_id in audio_ids:
@@ -110,36 +110,28 @@ def test_send_generated_audio_from_tool_logs_enforces_total_limit(monkeypatch, t
     )
     monkeypatch.setattr(generated_audio_sender, "_send_with_retry", fake_send_with_retry)
 
-    tool_logs = [
+    results = [
         {
-            "type": "tool_result",
-            "tool_name": "generate_voice",
-            "internal_result": {
-                "status": "generated",
-                "audios": [
-                    {"audio_id": "a1", "filename": "a1.mp3"},
-                    {"audio_id": "a2", "filename": "a2.mp3"},
-                ],
-            },
+            "status": "generated",
+            "audios": [
+                {"audio_id": "a1", "filename": "a1.mp3"},
+                {"audio_id": "a2", "filename": "a2.mp3"},
+            ],
         },
         {
-            "type": "tool_result",
-            "tool_name": "generate_voice",
-            "internal_result": {
-                "status": "generated",
-                "audios": [
-                    {"audio_id": "a3", "filename": "a3.mp3"},
-                    {"audio_id": "a4", "filename": "a4.mp3"},
-                ],
-            },
+            "status": "generated",
+            "audios": [
+                {"audio_id": "a3", "filename": "a3.mp3"},
+                {"audio_id": "a4", "filename": "a4.mp3"},
+            ],
         },
     ]
 
     sent = asyncio.run(
-        generated_audio_sender.send_generated_audio_from_tool_logs(
+        generated_audio_sender.send_generated_audio_from_tool_results(
             bot=object(),
             chat_id=123,
-            tool_logs=tool_logs,
+            results=results,
             logger=logging.getLogger(__name__),
         )
     )

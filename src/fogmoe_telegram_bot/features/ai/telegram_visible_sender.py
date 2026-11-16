@@ -92,7 +92,7 @@ class TelegramVisibleContentHandler:
         if self.abort_event is not None and self.abort_event.is_set():
             raise JobAbortedError("visible content send aborted")
 
-    async def __call__(self, content: str) -> str | None:
+    async def __call__(self, content: str) -> str:
         self._raise_if_aborted()
         return await self._send(content)
 
@@ -121,12 +121,3 @@ class TelegramVisibleContentHandler:
     async def send_tool_media(self, tool_name: str, result: dict[str, Any]) -> list[Any]:
         self._raise_if_aborted()
         return await self._send_tool_media(tool_name, result)
-
-    def visible_events(self) -> list[dict[str, str]]:
-        return [
-            {
-                "type": "assistant_visible",
-                "content": content,
-            }
-            for content in self.sent_contents
-        ]

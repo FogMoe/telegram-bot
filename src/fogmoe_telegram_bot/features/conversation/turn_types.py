@@ -17,7 +17,7 @@ from telegram import Bot, Message
 
 from fogmoe_telegram_bot.core import config
 from fogmoe_telegram_bot.core.deadline import Deadline
-from fogmoe_telegram_bot.features.ai.types import LoopStatus, ToolLog, VisibleContentSink
+from fogmoe_telegram_bot.features.ai.types import VisibleContentHandler
 
 # 印象与日记是否存在：用户状态提示词在 `features/ai/user_state.py` 里拼，三个入口共用。
 from fogmoe_telegram_bot.features.ai.user_state import UserStateRecord as UserStateRecord
@@ -117,16 +117,8 @@ class ModelRequest:
     text_fallback_messages: list[dict[str, Any]]  # 纯文本历史：图片已换成文字描述
     user_id: int
     tool_context: dict[str, object]
-    visible_content_handler: VisibleContentSink | None
+    visible_content_handler: VisibleContentHandler | None
     deadline: Deadline | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ModelResponse:
-    text: str
-    tool_logs: list[ToolLog]
-    status: LoopStatus = LoopStatus.COMPLETED
-    turn_messages: list[dict[str, Any]] = field(default_factory=list)
 
 
 class TurnStatus(StrEnum):
